@@ -12,6 +12,7 @@ const {
   isInside,
   callStableNativeFunction,
   assertFullscreenProbeValue,
+  nativeWindowHandleId,
   runWindowsFullscreenIdentityProbe,
 } = require("../src/package-koffi-smoke");
 const {
@@ -96,6 +97,17 @@ test("fullscreen probe smoke check accepts a verdict or a window identity", () =
   assert.throws(() => assertFullscreenProbeValue(undefined), /undefined/);
 });
 
+test("packaged fullscreen identity decodes the HWND value from Electron's native handle buffer", () => {
+  const handle = Buffer.alloc(8);
+  handle.writeBigUInt64LE(184467n);
+  assert.equal(nativeWindowHandleId({ getNativeWindowHandle: () => handle }), "184467");
+  assert.throws(() => nativeWindowHandleId({}), /no native handle/i);
+  assert.throws(
+    () => nativeWindowHandleId({ getNativeWindowHandle: () => Buffer.alloc(8) }),
+    /null native handle/i,
+  );
+});
+
 test("packaged fullscreen identity smoke requires distinct live HWNDs and rejects an invalid handle", async () => {
   let nextId = 100;
   let foregroundId = null;
@@ -109,9 +121,18 @@ test("packaged fullscreen identity smoke requires distinct live HWNDs and reject
     }
     setFullScreen() {}
     show() {}
+    hide() {
+      this.focused = false;
+      if (foregroundId === this.id) foregroundId = null;
+    }
     focus() {
       this.focused = true;
       foregroundId = this.id;
+    }
+    getNativeWindowHandle() {
+      const handle = Buffer.alloc(8);
+      handle.writeBigUInt64LE(BigInt(this.id));
+      return handle;
     }
     isFocused() { return this.focused; }
     isDestroyed() { return this.destroyed; }

@@ -90,7 +90,28 @@ function assertFullscreenProbeValue(value) {
   return value;
 }
 
-async function waitForFullscreenIdentity({ win, fullscreenProbe, timeoutMs = 8_000, sleepFn } = {}) {
+function nativeWindowHandleId(win) {
+  if (!win || typeof win.getNativeWindowHandle !== "function") {
+    throw new Error("Packaged fullscreen identity window has no native handle");
+  }
+  const handle = win.getNativeWindowHandle();
+  if (!Buffer.isBuffer(handle) || handle.length < 4) {
+    throw new Error("Packaged fullscreen identity window returned an invalid native handle buffer");
+  }
+  const value = handle.length >= 8
+    ? handle.readBigUInt64LE(0)
+    : BigInt(handle.readUInt32LE(0));
+  if (value <= 0n) throw new Error("Packaged fullscreen identity window returned a null native handle");
+  return String(value);
+}
+
+async function waitForFullscreenIdentity({
+  win,
+  fullscreenProbe,
+  expectedId = null,
+  timeoutMs = 8_000,
+  sleepFn,
+} = {}) {
   const sleep = sleepFn || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const deadline = Date.now() + timeoutMs;
   win.setFullScreen(true);
@@ -103,10 +124,17 @@ async function waitForFullscreenIdentity({ win, fullscreenProbe, timeoutMs = 8_0
     }
     if (typeof win.isFocused === "function" && !win.isFocused()) win.focus();
     lastValue = assertFullscreenProbeValue(fullscreenProbe());
-    if (typeof lastValue === "string" && lastValue.length > 0) return lastValue;
+    if (
+      typeof lastValue === "string"
+      && lastValue.length > 0
+      && (expectedId == null || lastValue === expectedId)
+    ) return lastValue;
     await sleep(100);
   }
-  throw new Error(`Packaged fullscreen probe did not return a window identity (last=${String(lastValue)})`);
+  const expected = expectedId == null ? "" : `, expected=${expectedId}`;
+  throw new Error(
+    `Packaged fullscreen probe did not return the requested window identity (last=${String(lastValue)}${expected})`,
+  );
 }
 
 async function runWindowsFullscreenIdentityProbe({
@@ -124,9 +152,11 @@ async function runWindowsFullscreenIdentityProbe({
     for (let index = 0; index < 2; index += 1) {
       const win = new BrowserWindow({ show: false, width: 320, height: 240, skipTaskbar: true });
       windows.push(win);
+      const expectedId = nativeWindowHandleId(win);
       const id = await waitForFullscreenIdentity({
         win,
         fullscreenProbe,
+        expectedId,
         timeoutMs,
         sleepFn,
       });
@@ -134,6 +164,12 @@ async function runWindowsFullscreenIdentityProbe({
         throw new Error(`IsWindow rejected live packaged fullscreen HWND ${id}`);
       }
       ids.push(id);
+      // Keep the HWND alive for the distinctness/liveness checks, but take the
+      // first fixture out of fullscreen before focusing the next one. Some
+      // Windows ARM64 runners otherwise leave the first fullscreen HWND in the
+      // foreground even after focus() is requested on the second BrowserWindow.
+      win.setFullScreen(false);
+      if (typeof win.hide === "function") win.hide();
     }
     if (ids[0] === ids[1]) {
       throw new Error(`Packaged fullscreen identities collapsed to the same value: ${ids[0]}`);
@@ -529,6 +565,7 @@ module.exports = {
   captureKoffiLoad,
   callStableNativeFunction,
   assertFullscreenProbeValue,
+  nativeWindowHandleId,
   waitForFullscreenIdentity,
   runWindowsFullscreenIdentityProbe,
   waitForSmokeCondition,
