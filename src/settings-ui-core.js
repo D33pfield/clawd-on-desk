@@ -88,6 +88,7 @@
       roamArea: null,
       settingsSelects: new Set(),
       segmentedRadios: new Set(),
+      disposableScopes: new Map(),
       quotaRingDisplayMode: null,
       permissionAutomationMode: null,
       aboutAutoUpdate: null,
@@ -594,6 +595,206 @@
     return chevron;
   }
 
+  let settingsDisclosureId = 0;
+
+  function prefersReducedMotion() {
+    return typeof window.matchMedia === "function"
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  function scheduleSettingsTimeout(callback, delay) {
+    if (typeof setTimeout === "function") return setTimeout(callback, delay);
+    requestAnimationFrame(callback);
+    return null;
+  }
+
+  function cancelSettingsTimeout(timer) {
+    if (timer !== null && typeof clearTimeout === "function") clearTimeout(timer);
+  }
+
+  function getMountedDisposableScope(scope = "content") {
+    const scopes = state.mountedControls.disposableScopes;
+    if (!scopes.has(scope)) scopes.set(scope, new Set());
+    return scopes.get(scope);
+  }
+
+  function registerMountedDisposable(disposable, { scope = "content" } = {}) {
+    if (!disposable || typeof disposable.dispose !== "function") return disposable;
+    getMountedDisposableScope(scope).add(disposable);
+    return disposable;
+  }
+
+  function disposeMountedDisposable(disposable, { scope = null } = {}) {
+    if (!disposable || typeof disposable.dispose !== "function") return;
+    const scopes = state.mountedControls.disposableScopes;
+    if (scope !== null) {
+      const controls = scopes.get(scope);
+      if (controls) {
+        controls.delete(disposable);
+        if (controls.size === 0) scopes.delete(scope);
+      }
+    } else {
+      for (const [scopeName, controls] of scopes) {
+        controls.delete(disposable);
+        if (controls.size === 0) scopes.delete(scopeName);
+      }
+    }
+    disposable.dispose();
+  }
+
+  function disposeMountedDisposables(scope = null) {
+    const scopes = state.mountedControls.disposableScopes;
+    const scopeNames = scope === null ? Array.from(scopes.keys()) : [scope];
+    for (const scopeName of scopeNames) {
+      const controls = scopes.get(scopeName);
+      if (!controls) continue;
+      scopes.delete(scopeName);
+      for (const disposable of Array.from(controls)) disposable.dispose();
+    }
+  }
+
+  function attachSettingsDisclosure({
+    root: disclosureRoot,
+    trigger,
+    body,
+    expanded = false,
+    animate = true,
+    onExpandedChange = null,
+    preserveStateChange = null,
+    syncTrigger = null,
+  } = {}) {
+    if (!disclosureRoot || !trigger || !body) {
+      throw new TypeError("attachSettingsDisclosure requires root, trigger, and body");
+    }
+    const bodyInner = body.querySelector(".settings-disclosure-body-inner");
+    if (!bodyInner) throw new TypeError("Settings disclosure body requires an inner wrapper");
+
+    let isExpanded = !!expanded;
+    let transitionTimer = null;
+    let transitionState = null;
+    let disposed = false;
+    disclosureRoot.classList.add("settings-disclosure");
+    trigger.classList.add("settings-disclosure-trigger");
+    body.classList.add("settings-disclosure-body");
+
+    const triggerTag = String(trigger.tagName || "").toUpperCase();
+    if (triggerTag !== "BUTTON") {
+      if (!trigger.getAttribute("role")) trigger.setAttribute("role", "button");
+      if (!trigger.getAttribute("tabindex")) trigger.setAttribute("tabindex", "0");
+    }
+    if (!body.getAttribute("id")) {
+      settingsDisclosureId += 1;
+      body.setAttribute("id", `settings-disclosure-body-${settingsDisclosureId}`);
+    }
+    trigger.setAttribute("aria-controls", body.getAttribute("id"));
+
+    function finishTransition() {
+      cancelSettingsTimeout(transitionTimer);
+      transitionTimer = null;
+      transitionState = null;
+      disclosureRoot.classList.remove("expanding", "collapsing");
+      setBodyInteractivity(isExpanded);
+    }
+
+    function setBodyInteractivity(nextExpanded, isTransitioning = false) {
+      body.setAttribute("aria-hidden", nextExpanded ? "false" : "true");
+      const bodyInert = !nextExpanded || isTransitioning;
+      if ("inert" in body) {
+        body.inert = bodyInert;
+      } else if (bodyInert) {
+        body.setAttribute("inert", "");
+      } else {
+        body.removeAttribute("inert");
+      }
+    }
+
+    function syncState({ isTransitioning = false } = {}) {
+      trigger.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+      disclosureRoot.classList.toggle("expanded", isExpanded);
+      disclosureRoot.classList.toggle("collapsed", !isExpanded);
+      setBodyInteractivity(isExpanded, isTransitioning);
+      if (typeof syncTrigger === "function") syncTrigger(isExpanded);
+    }
+
+    function suppressTransitionOnce() {
+      disclosureRoot.classList.add("settings-disclosure-no-motion");
+      requestAnimationFrame(() => {
+        if (!disposed) disclosureRoot.classList.remove("settings-disclosure-no-motion");
+      });
+    }
+
+    function setExpanded(nextExpanded, options = {}) {
+      if (disposed) return false;
+      const normalized = !!nextExpanded;
+      if (normalized === isExpanded) return false;
+      const animateRequested = options.animate === undefined ? animate : options.animate !== false;
+      const apply = () => {
+        finishTransition();
+        isExpanded = normalized;
+        const reducedMotion = prefersReducedMotion();
+        const shouldAnimate = animateRequested && !reducedMotion;
+        syncState({ isTransitioning: shouldAnimate });
+        if (!shouldAnimate) {
+          if (!reducedMotion) suppressTransitionOnce();
+          return;
+        }
+        transitionState = isExpanded ? "expanding" : "collapsing";
+        disclosureRoot.classList.add(transitionState);
+        transitionTimer = scheduleSettingsTimeout(finishTransition, 300);
+      };
+      if (typeof preserveStateChange === "function") preserveStateChange(apply);
+      else apply();
+      if (typeof onExpandedChange === "function") {
+        onExpandedChange(isExpanded, { persist: options.persist !== false });
+      }
+      return true;
+    }
+
+    function toggle(options = {}) {
+      return setExpanded(!isExpanded, options);
+    }
+
+    function onClick() {
+      toggle();
+    }
+
+    function onKeyDown(ev) {
+      if (ev.target !== trigger || (ev.key !== " " && ev.key !== "Enter")) return;
+      ev.preventDefault();
+      toggle();
+    }
+
+    function onBodyTransitionFinished(ev) {
+      if (ev.target !== body || ev.propertyName !== "grid-template-rows") return;
+      finishTransition();
+    }
+
+    trigger.addEventListener("click", onClick);
+    if (triggerTag !== "BUTTON") trigger.addEventListener("keydown", onKeyDown);
+    // A reversed transition emits a stale transitioncancel after the new
+    // generation starts. Only its transitionend or watchdog may release inert.
+    body.addEventListener("transitionend", onBodyTransitionFinished);
+    syncState();
+
+    return {
+      get expanded() { return isExpanded; },
+      get transitioning() { return transitionState; },
+      setExpanded,
+      expand: (options = {}) => setExpanded(true, options),
+      collapse: (options = {}) => setExpanded(false, options),
+      toggle,
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        finishTransition();
+        disclosureRoot.classList.remove("settings-disclosure-no-motion");
+        trigger.removeEventListener("click", onClick);
+        if (triggerTag !== "BUTTON") trigger.removeEventListener("keydown", onKeyDown);
+        body.removeEventListener("transitionend", onBodyTransitionFinished);
+      },
+    };
+  }
+
   function buildCollapsibleGroup({
     id,
     title = "",
@@ -673,36 +874,7 @@
     for (const child of children) bodyInner.appendChild(child);
     body.appendChild(bodyInner);
 
-    let transitionTimer = null;
     const contentAnimationTimers = new Map();
-
-    function scheduleTimeout(callback, delay) {
-      if (typeof setTimeout === "function") return setTimeout(callback, delay);
-      requestAnimationFrame(callback);
-      return null;
-    }
-
-    function cancelTimeout(timer) {
-      if (timer !== null && typeof clearTimeout === "function") clearTimeout(timer);
-    }
-
-    function prefersReducedMotion() {
-      return typeof window.matchMedia === "function"
-        && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    }
-
-    function clearTransitionTimer() {
-      if (transitionTimer === null) return;
-      cancelTimeout(transitionTimer);
-      transitionTimer = null;
-    }
-
-    function finishTransition() {
-      clearTransitionTimer();
-      group.classList.remove("expanding", "collapsing");
-      setBodyInteractivity(collapsed);
-    }
-
     function refreshCollapsibleHeight() {
       // Compatibility shim: the grid-based body follows its natural height.
     }
@@ -712,44 +884,24 @@
       // Callers return the newly inserted or revealed elements so existing
       // controls do not replay their entrance animation on every async update.
       const result = mutate();
-      if (collapsed || group.classList.contains("collapsing") || prefersReducedMotion()) return;
+      if (!controller.expanded || controller.transitioning === "collapsing" || prefersReducedMotion()) return;
       const targets = Array.isArray(result) ? result : [result];
       for (const target of targets) {
         if (!target || !target.classList) continue;
         if (contentAnimationTimers.has(target)) {
-          cancelTimeout(contentAnimationTimers.get(target));
+          cancelSettingsTimeout(contentAnimationTimers.get(target));
           contentAnimationTimers.delete(target);
         }
         target.classList.remove("collapsible-content-entering");
         void target.offsetWidth;
         target.classList.add("collapsible-content-entering");
-        const timer = scheduleTimeout(() => {
+        const timer = scheduleSettingsTimeout(() => {
           contentAnimationTimers.delete(target);
           target.classList.remove("collapsible-content-entering");
         }, 240);
         if (timer !== null) contentAnimationTimers.set(target, timer);
       }
     }
-
-    function suppressTransitionOnce() {
-      group.classList.add("collapsible-no-motion");
-      requestAnimationFrame(() => {
-        group.classList.remove("collapsible-no-motion");
-      });
-    }
-
-    function setBodyInteractivity(isCollapsed, isTransitioning = false) {
-      body.setAttribute("aria-hidden", isCollapsed ? "true" : "false");
-      const bodyInert = isCollapsed || isTransitioning;
-      if ("inert" in body) {
-        body.inert = bodyInert;
-      } else if (bodyInert) {
-        body.setAttribute("inert", "");
-      } else {
-        body.removeAttribute("inert");
-      }
-    }
-
     function preserveScrollAnchor(invoke) {
       const scroller = document.getElementById("content");
       if (!scroller || !document.body.contains(header)) {
@@ -767,71 +919,51 @@
       });
     }
 
-    function applyCollapsedState({ animate = false, suppressTransition = false } = {}) {
-      disclosure.setAttribute("aria-expanded", collapsed ? "false" : "true");
-      const actionLabel = collapsed ? t("collapsibleExpand") : t("collapsibleCollapse");
-      disclosure.setAttribute("aria-label", disclosureLabel ? `${actionLabel}: ${disclosureLabel}` : actionLabel);
-      clearTransitionTimer();
-      group.classList.remove("expanding", "collapsing");
-      const reducedMotion = prefersReducedMotion();
-      const shouldAnimate = animate && !reducedMotion;
-      setBodyInteractivity(collapsed, shouldAnimate);
-      if (!shouldAnimate) {
-        if (suppressTransition && !reducedMotion) suppressTransitionOnce();
-        group.classList.toggle("collapsed", collapsed);
-        return;
-      }
-
-      group.classList.add(collapsed ? "collapsing" : "expanding");
-      group.classList.toggle("collapsed", collapsed);
-      transitionTimer = scheduleTimeout(finishTransition, 300);
-    }
-
-    function setCollapsed(
-      nextCollapsed,
-      { persist = true, animate = animateExpansion } = {},
-    ) {
-      if (collapsed === nextCollapsed) return;
-      collapsed = nextCollapsed;
-      if (persist) {
+    group.appendChild(header);
+    group.appendChild(body);
+    body.classList.add("settings-disclosure-body");
+    bodyInner.classList.add("settings-disclosure-body-inner");
+    const controller = attachSettingsDisclosure({
+      root: group,
+      trigger: disclosure,
+      body,
+      expanded: !collapsed,
+      animate: animateExpansion,
+      preserveStateChange: preserveScrollAnchor,
+      syncTrigger(isExpanded) {
+        const actionLabel = isExpanded ? t("collapsibleCollapse") : t("collapsibleExpand");
+        disclosure.setAttribute("aria-label", disclosureLabel ? `${actionLabel}: ${disclosureLabel}` : actionLabel);
+      },
+      onExpandedChange(isExpanded, { persist }) {
+        collapsed = !isExpanded;
+        if (!persist) return;
         const nextState = readCollapsedGroupState();
         nextState[id] = collapsed;
         writeCollapsedGroupState(nextState);
-      }
-      preserveScrollAnchor(() => applyCollapsedState({ animate, suppressTransition: !animate }));
-    }
-
-    function toggleCollapsed() {
-      setCollapsed(!collapsed);
-    }
-
-    disclosure.addEventListener("click", toggleCollapsed);
-    disclosure.addEventListener("keydown", (ev) => {
-      if (ev.key === " " || ev.key === "Enter") {
-        ev.preventDefault();
-        toggleCollapsed();
-      }
+      },
     });
-
-    group.appendChild(header);
-    group.appendChild(body);
-    const finishBodyTransition = (ev) => {
-      if (ev.target !== body || ev.propertyName !== "grid-template-rows") return;
-      finishTransition();
+    const trackedDisclosure = {
+      dispose() {
+        controller.dispose();
+        for (const [target, timer] of contentAnimationTimers) {
+          cancelSettingsTimeout(timer);
+          target.classList.remove("collapsible-content-entering");
+        }
+        contentAnimationTimers.clear();
+      },
     };
-    // Reversing a CSS transition cancels the previous generation after the
-    // next one has started. Ignore that stale cancel and let the current end
-    // event (or the watchdog) release inert state.
-    body.addEventListener("transitionend", finishBodyTransition);
-    applyCollapsedState();
+    registerMountedDisposable(trackedDisclosure);
     group.expand = ({
       persist = true,
       animate = animateExpansion,
     } = {}) => {
-      setCollapsed(false, { persist, animate });
+      controller.expand({ persist, animate });
     };
     group.refreshCollapsibleHeight = refreshCollapsibleHeight;
     group.mutateCollapsibleBody = mutateCollapsibleBody;
+    group.disposeCollapsible = () => {
+      disposeMountedDisposable(trackedDisclosure);
+    };
     return group;
   }
 
@@ -1140,6 +1272,7 @@
       if (control && typeof control.dispose === "function") control.dispose();
     }
     state.mountedControls.segmentedRadios.clear();
+    disposeMountedDisposables();
     state.mountedControls.generalSwitches.clear();
     state.mountedControls.bubblePolicyControls.clear();
     state.mountedControls.sessionCleanupControls.clear();
@@ -1163,6 +1296,7 @@
     state.mountedControls.roamArea = null;
     state.mountedControls.aboutAutoUpdate = null;
     state.mountedControls.aboutUpdateStatus = null;
+    state.mountedControls.aboutUpdateErrorDisclosure = null;
   }
 
   function syncMountedSizeControl({ fromBroadcast = false } = {}) {
@@ -1742,6 +1876,7 @@
       }
       if (state.mountedControls.animOverrideStatusControls
         && typeof state.mountedControls.animOverrideStatusControls.clear === "function") {
+        disposeMountedDisposables("animation-overrides");
         state.mountedControls.animOverrideStatusControls.clear();
       }
     }
@@ -2002,6 +2137,9 @@
     buildSettingsSelect,
     buildSegmentedRadio,
     buildCollapsibleGroup,
+    attachSettingsDisclosure,
+    registerMountedDisposable,
+    disposeMountedDisposable,
     createDisclosureChevron,
     attachActivation,
     buildShortcutButton,

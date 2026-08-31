@@ -88,6 +88,7 @@ function loadSettingsI18nForTest() {
 function loadSettingsCoreForTest(settingsAPI, {
   document: documentOverride = null,
   localStorage: localStorageOverride = null,
+  matchMedia = null,
   requestAnimationFrame = (cb) => {
     cb();
     return 1;
@@ -105,6 +106,7 @@ function loadSettingsCoreForTest(settingsAPI, {
       setItem: () => {},
     },
     document,
+    matchMedia,
     requestAnimationFrame,
     window: null,
     globalThis: null,
@@ -150,6 +152,66 @@ function createQueuedRaf() {
     flushFrame() {
       const callbacks = queue.splice(0);
       for (const cb of callbacks) cb();
+    },
+  };
+}
+
+function attachDisclosureForHarness({
+  root,
+  trigger,
+  body,
+  expanded = false,
+  onExpandedChange = null,
+}) {
+  let isExpanded = !!expanded;
+  const sync = () => {
+    root.classList.toggle("expanded", isExpanded);
+    root.classList.toggle("collapsed", !isExpanded);
+    trigger.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+    body.setAttribute("aria-hidden", isExpanded ? "false" : "true");
+    body.inert = !isExpanded;
+  };
+  const onClick = () => {
+    isExpanded = !isExpanded;
+    sync();
+    if (typeof onExpandedChange === "function") onExpandedChange(isExpanded, { persist: true });
+  };
+  trigger.addEventListener("click", onClick);
+  sync();
+  return {
+    get expanded() { return isExpanded; },
+    dispose() { trigger.removeEventListener("click", onClick); },
+  };
+}
+
+function createMountedDisposableHarness() {
+  const scopes = new Map();
+  const getScope = (scope = "content") => {
+    if (!scopes.has(scope)) scopes.set(scope, new Set());
+    return scopes.get(scope);
+  };
+  return {
+    scopes,
+    register(disposable, { scope = "content" } = {}) {
+      if (disposable && typeof disposable.dispose === "function") getScope(scope).add(disposable);
+      return disposable;
+    },
+    dispose(disposable) {
+      if (!disposable || typeof disposable.dispose !== "function") return;
+      for (const [scope, controls] of scopes) {
+        controls.delete(disposable);
+        if (controls.size === 0) scopes.delete(scope);
+      }
+      disposable.dispose();
+    },
+    disposeScope(scope = null) {
+      const scopeNames = scope === null ? Array.from(scopes.keys()) : [scope];
+      for (const scopeName of scopeNames) {
+        const controls = scopes.get(scopeName);
+        if (!controls) continue;
+        scopes.delete(scopeName);
+        for (const disposable of Array.from(controls)) disposable.dispose();
+      }
     },
   };
 }
@@ -2231,6 +2293,7 @@ function loadAboutTabForTest({
   body.appendChild(content);
   const updateCalls = [];
   const toasts = [];
+  const disposableHarness = createMountedDisposableHarness();
   const document = {
     body,
     createElement: (tagName) => new FakeElement(tagName),
@@ -2276,6 +2339,15 @@ function loadAboutTabForTest({
     runtime: { about: { infoCache: null, clickCount: 0, updateCheckSnapshot: { state: "idle" } } },
     helpers: {
       t: (key) => key,
+      attachSettingsDisclosure: attachDisclosureForHarness,
+      registerMountedDisposable: disposableHarness.register,
+      disposeMountedDisposable: disposableHarness.dispose,
+      createDisclosureChevron: (className) => {
+        const chevron = document.createElement("span");
+        chevron.className = className;
+        chevron.setAttribute("aria-hidden", "true");
+        return chevron;
+      },
       setSwitchVisual: (element, checked, options = {}) => {
         element.classList.toggle("on", !!checked);
         element.classList.toggle("pending", !!options.pending);
@@ -2292,7 +2364,7 @@ function loadAboutTabForTest({
   };
   context.ClawdSettingsTabAbout.init(core);
   core.tabs.about.render(content, core);
-  return { core, content, updateCalls, toasts };
+  return { core, content, updateCalls, toasts, disposableHarness };
 }
 
 function loadAnimOverridesTabForTest({
@@ -2303,6 +2375,7 @@ function loadAnimOverridesTabForTest({
   readersOverrides = {},
   helpersOverrides = {},
 }) {
+  const disposableHarness = createMountedDisposableHarness();
   const documentListeners = new Map();
   const content = new FakeElement("main");
   content.id = "content";
@@ -2360,6 +2433,9 @@ function loadAnimOverridesTabForTest({
         chevron.setAttribute("aria-hidden", "true");
         return chevron;
       },
+      attachSettingsDisclosure: attachDisclosureForHarness,
+      registerMountedDisposable: disposableHarness.register,
+      disposeMountedDisposable: disposableHarness.dispose,
       attachActivation: (el, invoke) => {
         if (typeof invoke === "function") el.addEventListener("click", () => invoke());
         return el;
@@ -2377,6 +2453,7 @@ function loadAnimOverridesTabForTest({
       closeAssetPicker: () => {},
       normalizeAssetPickerSelection: () => {},
       showToast: () => {},
+      clearMountedControls: () => disposableHarness.disposeScope(),
       ...opsOverrides,
     },
     i18n: {
@@ -2397,6 +2474,7 @@ function loadAnimOverridesTabForTest({
     content,
     document,
     documentListenerCount: (type) => (documentListeners.get(type) || new Set()).size,
+    disposableHarness,
   };
 }
 
@@ -3990,6 +4068,14 @@ describe("settings renderer browser environment", () => {
     assert.equal(card.getAttribute("role"), "alert");
     assert.match(collectText(card), /DNS_FAILED/);
     assert.match(collectText(card), /Check DNS and proxy settings/);
+    const detailsTrigger = card.querySelector(".about-update-error-details-trigger");
+    const detailsBody = card.querySelector(".about-update-error-details-body");
+    assert.equal(detailsTrigger.tagName, "BUTTON");
+    assert.equal(detailsTrigger.getAttribute("aria-expanded"), "false");
+    assert.equal(detailsBody.getAttribute("aria-hidden"), "true");
+    detailsTrigger.click();
+    assert.equal(detailsTrigger.getAttribute("aria-expanded"), "true");
+    assert.equal(detailsBody.getAttribute("aria-hidden"), "false");
 
     const copyButton = card.querySelector(".about-update-error-copy");
     copyButton.dispatchEvent({ type: "click" });
@@ -3998,6 +4084,12 @@ describe("settings renderer browser environment", () => {
     assert.equal(copyButton.textContent, "aboutUpdateErrorCopied");
 
     assert.equal(harness.core.tabs.about.applyUpdateCheckStatus({ state: "checking" }), true);
+    detailsTrigger.click();
+    assert.equal(
+      detailsTrigger.getAttribute("aria-expanded"),
+      "true",
+      "replacing the error card must dispose the detached disclosure trigger",
+    );
     assert.equal(harness.content.querySelector(".about-check-update-btn").disabled, true);
     harness.core.tabs.about.applyUpdateCheckStatus({ state: "error", error: report });
     harness.content.querySelector(".about-update-error-close").dispatchEvent({ type: "click" });
@@ -8146,12 +8238,12 @@ describe("settings renderer browser environment", () => {
     assert.ok(doctorModalSource.includes("doctor-agent-body"));
     assert.ok(doctorModalSource.includes("doctor-agent-body-inner"));
     assert.ok(doctorModalSource.includes('data-action="toggle-check"'));
-    assert.ok(doctorModalSource.includes('button.setAttribute("aria-expanded"'));
-    assert.ok(doctorModalSource.includes('row.classList.toggle("expanded"'));
-    assert.ok(doctorModalSource.includes('body.setAttribute("aria-hidden"'));
+    assert.ok(doctorModalSource.includes("core.helpers.attachSettingsDisclosure({"));
+    assert.ok(doctorModalSource.includes("disposeDoctorDisclosures"));
+    assert.ok(doctorModalSource.includes("state.disclosureControllers.push(controller)"));
+    assert.ok(!doctorModalSource.includes('button.setAttribute("aria-expanded"'));
+    assert.ok(!doctorModalSource.includes('row.classList.toggle("expanded"'));
     assert.ok(doctorModalSource.includes('" inert"'));
-    assert.ok(doctorModalSource.includes('body.setAttribute("inert", "")'));
-    assert.ok(doctorModalSource.includes("body.removeAttribute(\"inert\")"));
     assert.ok(doctorModalSource.includes("checkNeedsAttention"));
     assert.ok(doctorModalSource.includes("formatAgentIntegrationSummary"));
     assert.ok(doctorModalSource.includes("formatAgentAttentionNames"));
@@ -8242,8 +8334,10 @@ describe("settings renderer browser environment", () => {
     assert.ok(/\.doctor-check-row\.warning\s*\{[\s\S]*border-left-color:\s*rgba\(var\(--doctor-warning-rgb\),\s*0\.78\);/.test(css));
     assert.ok(/\.doctor-check-row\.critical\s*\{[\s\S]*border-left-color:\s*rgba\(var\(--doctor-critical-rgb\),\s*0\.78\);/.test(css));
     assert.ok(/\.doctor-agent-toggle\s*\{[\s\S]*grid-template-columns:\s*auto auto auto minmax\(0,\s*1fr\) auto;/.test(css));
-    assert.ok(/\.doctor-agent-body\s*\{[\s\S]*grid-template-rows:\s*0fr;[\s\S]*transition:[\s\S]*grid-template-rows 0\.24s cubic-bezier/.test(css));
-    assert.ok(/\.doctor-agent-collapsible\.expanded \.doctor-agent-body\s*\{[\s\S]*grid-template-rows:\s*1fr;/.test(css));
+    assert.ok(/\.settings-disclosure-body\s*\{[\s\S]*grid-template-rows:\s*1fr;[\s\S]*var\(--settings-disclosure-duration\)/.test(css));
+    assert.ok(/\.settings-disclosure\.collapsed\s*>\s*\.settings-disclosure-body\s*\{[\s\S]*grid-template-rows:\s*0fr;/.test(css));
+    assert.ok(/\.doctor-agent-body\s*\{[\s\S]*transition-duration:\s*var\(--settings-disclosure-duration\),\s*var\(--settings-disclosure-shift-duration\);/.test(css));
+    assert.ok(!css.includes("grid-template-rows 0.24s"));
     assert.ok(/\.doctor-check-row\s*\{[\s\S]*border-left-width:\s*3px;/.test(css));
     assert.ok(/\.doctor-check-status\s*\{[\s\S]*border-radius:\s*999px;/.test(css));
     assert.ok(/\.doctor-close:hover\s*\{[\s\S]*background:\s*rgba\(217,\s*119,\s*87,\s*0\.1\);[\s\S]*transform:\s*scale\(1\.04\);/.test(css));
@@ -11581,7 +11675,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(coreSource.includes("localStorage.getItem(COLLAPSED_GROUPS_STORAGE_KEY)"));
     assert.ok(coreSource.includes("localStorage.setItem(COLLAPSED_GROUPS_STORAGE_KEY"));
     assert.ok(coreSource.includes("defaultCollapsed = false"));
-    assert.ok(coreSource.includes('disclosure.setAttribute("aria-expanded"'));
+    assert.ok(coreSource.includes('trigger.setAttribute("aria-expanded"'));
+    assert.ok(coreSource.includes("function attachSettingsDisclosure("));
     assert.ok(coreSource.includes("collapsibleSummary"));
     assert.ok(coreSource.includes("function createDisclosureChevron("));
     assert.ok(coreSource.includes('createDisclosureChevron("collapsible-group-chevron")'));
@@ -11591,7 +11686,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(!coreSource.includes("chevron.innerHTML"));
     assert.ok(/\.collapsible-group-header\s*\{[\s\S]*gap:\s*4px;/.test(css));
     assert.ok(/\.collapsible-group-chevron,\s*\.anim-override-chevron\s*\{[\s\S]*display:\s*inline-flex;[\s\S]*align-items:\s*center;[\s\S]*justify-content:\s*center;[\s\S]*width:\s*18px;[\s\S]*height:\s*18px;[\s\S]*opacity:\s*0\.72;/.test(css));
-    assert.ok(/\.collapsible-group-chevron,\s*\.anim-override-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(0deg\);[\s\S]*transition:[\s\S]*transform 0\.22s cubic-bezier\(0\.22,\s*1,\s*0\.36,\s*1\),[\s\S]*color 0\.16s ease,[\s\S]*opacity 0\.16s ease/.test(css));
+    assert.ok(/\.collapsible-group-chevron,\s*\.anim-override-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(0deg\);[\s\S]*transform var\(--settings-disclosure-duration\) var\(--settings-disclosure-easing\)/.test(css));
     assert.ok(/\.collapsible-group-chevron svg,\s*\.anim-override-chevron svg\s*\{[\s\S]*width:\s*16px;[\s\S]*height:\s*16px;[\s\S]*overflow:\s*visible;/.test(css));
     assert.ok(/\.collapsible-group-chevron path,\s*\.anim-override-chevron path\s*\{[\s\S]*fill:\s*none;[\s\S]*stroke:\s*currentColor;[\s\S]*stroke-width:\s*2\.2;[\s\S]*stroke-linecap:\s*round;[\s\S]*stroke-linejoin:\s*round;/.test(css));
     assert.ok(/\.collapsible-group-header:hover\s+\.collapsible-group-chevron\s*\{[\s\S]*color:\s*var\(--text-secondary\);[\s\S]*opacity:\s*0\.95;/.test(css));
@@ -11738,6 +11833,120 @@ describe("settings renderer browser environment", () => {
       bubbles: false,
     });
     assert.equal(freshBody.inert, false);
+  });
+
+  it("uses one disclosure controller for specialized Settings surfaces", () => {
+    const documentBody = new FakeElement("body");
+    const document = {
+      body: documentBody,
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: () => null,
+    };
+    const raf = createQueuedRaf();
+    const core = loadSettingsCoreForTest({}, {
+      document,
+      requestAnimationFrame: raf.requestAnimationFrame,
+    });
+    const root = document.createElement("div");
+    const trigger = document.createElement("div");
+    const body = document.createElement("div");
+    const inner = document.createElement("div");
+    inner.className = "settings-disclosure-body-inner";
+    body.appendChild(inner);
+    root.appendChild(trigger);
+    root.appendChild(body);
+    documentBody.appendChild(root);
+    const changes = [];
+    const controller = core.helpers.attachSettingsDisclosure({
+      root,
+      trigger,
+      body,
+      expanded: false,
+      onExpandedChange(nextExpanded, options) {
+        changes.push({ nextExpanded, persist: options.persist });
+      },
+    });
+
+    assert.equal(trigger.getAttribute("role"), "button");
+    assert.equal(trigger.getAttribute("tabindex"), "0");
+    assert.equal(trigger.getAttribute("aria-expanded"), "false");
+    assert.equal(trigger.getAttribute("aria-controls"), body.getAttribute("id"));
+    assert.equal(body.getAttribute("aria-hidden"), "true");
+    assert.equal(body.inert, true);
+
+    trigger.dispatchEvent({ type: "keydown", key: "Enter" });
+    assert.equal(controller.expanded, true);
+    assert.equal(root.classList.contains("expanding"), true);
+    assert.equal(body.getAttribute("aria-hidden"), "false");
+    assert.equal(body.inert, true);
+    trigger.click();
+    trigger.click();
+    trigger.click();
+    trigger.click();
+    assert.equal(controller.expanded, true, "five total toggles must end expanded");
+    body.dispatchEvent({ type: "transitioncancel", propertyName: "grid-template-rows", bubbles: false });
+    assert.equal(root.classList.contains("expanding"), true);
+    assert.equal(root.classList.contains("collapsing"), false);
+    assert.equal(body.inert, true);
+    body.dispatchEvent({ type: "transitionend", propertyName: "grid-template-rows", bubbles: false });
+    assert.equal(root.classList.contains("expanding"), false);
+    assert.equal(root.classList.contains("collapsing"), false);
+    assert.equal(body.inert, false);
+
+    controller.collapse({ animate: false, persist: false });
+    assert.equal(root.classList.contains("settings-disclosure-no-motion"), true);
+    assert.deepStrictEqual(changes.at(-1), { nextExpanded: false, persist: false });
+    raf.flush();
+    assert.equal(root.classList.contains("settings-disclosure-no-motion"), false);
+    controller.dispose();
+    trigger.click();
+    assert.equal(controller.expanded, false, "disposed triggers must not keep toggling");
+
+    const reducedCore = loadSettingsCoreForTest({}, {
+      document,
+      matchMedia: () => ({ matches: true }),
+      requestAnimationFrame: raf.requestAnimationFrame,
+    });
+    const reducedRoot = document.createElement("div");
+    const reducedTrigger = document.createElement("div");
+    const reducedBody = document.createElement("div");
+    const reducedInner = document.createElement("div");
+    reducedInner.className = "settings-disclosure-body-inner";
+    reducedBody.appendChild(reducedInner);
+    reducedRoot.appendChild(reducedTrigger);
+    reducedRoot.appendChild(reducedBody);
+    const reducedController = reducedCore.helpers.attachSettingsDisclosure({
+      root: reducedRoot,
+      trigger: reducedTrigger,
+      body: reducedBody,
+      expanded: false,
+    });
+    reducedTrigger.click();
+    assert.equal(reducedController.expanded, true);
+    assert.equal(reducedRoot.classList.contains("expanding"), false);
+    assert.equal(reducedRoot.classList.contains("settings-disclosure-no-motion"), false);
+    reducedController.dispose();
+  });
+
+  it("routes every Settings disclosure implementation through the shared controller", () => {
+    const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
+    const doctorSource = fs.readFileSync(SETTINGS_DOCTOR_MODAL, "utf8");
+    const animSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-overrides.js"), "utf8");
+    const aboutSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-about.js"), "utf8");
+    assert.ok(coreSource.includes("const controller = attachSettingsDisclosure({"));
+    assert.ok(doctorSource.includes("core.helpers.attachSettingsDisclosure({"));
+    assert.ok(animSource.includes("helpers.attachSettingsDisclosure({"));
+    assert.ok(aboutSource.includes("helpers.attachSettingsDisclosure({"));
+    const rendererSources = fs.readdirSync(SRC_DIR)
+      .filter((name) => /^settings(?:-.+)?\.js$/.test(name) || name === "settings.html")
+      .map((name) => ({ name, source: fs.readFileSync(path.join(SRC_DIR, name), "utf8") }));
+    for (const { name, source } of rendererSources) {
+      assert.ok(!/createElement\(\s*["']details["']\s*\)/.test(source), `${name} must not create native details`);
+      assert.ok(!/<details(?:\s|>)/i.test(source), `${name} must not render native details markup`);
+      assert.ok(!/addEventListener\(\s*["']toggle["']/.test(source), `${name} must not own a disclosure toggle state machine`);
+    }
+    assert.ok(doctorSource.indexOf("disposeDoctorDisclosures();") < doctorSource.indexOf("rootEl.innerHTML = ("));
+    assert.ok(/function closeModal\(\) \{\s*disposeDoctorDisclosures\(\);/.test(doctorSource));
   });
 
   it("groups Theme cards and exposes theme import actions in Settings", () => {
@@ -12395,18 +12604,18 @@ describe("settings renderer browser environment", () => {
     assert.ok(coreSource.includes("expanding"));
     assert.ok(coreSource.includes('ev.propertyName !== "grid-template-rows"'));
     assert.ok(!coreSource.includes('body.addEventListener("transitioncancel"'));
-    assert.ok(coreSource.includes("function setBodyInteractivity(isCollapsed, isTransitioning = false)"));
+    assert.ok(coreSource.includes("function setBodyInteractivity(nextExpanded, isTransitioning = false)"));
     assert.ok(coreSource.includes('body.setAttribute("aria-hidden"'));
-    assert.ok(coreSource.includes("const bodyInert = isCollapsed || isTransitioning"));
+    assert.ok(coreSource.includes("const bodyInert = !nextExpanded || isTransitioning"));
     assert.ok(!coreSource.includes("body.hidden = collapsed;"));
-    assert.ok(/\.collapsible-group-body\s*\{[\s\S]*display:\s*grid;[\s\S]*grid-template-rows:\s*1fr;[\s\S]*transition:\s*grid-template-rows 0\.22s cubic-bezier/.test(css));
-    assert.ok(/\.collapsible-group-body-inner\s*\{[\s\S]*min-height:\s*0;[\s\S]*overflow:\s*hidden;/.test(css));
-    assert.ok(/\.collapsible-group\.collapsed\s*>\s*\.collapsible-group-body\s*\{[\s\S]*grid-template-rows:\s*0fr;/.test(css));
-    assert.ok(/\.collapsible-group\.collapsed\s*>\s*\.collapsible-group-body\s*>\s*\.collapsible-group-body-inner\s*\{[\s\S]*opacity:\s*0;[\s\S]*transform:\s*translateY\(-4px\);/.test(css));
+    assert.ok(/\.settings-disclosure-body\s*\{[\s\S]*display:\s*grid;[\s\S]*grid-template-rows:\s*1fr;[\s\S]*var\(--settings-disclosure-duration\)/.test(css));
+    assert.ok(/\.settings-disclosure-body-inner\s*\{[\s\S]*min-height:\s*0;[\s\S]*overflow:\s*hidden;/.test(css));
+    assert.ok(/\.settings-disclosure\.collapsed\s*>\s*\.settings-disclosure-body\s*\{[\s\S]*grid-template-rows:\s*0fr;/.test(css));
+    assert.ok(/\.settings-disclosure\.collapsed\s*>\s*\.settings-disclosure-body\s*>\s*\.settings-disclosure-body-inner\s*\{[\s\S]*opacity:\s*0;[\s\S]*transform:\s*translateY\(var\(--settings-disclosure-shift\)\);/.test(css));
     assert.ok(/\.collapsible-group-body\s+\.collapsible-content-entering\s*\{[\s\S]*animation:\s*collapsibleContentEnter/.test(css));
     assert.ok(!css.includes(".collapsible-group.collapsible-content-entering"));
     assert.ok(!css.includes("max-height: var(--collapsible-body-height"));
-    assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.collapsible-group-body/.test(css));
+    assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.settings-disclosure-body/.test(css));
   });
 
   it("collapses only the detailed bubble policy controls while keeping primary bubble rows visible", () => {
@@ -14535,16 +14744,43 @@ describe("settings renderer browser environment", () => {
     assert.ok(!overridesSource.includes('chevron.textContent = "\\u25B8";'));
     assert.ok(!overridesSource.includes("chevron.innerHTML"));
     assert.ok(overridesSource.includes('helpers.createDisclosureChevron("anim-override-chevron")'));
+    assert.ok(overridesSource.includes("helpers.attachSettingsDisclosure({"));
+    assert.ok(!overridesSource.includes('document.createElement("details")'));
     assert.ok(/\.collapsible-group-chevron,\s*\.anim-override-chevron\s*\{[\s\S]*display:\s*inline-flex;[\s\S]*align-items:\s*center;[\s\S]*justify-content:\s*center;[\s\S]*width:\s*18px;[\s\S]*height:\s*18px;[\s\S]*opacity:\s*0\.72;/.test(css));
-    assert.ok(/\.collapsible-group-chevron,\s*\.anim-override-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(0deg\);[\s\S]*transition:[\s\S]*transform 0\.22s cubic-bezier\(0\.22,\s*1,\s*0\.36,\s*1\),[\s\S]*color 0\.16s ease,[\s\S]*opacity 0\.16s ease/.test(css));
+    assert.ok(/\.collapsible-group-chevron,\s*\.anim-override-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(0deg\);[\s\S]*transform var\(--settings-disclosure-duration\) var\(--settings-disclosure-easing\)/.test(css));
     assert.ok(/\.collapsible-group-chevron svg,\s*\.anim-override-chevron svg\s*\{[\s\S]*width:\s*16px;[\s\S]*height:\s*16px;[\s\S]*overflow:\s*visible;/.test(css));
     assert.ok(/\.collapsible-group-chevron path,\s*\.anim-override-chevron path\s*\{[\s\S]*fill:\s*none;[\s\S]*stroke:\s*currentColor;[\s\S]*stroke-width:\s*2\.2;[\s\S]*stroke-linecap:\s*round;[\s\S]*stroke-linejoin:\s*round;/.test(css));
-    assert.ok(/\.anim-override-row > summary:hover \.anim-override-chevron\s*\{[\s\S]*color:\s*var\(--text-secondary\);[\s\S]*opacity:\s*0\.95;/.test(css));
-    assert.ok(/\.anim-override-row\[open\]\s*>\s*summary\s+\.anim-override-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(90deg\);[\s\S]*color:\s*var\(--accent\);[\s\S]*opacity:\s*1;/.test(css));
+    assert.ok(/\.anim-override-row > \.anim-override-summary:hover \.anim-override-chevron\s*\{[\s\S]*color:\s*var\(--text-secondary\);[\s\S]*opacity:\s*0\.95;/.test(css));
+    assert.ok(/\.anim-override-row\.expanded\s*>\s*\.anim-override-summary\s+\.anim-override-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(90deg\);[\s\S]*color:\s*var\(--accent\);[\s\S]*opacity:\s*1;/.test(css));
     assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.anim-override-chevron,[\s\S]*transition:\s*none;/.test(css));
     assert.ok(/\.anim-override-thumb\s*\{[\s\S]*transform:\s*translateX\(-3px\);/.test(css));
     assert.ok(/\.anim-override-summary-text\s*\{[\s\S]*transform:\s*translateX\(-3px\);/.test(css));
     assert.ok(!/\.anim-override-summary-change\s*\{[\s\S]*translateX\(-3px\)/.test(css));
+  });
+
+  it("keeps Animation Override expansion state on the shared disclosure controller", () => {
+    const card = createAnimOverrideCard();
+    const runtime = createAnimOverridesRuntime(card, { expandedOverrideRowIds: new Set() });
+    const modalRoot = new FakeElement("div");
+    const { core } = loadAnimOverridesTabForTest({ runtime, modalRoot });
+    const parent = new FakeElement("main");
+    core.tabs.animOverrides.render(parent, core);
+    const row = parent.querySelector(".anim-override-row");
+    const summary = row.querySelector(".anim-override-summary");
+    const body = row.querySelector(".anim-override-body");
+    const thumb = row.querySelector(".anim-override-thumb");
+
+    assert.equal(row.tagName, "DIV");
+    assert.equal(summary.getAttribute("aria-expanded"), "false");
+    assert.equal(body.getAttribute("aria-hidden"), "true");
+    summary.click();
+    assert.equal(summary.getAttribute("aria-expanded"), "true");
+    assert.equal(body.getAttribute("aria-hidden"), "false");
+    assert.equal(runtime.expandedOverrideRowIds.has(card.id), true);
+    thumb.click();
+    assert.equal(runtime.expandedOverrideRowIds.has(card.id), true, "preview clicks must not toggle the row");
+    summary.click();
+    assert.equal(runtime.expandedOverrideRowIds.has(card.id), false);
   });
 
   it("uses captured poster previews for trusted scripted animation override SVGs", () => {
@@ -15085,6 +15321,28 @@ describe("settings renderer browser environment", () => {
     assert.ok(uiCoreSource.includes("state.mountedControls.idleVisualPicker.dispose()"));
     assert.ok(uiCoreSource.includes("state.mountedControls.idleVisualPicker = null;"));
     assert.ok(uiCoreSource.includes("idleVisualPicker: null,"));
+  });
+
+  it("disposes Animation Override disclosures before rerendering their rows", () => {
+    const runtime = createAnimOverridesRuntime(createAnimOverrideCard(), { expandedOverrideRowIds: new Set() });
+    const modalRoot = new FakeElement("div");
+    const { core, document } = loadAnimOverridesTabForTest({ runtime, modalRoot });
+    const parent = new FakeElement("main");
+    document.body.appendChild(parent);
+
+    core.tabs.animOverrides.render(parent, core);
+    const oldTrigger = parent.querySelector(".anim-override-row").querySelector(".anim-override-summary");
+    oldTrigger.click();
+    assert.equal(oldTrigger.getAttribute("aria-expanded"), "true");
+
+    core.ops.clearMountedControls();
+    core.tabs.animOverrides.render(parent, core);
+    oldTrigger.click();
+    assert.equal(
+      oldTrigger.getAttribute("aria-expanded"),
+      "true",
+      "the detached row must not retain its disclosure listener",
+    );
   });
 
   it("renders visible loading text for the initial Animation Overrides fetch", () => {
