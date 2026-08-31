@@ -1417,7 +1417,10 @@ function createPetWindowRuntime(options = {}) {
     // runtime's sync observes the cleared flag and holds off re-hiding for the
     // rest of that fullscreen episode.
     const clearAutoHide = !target && fullscreenAutoHidden;
-    if (target === petHidden && !clearAutoHide) return { applied: true, deferred: false, changed: false };
+    if (target === petHidden && !clearAutoHide) {
+      if (!target) reassertWinTopmost();
+      return { applied: true, deferred: false, changed: false };
+    }
     const prevEffective = isPetEffectivelyHidden();
     petHidden = target;
     if (clearAutoHide) {
@@ -1425,8 +1428,13 @@ function createPetWindowRuntime(options = {}) {
       setFloatingSurfacesFullscreenSuppressed(false);
     }
     const changed = applyVisibilityLayerChange(prevEffective);
+    // showInactive restores native visibility but not necessarily the topmost
+    // band an exclusive fullscreen HWND displaced. The override is already
+    // armed above, so reassert can surface the pet immediately even when the
+    // legacy fullscreenOverlay pref is off; do not wait for the 5s watchdog.
+    if (!target && !isPetEffectivelyHidden()) reassertWinTopmost();
     // A manual hide placed while the fullscreen layer already owns effective
-    // visibility still needs to capture its own permission cutoff and dismiss
+    // visibility still needs to capture its own permission cutoff and suspend
     // ordinary floating notices. That manual state survives fullscreen exit.
     if (target && !changed) hideFloatingSurfacesForPet();
     return { applied: true, deferred: false, changed };

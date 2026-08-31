@@ -91,20 +91,20 @@ describe("floating-window-runtime", () => {
     ]);
   });
 
-  it("hides live permission bubbles and the update bubble when the pet is hidden", () => {
+  it("hides live permission bubbles and suspends the update bubble when the pet is hidden", () => {
     const calls = [];
     const live = makeWindow("live", calls);
     const destroyed = makeWindow("destroyed", calls, true);
     const runtime = createFloatingWindowRuntime({
       getPendingPermissions: () => [{ bubble: live }, { bubble: destroyed }, { bubble: null }],
-      hideUpdateBubble: () => calls.push(["hideUpdate"]),
+      suspendUpdateBubbleForPet: () => calls.push(["suspendUpdate"]),
     });
 
     runtime.hideFloatingSurfacesForPet();
 
     assert.deepStrictEqual(calls, [
       ["hide", "live"],
-      ["hideUpdate"],
+      ["suspendUpdate"],
     ]);
   });
 
@@ -116,7 +116,7 @@ describe("floating-window-runtime", () => {
       showPermissionSurfacesForPet: () => calls.push(["permission", "show"]),
       hidePermissionSurfacesForPet: () => calls.push(["permission", "hide"]),
       syncUpdateBubbleVisibility: (hidden) => calls.push(["syncUpdate", hidden]),
-      hideUpdateBubble: () => calls.push(["hideUpdate"]),
+      suspendUpdateBubbleForPet: () => calls.push(["suspendUpdate"]),
     });
 
     runtime.hideFloatingSurfacesForPet();
@@ -124,7 +124,7 @@ describe("floating-window-runtime", () => {
 
     assert.deepStrictEqual(calls, [
       ["permission", "hide"],
-      ["hideUpdate"],
+      ["suspendUpdate"],
       ["permission", "show"],
       ["syncUpdate", false],
     ]);

@@ -20,7 +20,7 @@ function createFloatingWindowRuntime(options = {}) {
   const repositionQuotaRing = options.repositionQuotaRing || noop;
   const syncSessionHudVisibility = options.syncSessionHudVisibility || noop;
   const syncUpdateBubbleVisibility = options.syncUpdateBubbleVisibility || noop;
-  const hideUpdateBubble = options.hideUpdateBubble || noop;
+  const suspendUpdateBubbleForPet = options.suspendUpdateBubbleForPet || options.hideUpdateBubble || noop;
   const suspendUpdateBubbleForFullscreen = options.suspendUpdateBubbleForFullscreen || noop;
   const resumeUpdateBubbleFromFullscreen = options.resumeUpdateBubbleFromFullscreen || noop;
   const showPermissionSurfacesForPet = options.showPermissionSurfacesForPet || null;
@@ -74,7 +74,7 @@ function createFloatingWindowRuntime(options = {}) {
         }
       }
     }
-    hideUpdateBubble();
+    suspendUpdateBubbleForPet();
   }
 
   function setFullscreenSuppressedForPet(suppressed) {

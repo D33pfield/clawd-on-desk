@@ -2081,7 +2081,7 @@ floatingWindowRuntime = createFloatingWindowRuntime({
   repositionQuotaRing: () => repositionQuotaRing(),
   syncSessionHudVisibility: () => syncSessionHudVisibility(),
   syncUpdateBubbleVisibility: (hiddenOverride) => syncUpdateBubbleVisibility(hiddenOverride),
-  hideUpdateBubble: () => hideUpdateBubble(),
+  suspendUpdateBubbleForPet: () => _updateBubble.suspendForPetHidden(),
   suspendUpdateBubbleForFullscreen: () => _updateBubble.suspendForFullscreen(),
   resumeUpdateBubbleFromFullscreen: () => _updateBubble.resumeFromFullscreen(),
   keepOutOfTaskbar,

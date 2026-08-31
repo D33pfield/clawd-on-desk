@@ -3926,6 +3926,8 @@ describe("manual show intent hook (#935 override latch)", () => {
     const h = createRuntime({ noteManualPetShow: () => notes.push("show") });
     h.runtime.setPetHidden(false);
     assert.deepStrictEqual(notes, ["show"], "a no-op show is still an intent (the stale-menu click)");
+    assert.ok(h.calls.some(([name]) => name === "reassertWinTopmost"),
+      "the real manual Show path must surface immediately instead of waiting for the watchdog");
   });
 
   it("setPetHidden(false) reports intent when it lifts an auto-hide", () => {
@@ -3935,6 +3937,7 @@ describe("manual show intent hook (#935 override latch)", () => {
     h.runtime.setPetHidden(false);
     assert.deepStrictEqual(notes, ["show"]);
     assert.equal(h.runtime.isPetEffectivelyHidden(), false);
+    assert.ok(h.calls.some(([name]) => name === "reassertWinTopmost"));
   });
 
   it("setPetHidden(false) preserves intent when a mini transition defers the write", () => {
