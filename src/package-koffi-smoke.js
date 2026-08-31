@@ -161,6 +161,178 @@ async function runWindowsFullscreenIdentityProbe({
   };
 }
 
+async function waitForSmokeCondition(check, label, { timeoutMs = 8_000, sleepFn } = {}) {
+  const sleep = sleepFn || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    if (check()) return;
+    await sleep(100);
+  }
+  throw new Error(`Timed out waiting for packaged smoke condition: ${label}`);
+}
+
+async function runWindowsFullscreenAutoHideRuntimeProbe({
+  BrowserWindow,
+  fullscreenProbe,
+  timeoutMs = 8_000,
+} = {}) {
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const createPetWindow = (x, backgroundColor) => {
+    const win = new BrowserWindow({
+      show: false,
+      x,
+      y: 40,
+      width: 180,
+      height: 180,
+      frame: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      backgroundColor,
+    });
+    win.showInactive();
+    win.setAlwaysOnTop(true, "pop-up-menu");
+    return win;
+  };
+
+  const renderWin = createPetWindow(40, "#245c3a");
+  const hitWin = createPetWindow(240, "#5c2424");
+  const fullscreenWindows = [];
+  let topmostRuntime = null;
+  try {
+    const createPetWindowRuntime = require("./pet-window-runtime");
+    const createTopmostRuntime = require("./topmost-runtime");
+    const petWindowRuntime = createPetWindowRuntime({
+      isWin: true,
+      topmostLevel: "pop-up-menu",
+      getRenderWindow: () => renderWin,
+      getHitWindow: () => hitWin,
+      noteManualPetShow: () => topmostRuntime.noteFullscreenAutoHideOverride(),
+      reassertWinTopmost: (...args) => topmostRuntime.reassertWinTopmost(...args),
+    });
+    topmostRuntime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => renderWin,
+      getHitWin: () => hitWin,
+      isForegroundFullscreen: () => fullscreenProbe(),
+      getForegroundFullscreenObservation: () => fullscreenProbe.getLastObservation(),
+      isFullscreenWindowAlive: (id) => fullscreenProbe.isWindowIdAlive(id),
+      getFullscreenAutoHide: () => true,
+      getFullscreenOverlay: () => false,
+      setFullscreenAutoHidden: (...args) => petWindowRuntime.setFullscreenAutoHidden(...args),
+      isFullscreenAutoHidden: () => petWindowRuntime.isFullscreenAutoHidden(),
+      setHitWinFocusable: (focusable) => hitWin.setFocusable(focusable),
+    });
+    topmostRuntime.startFocusablePoll();
+
+    const firstFullscreen = new BrowserWindow({ show: false, width: 320, height: 240, skipTaskbar: true });
+    fullscreenWindows.push(firstFullscreen);
+    const firstId = await waitForFullscreenIdentity({
+      win: firstFullscreen,
+      fullscreenProbe,
+      timeoutMs,
+    });
+    await waitForSmokeCondition(
+      () => petWindowRuntime.isFullscreenAutoHidden() && !renderWin.isVisible() && !hitWin.isVisible(),
+      "pet windows to auto-hide over first fullscreen HWND",
+      { timeoutMs },
+    );
+
+    // Model a tray/Alt-Tab excursion that outlasts the old 15-tick arming
+    // window. The original fullscreen HWND stays alive in the background.
+    const excursionWindow = new BrowserWindow({ show: false, width: 420, height: 280, skipTaskbar: true });
+    fullscreenWindows.push(excursionWindow);
+    excursionWindow.show();
+    excursionWindow.focus();
+    await waitForSmokeCondition(
+      () => !petWindowRuntime.isFullscreenAutoHidden() && renderWin.isVisible() && hitWin.isVisible(),
+      "pet windows to restore during a foreground excursion",
+      { timeoutMs },
+    );
+    await sleep(createTopmostRuntime.FSAUTOHIDE_OVERRIDE_GRACE_TICKS * 1_000 + 1_500);
+
+    const showResult = petWindowRuntime.setPetHidden(false);
+    if (!showResult.applied || !renderWin.isVisible() || !hitWin.isVisible()) {
+      throw new Error("Manual Show did not override packaged fullscreen auto-hide");
+    }
+    const returnedId = await waitForFullscreenIdentity({
+      win: firstFullscreen,
+      fullscreenProbe,
+      timeoutMs,
+    });
+    if (returnedId !== firstId) throw new Error("Original fullscreen HWND identity changed across excursion");
+    await sleep(2_500);
+    if (petWindowRuntime.isFullscreenAutoHidden() || !renderWin.isVisible() || !hitWin.isVisible()) {
+      throw new Error("Long foreground excursion expired the original fullscreen Show override");
+    }
+
+    const secondFullscreen = new BrowserWindow({ show: false, width: 360, height: 260, skipTaskbar: true });
+    fullscreenWindows.push(secondFullscreen);
+    const secondId = await waitForFullscreenIdentity({
+      win: secondFullscreen,
+      fullscreenProbe,
+      timeoutMs,
+    });
+    if (secondId === firstId) throw new Error("Second fullscreen app reused the first active HWND identity");
+    await waitForSmokeCondition(
+      () => petWindowRuntime.isFullscreenAutoHidden() && !renderWin.isVisible() && !hitWin.isVisible(),
+      "different fullscreen HWND to end the manual Show override",
+      { timeoutMs },
+    );
+
+    secondFullscreen.destroy();
+    firstFullscreen.destroy();
+    await waitForSmokeCondition(
+      () => !petWindowRuntime.isFullscreenAutoHidden() && renderWin.isVisible() && hitWin.isVisible(),
+      "pet windows to restore after fullscreen exit",
+      { timeoutMs },
+    );
+    if (!renderWin.isAlwaysOnTop() || !hitWin.isAlwaysOnTop()) {
+      throw new Error("Restored packaged pet windows did not immediately regain topmost");
+    }
+
+    // The most recently remembered fullscreen HWND is now dead. A Show must
+    // discard it through IsWindow and fall back to the ordinary bounded grace;
+    // after that grace expires, a new fullscreen HWND must hide normally.
+    petWindowRuntime.setPetHidden(false);
+    await sleep(createTopmostRuntime.FSAUTOHIDE_OVERRIDE_GRACE_TICKS * 1_000 + 1_500);
+    const thirdFullscreen = new BrowserWindow({ show: false, width: 400, height: 300, skipTaskbar: true });
+    fullscreenWindows.push(thirdFullscreen);
+    await waitForFullscreenIdentity({
+      win: thirdFullscreen,
+      fullscreenProbe,
+      timeoutMs,
+    });
+    await waitForSmokeCondition(
+      () => petWindowRuntime.isFullscreenAutoHidden() && !renderWin.isVisible() && !hitWin.isVisible(),
+      "new fullscreen HWND to hide after dead-episode grace expired",
+      { timeoutMs },
+    );
+    thirdFullscreen.destroy();
+    await waitForSmokeCondition(
+      () => !petWindowRuntime.isFullscreenAutoHidden() && renderWin.isVisible() && hitWin.isVisible(),
+      "pet windows to restore after dead-episode regression check",
+      { timeoutMs },
+    );
+
+    return {
+      firstAutoHidden: true,
+      longExcursionOverrideHeld: true,
+      manualShowVisible: true,
+      differentFullscreenRehidden: true,
+      exitRestoredVisible: true,
+      exitRestoredTopmost: true,
+      deadEpisodeDidNotLeak: true,
+    };
+  } finally {
+    if (topmostRuntime) topmostRuntime.cleanup();
+    for (const win of fullscreenWindows) {
+      if (!win.isDestroyed()) win.destroy();
+    }
+    if (!renderWin.isDestroyed()) renderWin.destroy();
+    if (!hitWin.isDestroyed()) hitWin.destroy();
+  }
+}
+
 async function runPlatformProbe({ BrowserWindow, target }) {
   if (target.runtimePlatform === "win32") {
     const win = new BrowserWindow({ show: false, width: 80, height: 80, skipTaskbar: true });
@@ -186,6 +358,10 @@ async function runPlatformProbe({ BrowserWindow, target }) {
         }
         assertFullscreenProbeValue(fullscreen);
         const fullscreenIdentity = await runWindowsFullscreenIdentityProbe({
+          BrowserWindow,
+          fullscreenProbe,
+        });
+        const fullscreenAutoHideRuntime = await runWindowsFullscreenAutoHideRuntimeProbe({
           BrowserWindow,
           fullscreenProbe,
         });
@@ -216,6 +392,7 @@ async function runPlatformProbe({ BrowserWindow, target }) {
           cloakOnCurrentDesktop: onCurrentDesktop,
           foregroundFullscreen: fullscreen,
           fullscreenIdentity,
+          fullscreenAutoHideRuntime,
           foregroundTerminalHwnd,
           foregroundTerminalExpectedMiss: foregroundTerminalHwnd === null,
           logs,
@@ -352,6 +529,8 @@ module.exports = {
   assertFullscreenProbeValue,
   waitForFullscreenIdentity,
   runWindowsFullscreenIdentityProbe,
+  waitForSmokeCondition,
+  runWindowsFullscreenAutoHideRuntimeProbe,
   runPlatformProbe,
   runPackageKoffiSmoke,
   writeResult,
