@@ -96,7 +96,7 @@ test("fullscreen probe smoke check accepts a verdict or a window identity", () =
   assert.throws(() => assertFullscreenProbeValue(undefined), /undefined/);
 });
 
-test("packaged fullscreen identity smoke requires distinct live HWNDs that die with their windows", async () => {
+test("packaged fullscreen identity smoke requires distinct live HWNDs and rejects an invalid handle", async () => {
   let nextId = 100;
   let foregroundId = null;
   const liveIds = new Set();
@@ -123,7 +123,13 @@ test("packaged fullscreen identity smoke requires distinct live HWNDs that die w
     }
   }
   const fullscreenProbe = () => foregroundId || false;
-  fullscreenProbe.isWindowIdAlive = (id) => liveIds.has(id);
+  fullscreenProbe.isWindowIdAlive = (id) => {
+    if (id === "18446744073709551615") {
+      assert.equal(liveIds.size, 2, "both identity HWNDs must still be live during the negative check");
+      return false;
+    }
+    return liveIds.has(id);
+  };
 
   const result = await runWindowsFullscreenIdentityProbe({
     BrowserWindow: FakeBrowserWindow,
@@ -137,6 +143,7 @@ test("packaged fullscreen identity smoke requires distinct live HWNDs that die w
     secondId: "101",
     distinct: true,
     liveAccepted: true,
-    destroyedRejected: true,
+    invalidRejected: true,
   });
+  assert.equal(liveIds.size, 0, "the smoke must destroy both fixture windows during cleanup");
 });

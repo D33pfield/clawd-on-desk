@@ -118,13 +118,13 @@ async function runWindowsFullscreenIdentityProbe({
   if (!fullscreenProbe || typeof fullscreenProbe.isWindowIdAlive !== "function") {
     throw new Error("Packaged fullscreen probe has no HWND liveness checker");
   }
-  const sleep = sleepFn || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const ids = [];
-  for (let index = 0; index < 2; index += 1) {
-    const win = new BrowserWindow({ show: false, width: 320, height: 240, skipTaskbar: true });
-    let id = null;
-    try {
-      id = await waitForFullscreenIdentity({
+  const windows = [];
+  try {
+    for (let index = 0; index < 2; index += 1) {
+      const win = new BrowserWindow({ show: false, width: 320, height: 240, skipTaskbar: true });
+      windows.push(win);
+      const id = await waitForFullscreenIdentity({
         win,
         fullscreenProbe,
         timeoutMs,
@@ -134,30 +134,32 @@ async function runWindowsFullscreenIdentityProbe({
         throw new Error(`IsWindow rejected live packaged fullscreen HWND ${id}`);
       }
       ids.push(id);
-    } finally {
+    }
+    if (ids[0] === ids[1]) {
+      throw new Error(`Packaged fullscreen identities collapsed to the same value: ${ids[0]}`);
+    }
+
+    // BrowserWindow.destroy() does not give the smoke a portable guarantee
+    // that the underlying HWND has already left the process-wide handle table:
+    // Windows may finish native teardown asynchronously, and a handle value may
+    // be reused immediately. Validate the negative IsWindow/BigInt path with
+    // INVALID_HANDLE_VALUE instead, while both observed HWNDs remain live so
+    // their identity-distinctness assertion cannot be defeated by handle reuse.
+    const invalidWindowId = "18446744073709551615";
+    if (fullscreenProbe.isWindowIdAlive(invalidWindowId) !== false) {
+      throw new Error(`IsWindow accepted invalid packaged HWND ${invalidWindowId}`);
+    }
+  } finally {
+    for (const win of windows) {
       if (typeof win.isDestroyed !== "function" || !win.isDestroyed()) win.destroy();
     }
-    if (id != null) {
-      const deadline = Date.now() + timeoutMs;
-      let destroyedAlive = fullscreenProbe.isWindowIdAlive(id);
-      while (destroyedAlive !== false && Date.now() <= deadline) {
-        await sleep(100);
-        destroyedAlive = fullscreenProbe.isWindowIdAlive(id);
-      }
-      if (destroyedAlive !== false) {
-        throw new Error(`IsWindow still accepted destroyed packaged fullscreen HWND ${id}`);
-      }
-    }
-  }
-  if (ids[0] === ids[1]) {
-    throw new Error(`Packaged fullscreen identities collapsed to the same value: ${ids[0]}`);
   }
   return {
     firstId: ids[0],
     secondId: ids[1],
     distinct: true,
     liveAccepted: true,
-    destroyedRejected: true,
+    invalidRejected: true,
   };
 }
 
