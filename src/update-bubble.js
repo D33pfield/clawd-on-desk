@@ -291,6 +291,10 @@ module.exports = function initUpdateBubble(ctx) {
   let hideTimer = null;
   let autoCloseTimer = null;
   let visibleSince = 0;
+  let presentationActive = false;
+  let fullscreenSuppressed = false;
+  let fullscreenRestorePending = false;
+  let fullscreenAutoCloseRemainingMs = null;
 
   function notifyOrbitGeometryChanged() {
     const reposition = typeof ctx.repositionQuotaRing === "function"
@@ -358,6 +362,7 @@ module.exports = function initUpdateBubble(ctx) {
     bubble.on("closed", () => {
       bubble = null;
       measuredHeight = 0;
+      presentationActive = false;
       notifyOrbitGeometryChanged();
       if (resolveAction) {
         const fallback = activePayload && activePayload.defaultAction != null ? activePayload.defaultAction : null;
@@ -422,7 +427,8 @@ module.exports = function initUpdateBubble(ctx) {
 
   function syncVisibility(hiddenOverride) {
     if (!bubble || bubble.isDestroyed()) return;
-    const hidden = typeof hiddenOverride === "boolean" ? hiddenOverride : ctx.petHidden;
+    const hidden = fullscreenSuppressed
+      || (typeof hiddenOverride === "boolean" ? hiddenOverride : ctx.petHidden);
     if (hidden) {
       bubble.hide();
       return;
@@ -466,6 +472,21 @@ module.exports = function initUpdateBubble(ctx) {
     }, policy.autoCloseMs);
   }
 
+  function scheduleAutoCloseAfterResume(payload, remainingMs) {
+    clearAutoCloseTimer();
+    const policy = getPolicy(ctx);
+    if (!policy.enabled || !(policy.autoCloseMs > 0)) return;
+    const delay = Math.min(policy.autoCloseMs, Number(remainingMs));
+    if (!Number.isFinite(delay) || delay <= 0) return;
+    visibleSince = Date.now() - Math.max(0, policy.autoCloseMs - delay);
+    autoCloseTimer = setTimeout(() => {
+      autoCloseTimer = null;
+      const fallback = payload && payload.defaultAction != null ? payload.defaultAction : null;
+      if (resolveAction) settlePrevious(fallback, "autoClose");
+      hideUpdateBubble();
+    }, delay);
+  }
+
   function refreshAutoCloseForPolicy() {
     if (!bubble || bubble.isDestroyed() || !activePayload) return false;
     clearAutoCloseTimer();
@@ -473,6 +494,12 @@ module.exports = function initUpdateBubble(ctx) {
     if (!policy.enabled || !(policy.autoCloseMs > 0)) {
       hideForPolicy();
       return false;
+    }
+    if (fullscreenSuppressed) {
+      fullscreenAutoCloseRemainingMs = fullscreenAutoCloseRemainingMs > 0
+        ? Math.min(fullscreenAutoCloseRemainingMs, policy.autoCloseMs)
+        : policy.autoCloseMs;
+      return true;
     }
     const remainingMs = computeAutoCloseRemainingMs(visibleSince, policy.autoCloseMs, Date.now());
     if (remainingMs <= 0) {
@@ -502,10 +529,13 @@ module.exports = function initUpdateBubble(ctx) {
       settlePrevious(fallback, "closed");
     }
     activePayload = payload;
+    fullscreenRestorePending = fullscreenSuppressed;
+    fullscreenAutoCloseRemainingMs = null;
     if (!policy.enabled) {
       hideUpdateBubble();
       return Promise.resolve({ action: fallback, source: "policy" });
     }
+    presentationActive = true;
     const win = ensureBubble();
 
     const send = () => {
@@ -515,7 +545,14 @@ module.exports = function initUpdateBubble(ctx) {
         win.webContents.send("update-bubble-show", payload);
         syncVisibility();
         notifyOrbitGeometryChanged();
-        scheduleAutoClose(payload);
+        if (fullscreenSuppressed) {
+          const currentPolicy = getPolicy(ctx);
+          fullscreenAutoCloseRemainingMs = currentPolicy.enabled && currentPolicy.autoCloseMs > 0
+            ? currentPolicy.autoCloseMs
+            : 0;
+        } else {
+          scheduleAutoClose(payload);
+        }
       }
     };
 
@@ -537,6 +574,9 @@ module.exports = function initUpdateBubble(ctx) {
 
   function hideUpdateBubble() {
     if (!bubble || bubble.isDestroyed()) return;
+    presentationActive = false;
+    fullscreenRestorePending = false;
+    fullscreenAutoCloseRemainingMs = null;
     bubble.webContents.send("update-bubble-hide");
     clearAutoCloseTimer();
     visibleSince = 0;
@@ -547,6 +587,49 @@ module.exports = function initUpdateBubble(ctx) {
         notifyOrbitGeometryChanged();
       }
     }, 250);
+  }
+
+  function suspendForFullscreen() {
+    if (fullscreenSuppressed) return false;
+    fullscreenSuppressed = true;
+    if (!bubble || bubble.isDestroyed() || !activePayload) return true;
+
+    fullscreenRestorePending = presentationActive;
+    const policy = getPolicy(ctx);
+    fullscreenAutoCloseRemainingMs = autoCloseTimer && policy.enabled && policy.autoCloseMs > 0
+      ? computeAutoCloseRemainingMs(visibleSince, policy.autoCloseMs, Date.now())
+      : null;
+    clearAutoCloseTimer();
+    visibleSince = 0;
+    if (hideTimer) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+    bubble.hide();
+    notifyOrbitGeometryChanged();
+    return true;
+  }
+
+  function resumeFromFullscreen() {
+    if (!fullscreenSuppressed) return false;
+    fullscreenSuppressed = false;
+    if (!fullscreenRestorePending || !bubble || bubble.isDestroyed() || !activePayload) {
+      fullscreenRestorePending = false;
+      fullscreenAutoCloseRemainingMs = null;
+      return true;
+    }
+
+    fullscreenRestorePending = false;
+    const remainingMs = fullscreenAutoCloseRemainingMs;
+    fullscreenAutoCloseRemainingMs = null;
+    bubble.webContents.send("update-bubble-show", activePayload);
+    repositionUpdateBubble();
+    syncVisibility();
+    notifyOrbitGeometryChanged();
+    if (!ctx.petHidden && remainingMs > 0) {
+      scheduleAutoCloseAfterResume(activePayload, remainingMs);
+    }
+    return true;
   }
 
   function hideForPolicy() {
@@ -606,6 +689,7 @@ module.exports = function initUpdateBubble(ctx) {
     settlePrevious(activePayload && activePayload.defaultAction != null ? activePayload.defaultAction : null, "closed");
     if (bubble && !bubble.isDestroyed()) bubble.destroy();
     bubble = null;
+    presentationActive = false;
   }
 
   return {
@@ -617,6 +701,8 @@ module.exports = function initUpdateBubble(ctx) {
     syncVisibility,
     hideForPolicy,
     refreshAutoCloseForPolicy,
+    suspendForFullscreen,
+    resumeFromFullscreen,
     cleanup,
     getBubbleWindow: () => bubble,
   };

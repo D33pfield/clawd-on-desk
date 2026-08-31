@@ -15,6 +15,19 @@ const TOPMOST_WATCHDOG_MS = 5_000;
 // still activates, an early click/drag can kick the game out of fullscreen — so
 // this polls ~1s instead of riding the slow watchdog (which left a ~5s window).
 const FOCUSABLE_POLL_MS = 1_000;
+// #935: how many non-fullscreen focusable-poll ticks an armed manual-show
+// override waits for a fullscreen app to bind to before it decays (see
+// noteFullscreenAutoHideOverride). Sized to outlast a tray-menu round trip —
+// menu open, read, click, refocus the game — while staying far below the gap
+// between two distinct fullscreen sessions.
+const FSAUTOHIDE_OVERRIDE_GRACE_TICKS = 15;
+// When the native probe can only report a fullscreen verdict (plain `true`)
+// and not an HWND identity, a manual-show override cannot distinguish the
+// original app from the next one. Two consecutive non-fullscreen observations
+// are enough to end that anonymous episode without letting one transient probe
+// miss immediately re-hide the pet. Most builds report an identity and never
+// use this degradation path.
+const FSAUTOHIDE_ANONYMOUS_EXIT_TICKS = 2;
 const HWND_RECOVERY_DELAY_MS = 1000;
 // #640: while a bubble text field is focused AND the pet visually overlaps that
 // bubble, the pet fades to this opacity and its hit window goes click-through.
@@ -101,6 +114,18 @@ function createTopmostRuntime(options = {}) {
   // original #538 stand-down. Off Windows isForegroundFullscreen is always false
   // so this is moot.
   const getFullscreenOverlay = options.getFullscreenOverlay || (() => false);
+  // Windows-only (#935): opt-in auto-hide — when a fullscreen app owns the
+  // foreground, hide the pet entirely instead of floating over (overlay) or
+  // standing down below (#538). Rides the 1s focusable poll, which already
+  // tracks the fullscreen state at the cadence hiding needs. The writer is
+  // pet-window-runtime's setFullscreenAutoHidden (a separate visibility layer
+  // stacked on the user's manual hide); defaults keep everything inert when
+  // main.js doesn't wire the pref, and off Windows isForegroundFullscreen is
+  // constant false.
+  const getFullscreenAutoHide = options.getFullscreenAutoHide || (() => false);
+  const setFullscreenAutoHidden = options.setFullscreenAutoHidden
+    || (() => ({ applied: false, deferred: false, changed: false }));
+  const isFullscreenAutoHidden = options.isFullscreenAutoHidden || (() => false);
   // Windows-only: toggle the hit window's activation with the fullscreen state.
   // While a fullscreen app owns the foreground we make the hit window
   // non-activating so a click on the pet can't steal focus from an
@@ -565,15 +590,105 @@ function createTopmostRuntime(options = {}) {
     setHitWinFocusable(!isForegroundFullscreen());
   }
 
+  // #935: edge-triggered fullscreen auto-hide, riding the same 1s poll (the
+  // 5s watchdog would leave the pet floating over a game for up to 5s).
+  //
+  // The override: a manual show (Show Pet in a menu, the toggle hotkey, a
+  // second-instance launch) must WIN over the auto-hide until the fullscreen
+  // app exits — otherwise the sync yanks the pet away ~1s after the user
+  // explicitly asked for it. The writer reports that intent through
+  // noteFullscreenAutoHideOverride() (pet-window-runtime's setPetHidden(false)
+  // path, wired in main.js) rather than this module inferring it from flag
+  // state: reaching a menu takes the foreground off the fullscreen app, so at
+  // observation time "fullscreen" is false and the pet was often already
+  // auto-restored — an inference from "the flag cleared while fullscreen"
+  // never sees the very gesture the setting's description promises about.
+  //
+  // Lifecycle: the override arms with a grace window measured in poll ticks,
+  // then BINDS to the first fullscreen app the probe reports (the probe
+  // returns an opaque per-window id, or false). A bound override holds for
+  // that app regardless of foreground excursions — alt-tab, tray menus, and
+  // transient probe errors (the probe fails closed to false) all read as
+  // "not fullscreen", which never unbinds it — and ends when a DIFFERENT
+  // fullscreen app takes the foreground: exactly "keeps the pet visible
+  // until the next fullscreen app". An armed override that never sees a
+  // fullscreen app decays after the grace window instead of suppressing some
+  // future session. Known lean: a show clicked on the plain desktop binds to
+  // a fullscreen app started within the grace window and keeps the pet
+  // visible for that app's session — erring toward the explicit show. If the
+  // probe ever degrades to plain `true` (no per-window identity available),
+  // the anonymous bind survives a transient miss but ends after consecutive
+  // non-fullscreen observations. That path cannot preserve same-app identity
+  // across a long alt-tab, but it cannot suppress auto-hide forever either.
+  let fsOverridePendingTicks = 0;
+  let fsOverrideBoundTo = null;
+  let fsOverrideAnonymousExitTicks = 0;
+
+  function noteFullscreenAutoHideOverride() {
+    fsOverridePendingTicks = FSAUTOHIDE_OVERRIDE_GRACE_TICKS;
+    // A re-show re-arms cleanly even if an older bind is still around.
+    fsOverrideBoundTo = null;
+    fsOverrideAnonymousExitTicks = 0;
+  }
+
+  function syncFullscreenAutoHide() {
+    if (!isWin) return;
+    const fullscreenObservation = isForegroundFullscreen();
+    const fullscreenId = fullscreenObservation || null;
+    const hasWindowIdentity = typeof fullscreenId === "string" && fullscreenId.length > 0;
+    if (fullscreenId != null) {
+      if (fsOverridePendingTicks > 0) {
+        fsOverrideBoundTo = hasWindowIdentity ? fullscreenId : true;
+      } else if (hasWindowIdentity && fsOverrideBoundTo === true) {
+        // The address probe recovered after an identity-less verdict. Adopt
+        // the first concrete identity so a later different HWND can end the
+        // override normally.
+        fsOverrideBoundTo = fullscreenId;
+      } else if (
+        hasWindowIdentity
+        && typeof fsOverrideBoundTo === "string"
+        && fsOverrideBoundTo !== fullscreenId
+      ) {
+        // The NEXT fullscreen app: the override's episode is over.
+        fsOverrideBoundTo = null;
+      }
+      fsOverridePendingTicks = 0;
+      fsOverrideAnonymousExitTicks = 0;
+    } else if (fsOverridePendingTicks > 0) {
+      fsOverridePendingTicks -= 1;
+    } else if (fsOverrideBoundTo === true) {
+      fsOverrideAnonymousExitTicks += 1;
+      if (fsOverrideAnonymousExitTicks >= FSAUTOHIDE_ANONYMOUS_EXIT_TICKS) {
+        fsOverrideBoundTo = null;
+        fsOverrideAnonymousExitTicks = 0;
+      }
+    }
+    const overridden = fullscreenId != null && (
+      fsOverrideBoundTo === true
+      || (!hasWindowIdentity && fsOverrideBoundTo != null)
+      || (hasWindowIdentity && fsOverrideBoundTo === fullscreenId)
+    );
+    const want = fullscreenId != null && getFullscreenAutoHide() && !overridden;
+    // A deferred write (mini transition in flight) leaves the flag untouched,
+    // so want !== current still holds next tick and the setter is retried.
+    if (want !== isFullscreenAutoHidden()) setFullscreenAutoHidden(want);
+  }
+
+  function syncFocusablePollTick() {
+    syncHitWinFocusable();
+    syncFullscreenAutoHide();
+  }
+
   function startFocusablePoll() {
     if (!isWin || focusablePoll) return;
     // Sync once up front: if Clawd starts (or this re-arms) while a fullscreen
     // game is already foreground, drop the hit window's activation immediately
     // rather than leaving it activatable for up to one poll interval (the hit
     // window is created focusable: true). Idempotent, so the desktop case is a
-    // no-op.
-    syncHitWinFocusable();
-    focusablePoll = setIntervalFn(syncHitWinFocusable, focusablePollMs);
+    // no-op. The #935 auto-hide gets the same up-front treatment for the same
+    // reason.
+    syncFocusablePollTick();
+    focusablePoll = setIntervalFn(syncFocusablePollTick, focusablePollMs);
   }
 
   function stopFocusablePoll() {
@@ -609,6 +724,7 @@ function createTopmostRuntime(options = {}) {
     stopTopmostWatchdog,
     startFocusablePoll,
     stopFocusablePoll,
+    noteFullscreenAutoHideOverride,
     cleanup,
   };
 }
@@ -618,6 +734,8 @@ createTopmostRuntime.MAC_TOPMOST_LEVEL = MAC_TOPMOST_LEVEL;
 createTopmostRuntime.IME_EDIT_PET_FADE_OPACITY = IME_EDIT_PET_FADE_OPACITY;
 createTopmostRuntime.TOPMOST_WATCHDOG_MS = TOPMOST_WATCHDOG_MS;
 createTopmostRuntime.FOCUSABLE_POLL_MS = FOCUSABLE_POLL_MS;
+createTopmostRuntime.FSAUTOHIDE_OVERRIDE_GRACE_TICKS = FSAUTOHIDE_OVERRIDE_GRACE_TICKS;
+createTopmostRuntime.FSAUTOHIDE_ANONYMOUS_EXIT_TICKS = FSAUTOHIDE_ANONYMOUS_EXIT_TICKS;
 createTopmostRuntime.HWND_RECOVERY_DELAY_MS = HWND_RECOVERY_DELAY_MS;
 
 module.exports = createTopmostRuntime;

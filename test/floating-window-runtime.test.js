@@ -129,4 +129,24 @@ describe("floating-window-runtime", () => {
       ["syncUpdate", false],
     ]);
   });
+
+  it("coordinates fullscreen suppression without dismissing floating content", () => {
+    const calls = [];
+    const runtime = createFloatingWindowRuntime({
+      setPermissionSurfacesFullscreenSuppressed: (value) => calls.push(["permission", value]),
+      suspendUpdateBubbleForFullscreen: () => calls.push(["update", "suspend"]),
+      resumeUpdateBubbleFromFullscreen: () => calls.push(["update", "resume"]),
+      hideUpdateBubble: () => calls.push(["update", "dismiss"]),
+    });
+
+    runtime.setFullscreenSuppressedForPet(true);
+    runtime.setFullscreenSuppressedForPet(false);
+
+    assert.deepStrictEqual(calls, [
+      ["permission", true],
+      ["update", "suspend"],
+      ["permission", false],
+      ["update", "resume"],
+    ]);
+  });
 });

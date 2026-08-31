@@ -8,6 +8,7 @@ const UPDATE_BUBBLE_MODULE_PATH = require.resolve("../src/update-bubble");
 
 class FakeBrowserWindow {
   static instances = [];
+  static startLoading = false;
 
   static fromWebContents(contents) {
     return FakeBrowserWindow.instances.find((win) => win.webContents === contents) || null;
@@ -21,11 +22,21 @@ class FakeBrowserWindow {
     this.listeners = new Map();
     this.sent = [];
     this.insertedCss = [];
+    const onceListeners = new Map();
     this.webContents = {
-      _loading: false,
+      _loading: FakeBrowserWindow.startLoading,
       isDestroyed: () => false,
-      isLoading: () => false,
-      once: () => {},
+      isLoading: () => this.webContents._loading,
+      once: (event, handler) => {
+        const listeners = onceListeners.get(event) || [];
+        listeners.push(handler);
+        onceListeners.set(event, listeners);
+      },
+      emit: (event, ...args) => {
+        const listeners = onceListeners.get(event) || [];
+        onceListeners.delete(event);
+        for (const listener of listeners) listener(...args);
+      },
       send: (channel, payload) => this.sent.push({ channel, payload }),
       setZoomFactor: (value) => { this.zoomFactor = value; },
       insertCSS: (value) => {
@@ -37,6 +48,10 @@ class FakeBrowserWindow {
   }
 
   loadFile() {}
+  finishLoad() {
+    this.webContents._loading = false;
+    this.webContents.emit("did-finish-load");
+  }
   on(event, handler) { this.listeners.set(event, handler); }
   setAlwaysOnTop() {}
   setBounds(bounds) { this.bounds = bounds; }
@@ -106,6 +121,7 @@ describe("update bubble auto-close refresh", () => {
   afterEach(() => {
     mock.timers.reset();
     FakeBrowserWindow.instances = [];
+    FakeBrowserWindow.startLoading = false;
     delete require.cache[UPDATE_BUBBLE_MODULE_PATH];
   });
 
@@ -280,6 +296,87 @@ describe("update bubble auto-close refresh", () => {
 
     mock.timers.tick(250);
     assert.strictEqual(bubble.isVisible(), false);
+  });
+
+  it("pauses and restores an actionable update bubble across fullscreen auto-hide", async () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    mock.timers.setTime(100_000);
+    const harness = createHarness();
+    const pending = harness.api.showUpdateBubble({
+      mode: "update-available",
+      title: "Update available",
+      message: "Restart to install.",
+      requireAction: true,
+      defaultAction: "dismiss",
+    });
+    const bubble = harness.api.getBubbleWindow();
+    let settled = false;
+    pending.then(() => { settled = true; });
+
+    mock.timers.tick(4_000);
+    harness.api.suspendForFullscreen();
+    assert.strictEqual(bubble.isVisible(), false);
+    assert.ok(!bubble.sent.some((message) => message.channel === "update-bubble-hide"),
+      "fullscreen is a suspension, not a dismissal animation");
+
+    mock.timers.tick(30_000);
+    await Promise.resolve();
+    assert.equal(settled, false, "hidden fullscreen time must not consume the action timeout");
+
+    harness.api.resumeFromFullscreen();
+    assert.strictEqual(bubble.isVisible(), true);
+    assert.equal(bubble.sent.at(-1).channel, "update-bubble-show");
+    mock.timers.tick(4_999);
+    assert.equal(settled, false);
+    mock.timers.tick(1);
+    assert.deepStrictEqual(await pending, { action: "dismiss", source: "autoClose" });
+    mock.timers.tick(250);
+    assert.strictEqual(bubble.isVisible(), false);
+  });
+
+  it("keeps an update first shown during fullscreen hidden until resume", async () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    mock.timers.setTime(100_000);
+    const harness = createHarness();
+    harness.api.suspendForFullscreen();
+    await harness.api.showUpdateBubble({
+      mode: "up-to-date",
+      title: "Up to date",
+      requireAction: false,
+      defaultAction: "dismiss",
+    });
+    const bubble = harness.api.getBubbleWindow();
+    assert.strictEqual(bubble.isVisible(), false);
+
+    mock.timers.tick(30_000);
+    harness.api.resumeFromFullscreen();
+    assert.strictEqual(bubble.isVisible(), true);
+    mock.timers.tick(8_999);
+    assert.strictEqual(bubble.isVisible(), true);
+    mock.timers.tick(1);
+    mock.timers.tick(250);
+    assert.strictEqual(bubble.isVisible(), false);
+  });
+
+  it("restores a bubble whose renderer finishes loading during fullscreen", async () => {
+    FakeBrowserWindow.startLoading = true;
+    const harness = createHarness();
+    await harness.api.showUpdateBubble({
+      mode: "up-to-date",
+      title: "Up to date",
+      requireAction: false,
+      defaultAction: "dismiss",
+    });
+    const bubble = harness.api.getBubbleWindow();
+
+    harness.api.suspendForFullscreen();
+    bubble.finishLoad();
+    assert.strictEqual(bubble.isVisible(), false);
+
+    harness.api.resumeFromFullscreen();
+    assert.strictEqual(bubble.isVisible(), true);
+    assert.equal(bubble.sent.at(-1).channel, "update-bubble-show");
+    harness.api.cleanup();
   });
 
   it("repositions Orbit when the update bubble shows, resizes, and finishes hiding", async () => {
