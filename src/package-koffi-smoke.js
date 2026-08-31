@@ -90,6 +90,77 @@ function assertFullscreenProbeValue(value) {
   return value;
 }
 
+async function waitForFullscreenIdentity({ win, fullscreenProbe, timeoutMs = 8_000, sleepFn } = {}) {
+  const sleep = sleepFn || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const deadline = Date.now() + timeoutMs;
+  win.setFullScreen(true);
+  win.show();
+  win.focus();
+  let lastValue = false;
+  while (Date.now() <= deadline) {
+    if (typeof win.isDestroyed === "function" && win.isDestroyed()) {
+      throw new Error("Fullscreen identity window was destroyed before detection");
+    }
+    if (typeof win.isFocused === "function" && !win.isFocused()) win.focus();
+    lastValue = assertFullscreenProbeValue(fullscreenProbe());
+    if (typeof lastValue === "string" && lastValue.length > 0) return lastValue;
+    await sleep(100);
+  }
+  throw new Error(`Packaged fullscreen probe did not return a window identity (last=${String(lastValue)})`);
+}
+
+async function runWindowsFullscreenIdentityProbe({
+  BrowserWindow,
+  fullscreenProbe,
+  timeoutMs = 8_000,
+  sleepFn,
+} = {}) {
+  if (!fullscreenProbe || typeof fullscreenProbe.isWindowIdAlive !== "function") {
+    throw new Error("Packaged fullscreen probe has no HWND liveness checker");
+  }
+  const sleep = sleepFn || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const ids = [];
+  for (let index = 0; index < 2; index += 1) {
+    const win = new BrowserWindow({ show: false, width: 320, height: 240, skipTaskbar: true });
+    let id = null;
+    try {
+      id = await waitForFullscreenIdentity({
+        win,
+        fullscreenProbe,
+        timeoutMs,
+        sleepFn,
+      });
+      if (fullscreenProbe.isWindowIdAlive(id) !== true) {
+        throw new Error(`IsWindow rejected live packaged fullscreen HWND ${id}`);
+      }
+      ids.push(id);
+    } finally {
+      if (typeof win.isDestroyed !== "function" || !win.isDestroyed()) win.destroy();
+    }
+    if (id != null) {
+      const deadline = Date.now() + timeoutMs;
+      let destroyedAlive = fullscreenProbe.isWindowIdAlive(id);
+      while (destroyedAlive !== false && Date.now() <= deadline) {
+        await sleep(100);
+        destroyedAlive = fullscreenProbe.isWindowIdAlive(id);
+      }
+      if (destroyedAlive !== false) {
+        throw new Error(`IsWindow still accepted destroyed packaged fullscreen HWND ${id}`);
+      }
+    }
+  }
+  if (ids[0] === ids[1]) {
+    throw new Error(`Packaged fullscreen identities collapsed to the same value: ${ids[0]}`);
+  }
+  return {
+    firstId: ids[0],
+    secondId: ids[1],
+    distinct: true,
+    liveAccepted: true,
+    destroyedRejected: true,
+  };
+}
+
 async function runPlatformProbe({ BrowserWindow, target }) {
   if (target.runtimePlatform === "win32") {
     const win = new BrowserWindow({ show: false, width: 80, height: 80, skipTaskbar: true });
@@ -104,15 +175,23 @@ async function runPlatformProbe({ BrowserWindow, target }) {
       try {
         const onCurrentDesktop = cloak.isOnCurrentVirtualDesktop(win);
         const fullscreenErrors = [];
-        const fullscreen = createForegroundFullscreenProbe({
+        const fullscreenProbe = createForegroundFullscreenProbe({
           isWin: true,
           onError: (err) => fullscreenErrors.push(`init: ${err.message}`),
           onCallError: (err) => fullscreenErrors.push(`call: ${err.message}`),
-        })();
+        });
+        const fullscreen = fullscreenProbe();
         if (fullscreenErrors.length) {
           throw new Error(`Fullscreen probe failed: ${fullscreenErrors.join(" | ")}`);
         }
         assertFullscreenProbeValue(fullscreen);
+        const fullscreenIdentity = await runWindowsFullscreenIdentityProbe({
+          BrowserWindow,
+          fullscreenProbe,
+        });
+        if (fullscreenErrors.length) {
+          throw new Error(`Fullscreen identity probe failed: ${fullscreenErrors.join(" | ")}`);
+        }
         const terminalErrors = [];
         const foregroundTerminalHwnd = createForegroundWindowsTerminalProbe({
           isWin: true,
@@ -136,6 +215,7 @@ async function runPlatformProbe({ BrowserWindow, target }) {
           cloakAvailable: cloak.available,
           cloakOnCurrentDesktop: onCurrentDesktop,
           foregroundFullscreen: fullscreen,
+          fullscreenIdentity,
           foregroundTerminalHwnd,
           foregroundTerminalExpectedMiss: foregroundTerminalHwnd === null,
           logs,
@@ -270,6 +350,8 @@ module.exports = {
   captureKoffiLoad,
   callStableNativeFunction,
   assertFullscreenProbeValue,
+  waitForFullscreenIdentity,
+  runWindowsFullscreenIdentityProbe,
   runPlatformProbe,
   runPackageKoffiSmoke,
   writeResult,

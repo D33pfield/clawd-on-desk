@@ -12,6 +12,7 @@ const {
   isInside,
   callStableNativeFunction,
   assertFullscreenProbeValue,
+  runWindowsFullscreenIdentityProbe,
 } = require("../src/package-koffi-smoke");
 const {
   parseArgs: parseRunnerArgs,
@@ -93,4 +94,49 @@ test("fullscreen probe smoke check accepts a verdict or a window identity", () =
   assert.throws(() => assertFullscreenProbeValue(0), /number/);
   assert.throws(() => assertFullscreenProbeValue(null), /object/);
   assert.throws(() => assertFullscreenProbeValue(undefined), /undefined/);
+});
+
+test("packaged fullscreen identity smoke requires distinct live HWNDs that die with their windows", async () => {
+  let nextId = 100;
+  let foregroundId = null;
+  const liveIds = new Set();
+  class FakeBrowserWindow {
+    constructor() {
+      this.id = String(nextId++);
+      this.destroyed = false;
+      this.focused = false;
+      liveIds.add(this.id);
+    }
+    setFullScreen() {}
+    show() {}
+    focus() {
+      this.focused = true;
+      foregroundId = this.id;
+    }
+    isFocused() { return this.focused; }
+    isDestroyed() { return this.destroyed; }
+    destroy() {
+      this.destroyed = true;
+      this.focused = false;
+      liveIds.delete(this.id);
+      if (foregroundId === this.id) foregroundId = null;
+    }
+  }
+  const fullscreenProbe = () => foregroundId || false;
+  fullscreenProbe.isWindowIdAlive = (id) => liveIds.has(id);
+
+  const result = await runWindowsFullscreenIdentityProbe({
+    BrowserWindow: FakeBrowserWindow,
+    fullscreenProbe,
+    timeoutMs: 100,
+    sleepFn: async () => {},
+  });
+
+  assert.deepEqual(result, {
+    firstId: "100",
+    secondId: "101",
+    distinct: true,
+    liveAccepted: true,
+    destroyedRejected: true,
+  });
 });
