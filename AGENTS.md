@@ -86,6 +86,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - `docs/guides/setup-guide.md`：安装、远程 SSH、各 agent 接入
 - `docs/guides/custom-agent-http.md`：自定义 HTTP Agent 的 state-only 接入合约和动态端口发现
 - `docs/guides/known-limitations.md`：用户向已知限制
+- `docs/guides/recap.md`：本地小结的指标口径、coverage、时区/DST、隐私存储与产品红线
 - `docs/guides/codex-wsl-clarification.md`：Codex / WSL 路径与 Node 说明
 - `docs/guides/guide-remote-ssh.md`：Remote SSH 用户流程、Codespaces 单会话 transport 与共享主机边界
 - `docs/guides/telegram-approval.md` / `docs/guides/feishu-lark-remote-approval.md`：远程审批设置与失败回退语义
@@ -162,6 +163,8 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 ## Constraints
 
 - `agents/registry.js` 的 capabilities 是权限、subagent、session-end 等路由/gate 的权威来源；不得另写名单代替 capability 判定。但 permission automation eligibility 由更窄的 `isKnownPermissionAgent()` 显式判定（`KNOWN_PERMISSION_AGENTS` + explicit opencode-family membership），不得从 `permissionApproval` 自动派生或合并回 registry capabilities
+- 小结的指标能力例外地只认 `src/recap-metrics.js` 的显式逐 Agent 口径，不得从 registry capabilities 或标准化 event 名推导。只统计已通过 gate、Codex source/replay fence、subagent 与完成仲裁的 accepted activity；DND 继续记录且不切 coverage，suspend/退出/关闭记录才切。`null` 是不支持，绝不能渲染或汇总成 `0`
+- 小结持久层固定为 `~/.clawd/recap-v1/` 下 14 个本地日的最小 HMAC 小票与 400 个本地日的 daily/coverage；不得落 prompt/回复/命令/工具内容、路径/项目、原始 event/session/profile/turn/tool ID，不得增加网络、导出或分享。首版不做 Token、金额、模型、推理强度、Skill、人的工作/编码时长、streak、峰值/最长项、排行榜或生产力评分
 - Claude Code / CodeBuddy 的阻塞式权限审批走 `POST /permission` HTTP hook；普通状态事件走 command hook
 - permission automation（off / auto-tools / unattended）和 per-session grant 会在 bubble 渲染前产生真实 allow/answer。agent/family eligibility 是显式白名单；工具分类则因 mode/adapter 而异：auto-tools 对 Claude/Qwen 的未知 built-in fail closed，但其他已知 adapter 不都使用逐工具白名单，unattended 还会有意自动放行可作 Allow/Deny 的未知请求。新增 agent、工具或交互类型必须审查 policy + tests，不能从 `permissionApproval` 推导资格或笼统假设“未知请求都会 defer”
 - Telegram / 飞书 Lark 与本地 bubble 是并行决策通道。远程通道超时、断连、未配置或发送失败不得产生远程决定，更不得转成 deny；有本地 bubble 时请求继续 pending，只有 remote-only 且所有可用 client 都无决定时，整体请求才 no-decision 并回到 agent 原生流程

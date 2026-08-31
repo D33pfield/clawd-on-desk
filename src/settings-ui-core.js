@@ -123,6 +123,7 @@
     nextAnimationOverrideEditSeq: 1,
     animOverridesSubtab: "map",
     settingsTabScrollPositions: new Map(),
+    persistedSettingsTab: "general",
     // null = not chosen yet; the Agents tab resolves it from what is connected.
     agentsSubtab: null,
     agentsUnavailableQuery: "",
@@ -1188,10 +1189,18 @@
     }
   }
 
-  function getActiveSettingsFocusKey() {
+  function getActiveSettingsFocusState() {
     const active = document.activeElement;
-    if (!active || active === document.body || typeof active.getAttribute !== "function") return "";
-    return String(active.getAttribute("data-settings-focus-key") || "").trim();
+    if (!active || active === document.body || typeof active.getAttribute !== "function") {
+      return { focusKey: "", fallbackKey: "" };
+    }
+    const focusKey = String(active.getAttribute("data-settings-focus-key") || "").trim();
+    return {
+      focusKey,
+      fallbackKey: focusKey
+        ? String(active.getAttribute("data-settings-focus-fallback-key") || "").trim()
+        : "",
+    };
   }
 
   function findSettingsFocusTarget(rootNode, focusKey) {
@@ -1214,12 +1223,41 @@
     try { target.focus({ preventScroll: true }); } catch (_) { target.focus(); }
   }
 
-  function requestRender({ sidebar = false, content = false, modal = false } = {}) {
+  function requestRender({
+    sidebar = false,
+    content = false,
+    modal = false,
+    preserveScroll = false,
+  } = {}) {
     if (sidebar && typeof renderHooks.sidebar === "function") renderHooks.sidebar();
     if (content && typeof renderHooks.content === "function") {
-      const focusKey = getActiveSettingsFocusKey();
+      const { focusKey, fallbackKey } = getActiveSettingsFocusState();
+      const contentRoot = document.getElementById("content");
+      const scrollTop = preserveScroll && contentRoot
+        ? normalizePersistedScrollTop(Number(contentRoot.scrollTop))
+        : null;
+      const scrollTabId = state.activeTab;
       renderHooks.content();
-      if (focusKey) restoreSettingsFocus(document.getElementById("content"), focusKey);
+      if (focusKey) {
+        const currentContentRoot = document.getElementById("content");
+        const exactTarget = findSettingsFocusTarget(currentContentRoot, focusKey);
+        const restoreKey = exactTarget
+          && exactTarget.disabled !== true
+          && typeof exactTarget.focus === "function"
+          ? focusKey
+          : fallbackKey;
+        if (restoreKey) restoreSettingsFocus(currentContentRoot, restoreKey);
+      }
+      if (scrollTop !== null
+        && document.getElementById("content") === contentRoot
+        && state.activeTab === scrollTabId) {
+        contentRoot.scrollTop = scrollTop;
+        requestAnimationFrame(() => {
+          if (document.getElementById("content") !== contentRoot) return;
+          if (state.activeTab !== scrollTabId) return;
+          contentRoot.scrollTop = scrollTop;
+        });
+      }
     }
     if (modal && typeof renderHooks.modal === "function") renderHooks.modal();
   }
@@ -1244,7 +1282,9 @@
     }
     try {
       localStorage.setItem(NAVIGATION_STORAGE_KEY, JSON.stringify({
-        activeTab: tabs[state.activeTab] ? state.activeTab : "general",
+        activeTab: tabs[runtime.persistedSettingsTab]
+          ? runtime.persistedSettingsTab
+          : (tabs[state.activeTab] ? state.activeTab : "general"),
         scrollPositions,
       }));
     } catch (_) {}
@@ -1261,6 +1301,7 @@
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
       if (typeof parsed.activeTab === "string" && tabs[parsed.activeTab]) {
         state.activeTab = parsed.activeTab;
+        runtime.persistedSettingsTab = parsed.activeTab;
       }
       const scrollPositions = parsed.scrollPositions;
       if (scrollPositions && typeof scrollPositions === "object" && !Array.isArray(scrollPositions)) {
@@ -1290,9 +1331,17 @@
     });
   }
 
-  function selectTab(nextTab) {
+  function selectTab(nextTab, options = {}) {
+    if (!tabs[nextTab]) return false;
     const prevTabId = state.activeTab;
-    if (prevTabId === nextTab) return;
+    const shouldPersist = options.persist !== false;
+    if (prevTabId === nextTab) {
+      if (shouldPersist) {
+        runtime.persistedSettingsTab = nextTab;
+        writeNavigationState();
+      }
+      return false;
+    }
     captureActiveTabScrollPosition();
     const content = document.getElementById("content");
     const prevTab = tabs[prevTabId];
@@ -1300,9 +1349,10 @@
       prevTab.onExit(core);
     }
     state.activeTab = nextTab;
+    if (shouldPersist) runtime.persistedSettingsTab = nextTab;
     writeNavigationState();
     requestRender({ sidebar: true, content: true, modal: true });
-    if (!content) return;
+    if (!content) return true;
 
     const targetScrollTop = runtime.settingsTabScrollPositions.get(nextTab) || 0;
     content.scrollTop = targetScrollTop;
@@ -1311,6 +1361,7 @@
       if (document.getElementById("content") !== content) return;
       content.scrollTop = targetScrollTop;
     });
+    return true;
   }
 
   function applyBootstrap(snapshotValue) {
@@ -1321,7 +1372,12 @@
 
   function applyAgentMetadata(list) {
     runtime.agentMetadata = Array.isArray(list) ? list : [];
-    if (state.activeTab === "agents") requestRender({ content: true });
+    if (state.activeTab === "agents" || state.activeTab === "recap") {
+      requestRender({
+        content: true,
+        preserveScroll: state.activeTab === "recap",
+      });
+    }
   }
 
   function normalizeAgentInstallationHints(result) {
@@ -1710,26 +1766,44 @@
     if (changes && "themeOverrides" in changes) {
       if (state.activeTab === "theme") {
         fetchThemes().then(() => {
-          requestRender({ sidebar: true, content: true });
+          requestRender({
+            sidebar: true,
+            content: true,
+            preserveScroll: state.activeTab === "recap",
+          });
         });
         return;
       }
       if (state.activeTab === "animOverrides" || runtime.assetPicker.state) {
         Promise.all([fetchAnimationOverridesData(), fetchThemes()]).then(() => {
           normalizeAssetPickerSelection();
-          requestRender({ sidebar: true, content: true, modal: true });
+          requestRender({
+            sidebar: true,
+            content: true,
+            modal: true,
+            preserveScroll: state.activeTab === "recap",
+          });
         });
         return;
       }
       // Any other tab that surfaces theme-derived content: full re-render.
-      requestRender({ sidebar: true, content: true });
+      requestRender({
+        sidebar: true,
+        content: true,
+        preserveScroll: state.activeTab === "recap",
+      });
       return;
     }
 
     if (needsAnimOverridesRefresh && (state.activeTab === "animOverrides" || runtime.assetPicker.state)) {
       fetchAnimationOverridesData().then(() => {
         normalizeAssetPickerSelection();
-        requestRender({ sidebar: true, content: true, modal: true });
+        requestRender({
+          sidebar: true,
+          content: true,
+          modal: true,
+          preserveScroll: state.activeTab === "recap",
+        });
       });
       return;
     }
@@ -1741,7 +1815,11 @@
       }));
     }
 
-    requestRender({ sidebar: true, content: true });
+    requestRender({
+      sidebar: true,
+      content: true,
+      preserveScroll: state.activeTab === "recap",
+    });
   }
 
   core.readers = {
