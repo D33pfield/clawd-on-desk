@@ -28,6 +28,13 @@ function fakeKoffi(behavior) {
           if (signature.includes("GetForegroundWindow")) {
             return () => behavior.hwnd;
           }
+          if (signature.includes("IsWindow(")) {
+            return (hwnd) => {
+              if (behavior.isWindowThrows) throw new Error("IsWindow exploded");
+              if (behavior.isWindowArgs) behavior.isWindowArgs.push(hwnd);
+              return behavior.isWindowAlive !== false;
+            };
+          }
           if (signature.includes("GetWindowRect")) {
             return (_hwnd, rectOut) => {
               if (behavior.getWindowRectThrows) throw new Error("GetWindowRect exploded");
@@ -397,5 +404,29 @@ describe("fullscreen probe identity (#935)", () => {
     koffi.address = () => { throw new Error("address exploded"); };
     const probe = createForegroundFullscreenProbe({ isWin: true, koffi });
     assert.strictEqual(probe(), true);
+  });
+
+  it("checks a decimal window identity through IsWindow without losing pointer precision", () => {
+    const behavior = { ...base, hwnd: {}, isWindowArgs: [] };
+    const probe = createForegroundFullscreenProbe({ isWin: true, koffi: fakeKoffi(behavior) });
+
+    assert.strictEqual(probe.isWindowIdAlive("184467"), true);
+    assert.deepStrictEqual(behavior.isWindowArgs, [184467n]);
+    behavior.isWindowAlive = false;
+    assert.strictEqual(probe.isWindowIdAlive("184467"), false);
+  });
+
+  it("fails open when a window identity cannot be checked", () => {
+    let callErrors = 0;
+    const behavior = { ...base, hwnd: {}, isWindowThrows: true };
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi(behavior),
+      onCallError: () => { callErrors += 1; },
+    });
+
+    assert.strictEqual(probe.isWindowIdAlive("not-an-address"), null);
+    assert.strictEqual(probe.isWindowIdAlive("4242"), null);
+    assert.strictEqual(callErrors, 1);
   });
 });

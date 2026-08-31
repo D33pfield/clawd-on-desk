@@ -91,6 +91,7 @@ function createForegroundFullscreenProbe(options = {}) {
   const isWin = options.isWin != null ? !!options.isWin : process.platform === "win32";
   const noop = () => false;
   noop.getLastObservation = () => ({ reliable: false, foregroundId: null, fullscreenId: null });
+  noop.isWindowIdAlive = () => null;
   if (!isWin) return noop;
 
   let GetForegroundWindow;
@@ -127,6 +128,17 @@ function createForegroundFullscreenProbe(options = {}) {
     return noop;
   }
 
+  // Optional lifetime check for a remembered fullscreen HWND. Keeping this
+  // separate from the core bindings preserves the detector if an unusual
+  // user32 surface cannot expose IsWindow: unknown lifetime must fail open,
+  // never disable fullscreen detection.
+  let IsWindow = null;
+  try {
+    IsWindow = user32.func("bool __stdcall IsWindow(void* hWnd)");
+  } catch (err) {
+    if (typeof options.onError === "function") options.onError(err);
+  }
+
   // Bound separately (#871): GetWindowLongPtrW is a macro over GetWindowLongW on
   // 32-bit Windows, so the export can be missing. Losing it must only cost the
   // style refinement — folding it into the block above would turn a missing
@@ -147,6 +159,18 @@ function createForegroundFullscreenProbe(options = {}) {
     try {
       return String(addressOf(hwnd));
     } catch {
+      return null;
+    }
+  }
+
+  function isWindowIdAlive(windowId) {
+    if (!IsWindow || typeof windowId !== "string" || !/^\d+$/.test(windowId)) return null;
+    try {
+      // Koffi accepts BigInt values for pointer arguments. The opaque id is
+      // the decimal form of koffi.address(HWND), so this reverses that losslessly.
+      return !!IsWindow(BigInt(windowId));
+    } catch (err) {
+      if (typeof options.onCallError === "function") options.onCallError(err);
       return null;
     }
   }
@@ -214,6 +238,7 @@ function createForegroundFullscreenProbe(options = {}) {
   // the auto-hide override can distinguish "same HWND exited F11" from an
   // Alt-Tab/tray foreground excursion to a different window.
   isForegroundFullscreen.getLastObservation = () => ({ ...lastObservation });
+  isForegroundFullscreen.isWindowIdAlive = isWindowIdAlive;
   return isForegroundFullscreen;
 }
 

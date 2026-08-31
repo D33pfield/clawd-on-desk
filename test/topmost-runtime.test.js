@@ -1384,7 +1384,7 @@ describe("IME editing pet dodge (#640)", () => {
 // (alt-tab, tray menus, transient probe errors) and ends only when a DIFFERENT
 // fullscreen app takes the foreground.
 describe("fullscreen auto-hide sync (#935)", () => {
-  function createAutoHideHarness({ fsApp = null, pref = true, applyResult } = {}) {
+  function createAutoHideHarness({ fsApp = null, pref = true, applyResult, isWindowAlive } = {}) {
     const timers = makeTimers();
     const win = new FakeWindow();
     const hitWin = new FakeWindow();
@@ -1404,6 +1404,7 @@ describe("fullscreen auto-hide sync (#935)", () => {
           : (typeof state.fsApp === "string" ? state.fsApp : null),
         fullscreenId: state.fsApp || null,
       }),
+      isFullscreenWindowAlive: isWindowAlive || (() => null),
       getFullscreenAutoHide: () => state.pref,
       isFullscreenAutoHidden: () => state.autoHidden,
       setFullscreenAutoHidden: (value) => {
@@ -1547,6 +1548,46 @@ describe("fullscreen auto-hide sync (#935)", () => {
     h.tick();
     assert.deepStrictEqual(h.setCalls, [true, false],
       "the explicit Show must not expire while the original fullscreen episode is still alive");
+  });
+
+  it("drops a definitively dead remembered HWND before arming a Show override", () => {
+    let alive = true;
+    const h = createAutoHideHarness({ isWindowAlive: () => alive });
+    h.start();
+    h.state.fsApp = "app-1";
+    h.tick();
+    h.state.fsApp = null;
+    h.state.foregroundId = "tray";
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true, false]);
+
+    alive = false;
+    h.runtime.noteFullscreenAutoHideOverride();
+    for (let i = 0; i < createTopmostRuntime.FSAUTOHIDE_OVERRIDE_GRACE_TICKS; i++) h.tick();
+
+    // Even if Windows eventually reuses the same numeric handle, the stale
+    // episode no longer grants an unbounded override. Only the ordinary grace
+    // remains, and it has expired here.
+    h.state.fsApp = "app-1";
+    h.state.foregroundId = null;
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true, false, true]);
+  });
+
+  it("fails open when remembered HWND liveness is unavailable", () => {
+    const h = createAutoHideHarness({ isWindowAlive: () => null });
+    h.start();
+    h.state.fsApp = "app-1";
+    h.tick();
+    h.state.fsApp = null;
+    h.state.foregroundId = "tray";
+    for (let i = 0; i < createTopmostRuntime.FSAUTOHIDE_OVERRIDE_GRACE_TICKS * 3; i++) h.tick();
+
+    h.runtime.noteFullscreenAutoHideOverride();
+    h.state.fsApp = "app-1";
+    h.state.foregroundId = null;
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true, false]);
   });
 
   it("the override survives alt-tab excursions of any length back to the same app", () => {
@@ -1729,8 +1770,24 @@ describe("fullscreen auto-hide sync (#935)", () => {
 
   it("main forwards the poll observation through auto restore and cached topmost reassertion", () => {
     const mainSource = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
-    assert.match(mainSource, /setFullscreenAutoHidden: \(hidden, fullscreenObservation\) => \([\s\S]*?petWindowRuntime\.setFullscreenAutoHidden\(hidden, fullscreenObservation\)[\s\S]*?\),/);
+    assert.match(mainSource, /setFullscreenAutoHidden: \(\.\.\.args\) => petWindowRuntime\.setFullscreenAutoHidden\(\.\.\.args\)/);
     assert.match(mainSource, /reassertWinTopmost: \(\.\.\.args\) => reassertWinTopmost\(\.\.\.args\)/);
+  });
+
+  it("cleanup clears remembered fullscreen episode and override state", () => {
+    const h = createAutoHideHarness();
+    h.start();
+    h.state.fsApp = "app-1";
+    h.tick();
+    h.state.autoHidden = false;
+    h.runtime.noteFullscreenAutoHideOverride();
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true]);
+
+    h.runtime.cleanup();
+    h.runtime.startFocusablePoll();
+    assert.deepStrictEqual(h.setCalls, [true, true],
+      "a restarted poll must not inherit an override from the cleaned-up runtime");
   });
 
   it("retries a deferred hide on the next tick instead of latching a false override", () => {

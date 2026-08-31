@@ -119,6 +119,10 @@ function createTopmostRuntime(options = {}) {
   // which lets the manual-show override detect that the SAME window exited
   // F11 without mistaking an Alt-Tab or tray menu for the episode boundary.
   const getForegroundFullscreenObservation = options.getForegroundFullscreenObservation || (() => null);
+  // Optional three-state liveness check for a remembered fullscreen HWND:
+  // true = still live, false = definitely dead, null = unavailable/error.
+  // Only a definite false may clear the episode; failures preserve behavior.
+  const isFullscreenWindowAlive = options.isFullscreenWindowAlive || (() => null);
   // Windows-only (#935): opt-in auto-hide — when a fullscreen app owns the
   // foreground, hide the pet entirely instead of floating over (overlay) or
   // standing down below (#538). Rides the 1s focusable poll, which already
@@ -685,6 +689,13 @@ function createTopmostRuntime(options = {}) {
     // A tray or Alt-Tab foreground excursion can last arbitrarily long. When
     // it came from a concrete fullscreen episode, bind to that remembered HWND
     // immediately instead of making the user's Show gesture race a 15s timer.
+    // A definitively dead HWND is discarded first, bounding stale state without
+    // imposing a TTL that would break legitimate long Alt-Tab excursions.
+    if (fsLastFullscreenEpisodeId != null) {
+      let alive = null;
+      try { alive = isFullscreenWindowAlive(fsLastFullscreenEpisodeId); } catch {}
+      if (alive === false) clearFullscreenAutoHideOverride();
+    }
     fsOverrideBoundTo = fsLastFullscreenEpisodeId;
     fsOverridePendingTicks = fsOverrideBoundTo == null
       ? FSAUTOHIDE_OVERRIDE_GRACE_TICKS
@@ -787,6 +798,7 @@ function createTopmostRuntime(options = {}) {
       hwndRecoveryTimer = null;
     }
     pendingNudgeRestore = null;
+    clearFullscreenAutoHideOverride();
     if (imeEditingFadeCancel) {
       imeEditingFadeCancel.cancelled = true;
       imeEditingFadeCancel = null;

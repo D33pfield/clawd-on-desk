@@ -1869,13 +1869,12 @@ const topmostRuntime = createTopmostRuntime({
   isMiniTransitioning: () => _mini.getMiniTransitioning(),
   isForegroundFullscreen: () => _isForegroundFullscreen(),
   getForegroundFullscreenObservation: () => _isForegroundFullscreen.getLastObservation(),
+  isFullscreenWindowAlive: (windowId) => _isForegroundFullscreen.isWindowIdAlive(windowId),
   getFullscreenOverlay: () => fullscreenOverlayCached,
   // #935 fullscreen auto-hide: the pref gate plus pet-window-runtime's
   // dedicated visibility layer (stacked on the user's manual hide).
   getFullscreenAutoHide: () => fullscreenAutoHideCached,
-  setFullscreenAutoHidden: (hidden, fullscreenObservation) => (
-    petWindowRuntime.setFullscreenAutoHidden(hidden, fullscreenObservation)
-  ),
+  setFullscreenAutoHidden: (...args) => petWindowRuntime.setFullscreenAutoHidden(...args),
   isFullscreenAutoHidden: () => petWindowRuntime.isFullscreenAutoHidden(),
   setHitWinFocusable,
   keepOutOfTaskbar,

@@ -1459,7 +1459,7 @@ function createPetWindowRuntime(options = {}) {
     // using the focus poll's already-known observation so this path does not
     // perform a second native foreground probe in the same tick.
     if (!target && changed && !isPetEffectivelyHidden()) {
-      if (arguments.length > 1) reassertWinTopmost(fullscreenObservation);
+      if (fullscreenObservation !== undefined) reassertWinTopmost(fullscreenObservation);
       else reassertWinTopmost();
     }
     return { applied: true, deferred: false, changed };

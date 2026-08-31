@@ -3835,6 +3835,19 @@ describe("fullscreen auto-hide visibility layer (#935)", () => {
     );
   });
 
+  it("treats an explicitly undefined observation as absent across wrapper seams", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    h.calls.length = 0;
+
+    h.runtime.setFullscreenAutoHidden(false, undefined);
+
+    assert.deepStrictEqual(
+      h.calls.filter((c) => c[0] === "reassertWinTopmost"),
+      [["reassertWinTopmost"]],
+    );
+  });
+
   it("is idempotent when already in the target state", () => {
     const h = createRuntime();
     h.runtime.setFullscreenAutoHidden(true);
