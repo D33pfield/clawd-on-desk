@@ -882,6 +882,7 @@ html, body {
   align-items: center;
   gap: 4px;
   padding: 12px 16px;
+  border-radius: inherit;
   cursor: pointer;
   user-select: none;
   overflow: hidden;
@@ -891,6 +892,10 @@ html, body {
   padding: 0;
   cursor: default;
 }
+.collapsible-group:not(.collapsed) > .collapsible-group-header {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
 .collapsible-group-disclosure {
   display: flex;
   align-items: center;
@@ -899,6 +904,7 @@ html, body {
   min-width: 0;
   gap: 4px;
   padding: 12px 0 12px 16px;
+  border-radius: inherit;
   cursor: pointer;
 }
 .collapsible-group-header-action {
