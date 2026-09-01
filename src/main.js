@@ -2284,6 +2284,11 @@ const _stateCtx = {
     codexWorkingStaleMs,
     detachedIdleStaleMs,
   }),
+  hasReplyableCompletionMapping: (sessionId, session) => !!(
+    telegramDirectSend
+    && typeof telegramDirectSend.hasReplyableCompletionMapping === "function"
+    && telegramDirectSend.hasReplyableCompletionMapping(sessionId, session)
+  ),
   getSessionAliases: () => _settingsController.get("sessionAliases"),
   getSessionAutomationRecords: () =>
     sessionAutomationStore ? sessionAutomationStore.list() : [],
