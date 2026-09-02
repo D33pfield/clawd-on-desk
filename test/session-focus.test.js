@@ -99,7 +99,7 @@ describe("session focus helpers", () => {
     });
   });
 
-  it("downgrades Codex Desktop thread focus targets on Windows", () => {
+  it("uses Codex Desktop thread focus targets on Windows", () => {
     const entry = {
       id: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
       agentId: "codex",
@@ -116,13 +116,13 @@ describe("session focus helpers", () => {
 
     assert.deepStrictEqual(getSessionFocusTarget(entry, { osPlatform: "win32" }), {
       canFocus: true,
-      type: "terminal",
-      url: null,
+      type: "codex-thread",
+      url: "codex://threads/019e115a-4df2-7ed0-b90e-8e6345aca777",
     });
     assert.deepStrictEqual(getSessionFocusTarget(noTerminalEntry, { osPlatform: "win32" }), {
-      canFocus: false,
-      type: null,
-      url: null,
+      canFocus: true,
+      type: "codex-thread",
+      url: "codex://threads/019e115b-4df2-7ed0-b90e-8e6345aca777",
     });
     assert.deepStrictEqual(getSessionFocusTarget(noTerminalEntry, { osPlatform: "darwin" }), {
       canFocus: true,
@@ -133,8 +133,9 @@ describe("session focus helpers", () => {
       sessions: [entry, noTerminalEntry],
     }, { osPlatform: "win32" }), [
       "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+      "codex:019e115b-4df2-7ed0-b90e-8e6345aca777",
     ]);
-    assert.strictEqual(isFocusableLocalHudSession(noTerminalEntry, { osPlatform: "win32" }), false);
+    assert.strictEqual(isFocusableLocalHudSession(noTerminalEntry, { osPlatform: "win32" }), true);
   });
 
   it("allows only supported Orca pane targets to cross the remote boundary", () => {

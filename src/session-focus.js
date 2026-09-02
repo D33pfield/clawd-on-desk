@@ -49,11 +49,6 @@ function getSessionFocusTarget(entry, options = {}) {
 
   const codexThreadUrl = getCodexThreadUrl(entry);
   if (codexThreadUrl) {
-    if (normalizeOsPlatform(options) === "win32") {
-      return entry.sourcePid
-        ? { canFocus: true, type: "terminal", url: null }
-        : { canFocus: false, type: null, url: null };
-    }
     return { canFocus: true, type: "codex-thread", url: codexThreadUrl };
   }
 
