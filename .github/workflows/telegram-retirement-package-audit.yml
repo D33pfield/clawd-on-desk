@@ -38,6 +38,8 @@ on:
       - "test/doctor-agent-integrations.test.js"
       - "test/server-hook-management.test.js"
       - "test/hook-adapter-offline-contract.test.js"
+      - "test/accessory-motion-electron.test.js"
+      - "test/fixtures/accessory-motion-electron.js"
       - "scripts/assert-no-retired-telegram-sidecar.js"
       - "scripts/audit-repository-assets.js"
       - "scripts/after-pack-koffi.js"
@@ -111,6 +113,8 @@ jobs:
           node --test
           test/recap*.test.js
           test/settings-recap.test.js
+      - name: Run native SVG motion audit
+        run: xvfb-run -a node --test test/accessory-motion-electron.test.js
 
   package:
     needs: unit
