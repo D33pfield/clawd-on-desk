@@ -267,6 +267,9 @@ function initMobilePreviewServer(ctx) {
   }
 
   function createHttpServer() {
+    if (ctx && typeof ctx.createHttpServer === "function") {
+      return ctx.createHttpServer(serveStatic);
+    }
     return http.createServer(serveStatic);
   }
 
@@ -284,7 +287,13 @@ function initMobilePreviewServer(ctx) {
     // A post-listen server error is still surfaced by ws. Keep it observable
     // without letting an EventEmitter `error` event terminate the desktop app.
     socketServer.on("error", (err) => {
-      console.error("[mobile-preview] WebSocket server error:", err && err.message ? err.message : err);
+      try {
+        if (ctx && typeof ctx.onWebSocketError === "function") {
+          ctx.onWebSocketError(err);
+        } else {
+          console.error("[mobile-preview] WebSocket server error:", err && err.message ? err.message : err);
+        }
+      } catch {}
     });
 
     socketServer.on("connection", (ws, req) => {
@@ -516,6 +525,7 @@ function initMobilePreviewServer(ctx) {
     let idx = 0;
     let socketServer = null;
     let settled = false;
+    let cancelThisStart = null;
 
     const ready = new Promise((resolve, reject) => {
       const detachStartListeners = () => {
@@ -578,14 +588,15 @@ function initMobilePreviewServer(ctx) {
         settled = true;
         console.log(`[mobile-preview] started on 0.0.0.0:${activePort}`);
         detachStartListeners();
-        cancelPendingStart = null;
+        if (cancelPendingStart === cancelThisStart) cancelPendingStart = null;
         resolve(activePort);
       };
-      cancelPendingStart = () => {
+      cancelThisStart = () => {
         const err = new Error("Mobile preview server start cancelled");
         err.code = "ECANCELED";
         failStart(err);
       };
+      cancelPendingStart = cancelThisStart;
       server.on("error", onError);
       server.on("listening", onListening);
       try {
@@ -603,7 +614,10 @@ function initMobilePreviewServer(ctx) {
       },
       (err) => {
         if (startPromise === trackedPromise) startPromise = null;
-        if (cancelPendingStart) cancelPendingStart = null;
+        // cleanup() deliberately allows a same-tick replacement start. The
+        // cancelled generation's rejection continuation must not clear the
+        // replacement generation's cancel handle.
+        if (cancelPendingStart === cancelThisStart) cancelPendingStart = null;
         throw err;
       },
     );

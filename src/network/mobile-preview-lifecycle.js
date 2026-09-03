@@ -12,7 +12,10 @@ async function startMobilePreviewServerSafely(server, options = {}) {
   try {
     return await server.start();
   } catch (err) {
-    onError(err, source);
+    // Error reporting is best-effort too. A custom logger must not turn a
+    // contained server-start failure back into an unhandled rejection at the
+    // fire-and-forget main-process call sites.
+    try { onError(err, source); } catch {}
     return null;
   }
 }

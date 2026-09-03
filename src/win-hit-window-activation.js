@@ -30,10 +30,15 @@ function asUnsignedStyle(value, pointerBits) {
 function createHitWindowActivationController(options = {}) {
   const isWin = options.isWin != null ? !!options.isWin : process.platform === "win32";
   const onError = typeof options.onError === "function" ? options.onError : () => {};
+  const reportError = (error) => {
+    try { onError(error); } catch {}
+  };
 
   let bindings = options.bindings || null;
   let hwndOf = options.hwndOf || null;
   let pointerBits = Number(options.pointerBits) || 0;
+  let styleRefreshPending = false;
+  let refreshFailureReported = false;
 
   if (isWin && !bindings) {
     try {
@@ -62,7 +67,7 @@ function createHitWindowActivationController(options = {}) {
         return koffi.decode(handle, "void *");
       };
     } catch (error) {
-      onError(error);
+      reportError(error);
       bindings = null;
       hwndOf = null;
     }
@@ -84,7 +89,7 @@ function createHitWindowActivationController(options = {}) {
     try {
       return hwndOf(win);
     } catch (error) {
-      onError(error);
+      reportError(error);
       return null;
     }
   }
@@ -96,7 +101,7 @@ function createHitWindowActivationController(options = {}) {
       const style = asUnsignedStyle(bindings.getStyle(hwnd), pointerBits);
       return (style & WS_EX_NOACTIVATE) !== 0n;
     } catch (error) {
-      onError(error);
+      reportError(error);
       return null;
     }
   }
@@ -109,17 +114,31 @@ function createHitWindowActivationController(options = {}) {
       const next = enabled
         ? current | WS_EX_NOACTIVATE
         : current & ~WS_EX_NOACTIVATE;
-      if (next === current) return true;
+      if (next === current && !styleRefreshPending) return true;
 
-      const nativeNext = pointerBits > 32
-        ? BigInt.asIntN(pointerBits, next)
-        : Number(BigInt.asIntN(32, next));
-      bindings.setStyle(hwnd, nativeNext);
-      if (!bindings.refreshStyle(hwnd)) return false;
+      if (next !== current) {
+        const nativeNext = pointerBits > 32
+          ? BigInt.asIntN(pointerBits, next)
+          : Number(BigInt.asIntN(32, next));
+        bindings.setStyle(hwnd, nativeNext);
+      }
+      // If SetWindowPos fails after the style write, remember that the frame
+      // refresh is still owed. A later poll must retry it even though reading
+      // the style bit now reports the desired value.
+      styleRefreshPending = true;
+      if (!bindings.refreshStyle(hwnd)) {
+        if (!refreshFailureReported) {
+          refreshFailureReported = true;
+          reportError(new Error("Windows hit-window style refresh failed"));
+        }
+        return false;
+      }
+      styleRefreshPending = false;
+      refreshFailureReported = false;
       const observed = asUnsignedStyle(bindings.getStyle(hwnd), pointerBits);
       return ((observed & WS_EX_NOACTIVATE) !== 0n) === !!enabled;
     } catch (error) {
-      onError(error);
+      reportError(error);
       return false;
     }
   }
@@ -165,8 +184,24 @@ function createHitWindowFocusableSetter(options = {}) {
   };
 }
 
+function createHitWindowActivationRuntime(options = {}) {
+  const isWin = options.isWin != null ? !!options.isWin : process.platform === "win32";
+  const controller = createHitWindowActivationController({ ...options, isWin });
+  const setHitWinFocusable = createHitWindowFocusableSetter({
+    isWin,
+    controller,
+    getHitWindow: options.getHitWindow,
+  });
+  return {
+    controller,
+    windowsHitWindowFocusable: isWin && !controller.available,
+    setHitWinFocusable,
+  };
+}
+
 module.exports = {
   createHitWindowActivationController,
+  createHitWindowActivationRuntime,
   createHitWindowFocusableSetter,
   GWL_EXSTYLE,
   WS_EX_NOACTIVATE,

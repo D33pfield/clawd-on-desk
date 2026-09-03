@@ -177,8 +177,7 @@ const {
 const createTopmostRuntime = require("./topmost-runtime");
 const { WIN_TOPMOST_LEVEL } = createTopmostRuntime;
 const {
-  createHitWindowActivationController,
-  createHitWindowFocusableSetter,
+  createHitWindowActivationRuntime,
 } = require("./win-hit-window-activation");
 const { startMobilePreviewServerSafely } = require("./network/mobile-preview-lifecycle");
 const createThemeFadeSequencer = require("./theme-fade-sequencer");
@@ -235,9 +234,10 @@ const _isForegroundFullscreen = createForegroundFullscreenProbe({
   isWin,
   onError: (err) => console.warn("Clawd: win-fullscreen-detect not available:", err && err.message),
 });
-const _hitWindowActivationController = createHitWindowActivationController({
+const _hitWindowActivationRuntime = createHitWindowActivationRuntime({
   isWin,
-  onError: (err) => console.warn("Clawd: win-hit-window-activation not available:", err && err.message),
+  getHitWindow: () => hitWin,
+  onError: (err) => console.warn("Clawd: win-hit-window-activation failed:", err && err.message),
 });
 
 // ── Windows: DWM cloak inspection + un-cloak (#525 self-heal) ──
@@ -1046,7 +1046,7 @@ const petWindowRuntime = createPetWindowRuntime({
   isWin,
   isMac,
   isLinux,
-  windowsHitWindowFocusable: isWin && !_hitWindowActivationController.available,
+  windowsHitWindowFocusable: _hitWindowActivationRuntime.windowsHitWindowFocusable,
   linuxWindowType: LINUX_WINDOW_TYPE,
   topmostLevel: WIN_TOPMOST_LEVEL,
   getRenderWindow: () => win,
@@ -1829,11 +1829,7 @@ function moveWindowForDrag() { return petWindowRuntime.moveWindowForDrag(); }
 // lifetime so Chromium cannot explicitly activate Clawd on pointerdown. If
 // Koffi/user32 initialization failed, construction deliberately falls back to
 // the legacy focusable window so desktop click/drag remains available.
-const setHitWinFocusable = createHitWindowFocusableSetter({
-  isWin,
-  controller: _hitWindowActivationController,
-  getHitWindow: () => hitWin,
-});
+const setHitWinFocusable = _hitWindowActivationRuntime.setHitWinFocusable;
 
 // ── Mini Mode — delegated to src/mini.js ──
 // Initialized after state module (needs applyState, resolveDisplayState, etc.)

@@ -4,6 +4,7 @@ const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert");
 const WebSocket = require("ws");
 const http = require("http");
+const { EventEmitter } = require("events");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -188,6 +189,51 @@ describe("Mobile Preview Server port fallback", () => {
     }
   });
 
+  it("retries the actual start path after a synthetic Windows EACCES", async () => {
+    const attempts = [];
+    const tmpTokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-port-eacces-"));
+    class SyntheticHttpServer extends EventEmitter {
+      constructor() {
+        super();
+        this.listening = false;
+      }
+
+      listen(port) {
+        attempts.push(port);
+        queueMicrotask(() => {
+          if (port === 23334) {
+            const error = new Error("synthetic reserved port");
+            error.code = "EACCES";
+            this.emit("error", error);
+            return;
+          }
+          this.listening = true;
+          this.emit("listening");
+        });
+      }
+
+      close() { this.listening = false; }
+    }
+    class SyntheticWebSocketServer extends EventEmitter {
+      close() {}
+    }
+    const server = initMobilePreviewServer({
+      sessions: new Map(),
+      getPendingPermissions: () => [],
+      tokenPath: path.join(tmpTokenDir, "mobile-token.json"),
+      createHttpServer: () => new SyntheticHttpServer(),
+      WebSocketServer: SyntheticWebSocketServer,
+    });
+
+    try {
+      assert.equal(await server.start(), 23335);
+      assert.deepStrictEqual(attempts, [23334, 23335]);
+    } finally {
+      server.cleanup();
+      try { fs.rmSync(tmpTokenDir, { recursive: true }); } catch {}
+    }
+  });
+
   it("rejects after all candidate ports without arming token rotation", async () => {
     const blockers = [];
     for (let port = 23334; port <= 23338; port++) blockers.push(await occupyPort(port));
@@ -260,6 +306,38 @@ describe("Mobile Preview Server port fallback", () => {
     }
   });
 
+  it("keeps a replacement start cancellable after the old rejection continuation runs", async () => {
+    const tmpTokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-start-generation-"));
+    class PendingHttpServer extends EventEmitter {
+      constructor() {
+        super();
+        this.listening = false;
+      }
+
+      listen() {}
+      close() { this.listening = false; }
+    }
+    const server = initMobilePreviewServer({
+      sessions: new Map(),
+      getPendingPermissions: () => [],
+      tokenPath: path.join(tmpTokenDir, "mobile-token.json"),
+      createHttpServer: () => new PendingHttpServer(),
+    });
+
+    try {
+      const first = server.start();
+      server.cleanup();
+      const replacement = server.start();
+
+      await assert.rejects(first, (err) => err && err.code === "ECANCELED");
+      server.cleanup();
+      await assert.rejects(replacement, (err) => err && err.code === "ECANCELED");
+    } finally {
+      server.cleanup();
+      try { fs.rmSync(tmpTokenDir, { recursive: true }); } catch {}
+    }
+  });
+
   it("releases the HTTP listener when WebSocket attachment fails", async () => {
     const tmpTokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-ws-attach-failure-"));
     const server = initMobilePreviewServer({
@@ -273,6 +351,38 @@ describe("Mobile Preview Server port fallback", () => {
     try {
       await assert.rejects(server.start(), /synthetic ws attach failure/);
       assert.equal(server.getPort(), null);
+    } finally {
+      server.cleanup();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      try { fs.rmSync(tmpTokenDir, { recursive: true }); } catch {}
+    }
+  });
+
+  it("observes a WebSocket runtime error after successful attachment", async () => {
+    const tmpTokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-ws-runtime-error-"));
+    let socketServer = null;
+    class SyntheticWebSocketServer extends EventEmitter {
+      constructor() {
+        super();
+        socketServer = this;
+      }
+
+      close() {}
+    }
+    const logs = [];
+    const server = initMobilePreviewServer({
+      sessions: new Map(),
+      getPendingPermissions: () => [],
+      tokenPath: path.join(tmpTokenDir, "mobile-token.json"),
+      WebSocketServer: SyntheticWebSocketServer,
+      onWebSocketError: (error) => logs.push(error.message),
+    });
+
+    try {
+      await server.start();
+      socketServer.emit("error", new Error("synthetic runtime failure"));
+      assert.equal(logs.length, 1);
+      assert.match(logs[0], /synthetic runtime failure/);
     } finally {
       server.cleanup();
       await new Promise((resolve) => setTimeout(resolve, 100));

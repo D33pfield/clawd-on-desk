@@ -7,12 +7,18 @@ const path = require("node:path");
 
 const {
   createHitWindowActivationController,
+  createHitWindowActivationRuntime,
   createHitWindowFocusableSetter,
   WS_EX_NOACTIVATE,
   STYLE_REFRESH_FLAGS,
 } = require("../src/win-hit-window-activation");
 
-function makeHarness({ initialStyle = 0n, electronFocusable = false, refreshResult = true } = {}) {
+function makeHarness({
+  initialStyle = 0n,
+  electronFocusable = false,
+  refreshResult = true,
+  onError,
+} = {}) {
   let style = initialStyle;
   const nativeCalls = [];
   const electronCalls = [];
@@ -44,9 +50,10 @@ function makeHarness({ initialStyle = 0n, electronFocusable = false, refreshResu
       refreshStyle(candidate) {
         assert.strictEqual(candidate, hwnd);
         nativeCalls.push(["refreshStyle", STYLE_REFRESH_FLAGS]);
-        return refreshResult;
+        return typeof refreshResult === "function" ? refreshResult() : refreshResult;
       },
     },
+    onError,
   });
   return {
     controller,
@@ -110,6 +117,21 @@ describe("Windows hit-window activation controller", () => {
     assert.deepStrictEqual(h.electronCalls, []);
   });
 
+  it("retries an owed native style refresh even when the style bit already matches", () => {
+    let refreshCalls = 0;
+    const errors = [];
+    const h = makeHarness({
+      refreshResult: () => ++refreshCalls > 1,
+      onError: (error) => errors.push(error.message),
+    });
+
+    assert.equal(h.controller.setFocusable(h.win, false), false);
+    assert.equal((h.getStyle() & WS_EX_NOACTIVATE) !== 0n, true);
+    assert.equal(h.controller.setFocusable(h.win, false), true);
+    assert.equal(refreshCalls, 2);
+    assert.deepStrictEqual(errors, ["Windows hit-window style refresh failed"]);
+  });
+
   it("degrades without mutating Electron focusability when native bindings are unavailable", () => {
     const calls = [];
     const errors = [];
@@ -131,19 +153,55 @@ describe("Windows hit-window activation controller", () => {
 
   it("routes main's fullscreen focusability changes through the native controller", () => {
     const mainSource = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
-    const start = mainSource.indexOf("const setHitWinFocusable = createHitWindowFocusableSetter({");
-    const end = mainSource.indexOf("// ── Mini Mode", start);
+    const start = mainSource.indexOf(
+      "const _hitWindowActivationRuntime = createHitWindowActivationRuntime({",
+    );
+    const end = mainSource.indexOf("\n});", start);
     assert.ok(start >= 0 && end > start);
-    const setterSource = mainSource.slice(start, end);
+    const compositionSource = mainSource.slice(start, end);
 
-    assert.match(setterSource, /controller:\s*_hitWindowActivationController/);
-    assert.match(setterSource, /getHitWindow:\s*\(\)\s*=>\s*hitWin/);
-    assert.doesNotMatch(mainSource, /hitWin\.setFocusable\(/);
-    assert.match(mainSource, /setHitWinFocusable,\s*\n/);
+    assert.match(compositionSource, /isWin,/);
+    assert.match(compositionSource, /getHitWindow:\s*\(\)\s*=>\s*hitWin/);
     assert.match(
       mainSource,
-      /windowsHitWindowFocusable:\s*isWin\s*&&\s*!_hitWindowActivationController\.available/,
+      /windowsHitWindowFocusable:\s*_hitWindowActivationRuntime\.windowsHitWindowFocusable/,
     );
+    assert.match(
+      mainSource,
+      /const setHitWinFocusable = _hitWindowActivationRuntime\.setHitWinFocusable/,
+    );
+    assert.doesNotMatch(mainSource, /hitWin\.setFocusable\(/);
+    assert.match(mainSource, /setHitWinFocusable,\s*\n/);
+  });
+
+  it("composes controller availability, fallback construction, and the live setter", () => {
+    let style = WS_EX_NOACTIVATE;
+    const hitWin = { isDestroyed: () => false };
+    const runtime = createHitWindowActivationRuntime({
+      isWin: true,
+      pointerBits: 64,
+      getHitWindow: () => hitWin,
+      hwndOf: (candidate) => candidate === hitWin ? 42n : null,
+      bindings: {
+        getStyle: () => style,
+        setStyle: (_hwnd, next) => { style = BigInt.asUintN(64, BigInt(next)); },
+        refreshStyle: () => true,
+      },
+    });
+
+    assert.equal(runtime.controller.available, true);
+    assert.equal(runtime.windowsHitWindowFocusable, false);
+    assert.equal(runtime.setHitWinFocusable(true), true);
+    assert.equal((style & WS_EX_NOACTIVATE) !== 0n, false);
+
+    const fallback = createHitWindowActivationRuntime({
+      isWin: true,
+      getHitWindow: () => hitWin,
+      koffi: { load() { throw new Error("synthetic unavailable"); } },
+    });
+    assert.equal(fallback.controller.available, false);
+    assert.equal(fallback.windowsHitWindowFocusable, true);
+    assert.equal(fallback.setHitWinFocusable(false), false);
   });
 
   it("the main-wiring setter delegates dynamically to the owned hit window", () => {

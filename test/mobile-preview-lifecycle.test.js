@@ -46,6 +46,16 @@ describe("mobile preview lifecycle", () => {
     assert.deepStrictEqual(errors, []);
   });
 
+  it("still contains the start failure when the error reporter throws", async () => {
+    const result = await startMobilePreviewServerSafely({
+      start: () => Promise.reject(new Error("bind failure")),
+    }, {
+      onError() { throw new Error("logger failure"); },
+    });
+
+    assert.equal(result, null);
+  });
+
   it("wires both main-process start sites through the safe helper", () => {
     const mainSource = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
     const helperCalls = mainSource.match(/startMobilePreviewServerSafely\(_lanWss,/g) || [];

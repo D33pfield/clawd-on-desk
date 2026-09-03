@@ -636,7 +636,7 @@ describe("topmost runtime Windows recovery", () => {
     assert.strictEqual(timers.intervals.length, 1);
     assert.deepStrictEqual(focusableCalls, [false]);
 
-    // Leaving fullscreen restores activation on the next tick (drag needs it, #545).
+    // Leaving fullscreen restores ordinary desktop activation semantics on the next tick.
     fullscreen = false;
     timers.intervals[0].fn();
     assert.deepStrictEqual(focusableCalls, [false, true]);
