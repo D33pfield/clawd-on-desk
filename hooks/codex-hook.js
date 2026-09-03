@@ -5,6 +5,40 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
+
+// Windows local stable entries used to run through an inline PowerShell
+// dispatcher that decoded this sidecar and injected CLAWD_* / remote env
+// vars into this process. Windows Defender's ML heuristic flags that
+// dispatcher's command line as Trojan:Win32/Commando.A!ml on every Codex
+// PowerShell launch, so env injection moved here: read the same mutable
+// UTF-8/Base64 data sidecar that codex-install-utils.js writes and apply it
+// before any hook code (or hook dependency) runs. A missing/corrupt sidecar
+// degrades to unchanged env — local installs carry no sidecar env and never
+// depended on it.
+(function applyWindowsStableSidecarEnv() {
+  if (process.platform !== "win32") return;
+  const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+  const sidecar = path.join(codexHome, "clawd-hooks", "codex-hook.js.windows.run");
+  let lines;
+  try {
+    lines = fs.readFileSync(sidecar, "utf8").replace(/\r\n/g, "\n").split("\n");
+  } catch {
+    return;
+  }
+  if (lines[0] !== "clawd-codex-stable-windows-run-v1") return;
+  const decode = (value) => Buffer.from(value, "base64").toString("utf8");
+  for (let i = 3; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line || !line.startsWith("E")) continue;
+    const sep = line.indexOf(".");
+    if (sep < 2) continue;
+    const key = decode(line.slice(1, sep));
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    process.env[key] = decode(line.slice(sep + 1));
+  }
+})();
+
 const { spawn } = require("child_process");
 const { StringDecoder } = require("string_decoder");
 const {
