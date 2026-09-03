@@ -2290,9 +2290,13 @@ function createPetWindowRuntime(options = {}) {
       enableLargerThanScreen: true,
       ...(isLinux ? { type: linuxWindowType } : {}),
       ...(isMac ? { type: "panel", roundedCorners: false } : {}),
-      // KEY EXPERIMENT: allow activation to avoid WS_EX_NOACTIVATE input
-      // routing bugs. Linux keeps the old non-focusable behavior.
-      focusable: !isLinux,
+      // Windows starts with Electron's activation path disabled. The native
+      // activation controller removes WS_EX_NOACTIVATE outside fullscreen,
+      // but Electron itself must remain non-focusable so Chromium does not
+      // explicitly activate Clawd on a fullscreen click/drag.
+      // Linux keeps its existing non-focusable behavior; macOS is normalized
+      // immediately after construction below.
+      focusable: !isWin && !isLinux,
       webPreferences: {
         preload: optionsArg.preloadPath,
         backgroundThrottling: false,

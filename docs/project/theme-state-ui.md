@@ -7,11 +7,11 @@ This document holds the state machine, theme system, UI runtime, and platform ca
 桌宠使用两个独立的顶层窗口：
 
 - 渲染窗口（`win`）：透明大窗口，永久 `setIgnoreMouseEvents(true)`，只负责显示 SVG 动画和眼球追踪
-- 输入窗口（`hitWin`）：小矩形窗口，`transparent: true` + `setShape` 覆盖 hitbox 区域，`focusable: true`，永久 `setIgnoreMouseEvents(false)`，接收所有 pointer 事件
+- 输入窗口（`hitWin`）：小矩形窗口，`transparent: true` + `setShape` 覆盖 hitbox 区域，Windows / Linux 以 Electron `focusable: false` 创建，永久 `setIgnoreMouseEvents(false)`，接收所有 pointer 事件
 
 输入事件流：`hitWin renderer → IPC → main → renderWin renderer`
 
-这个架构解决了 Windows 上的拖拽失效 bug：`WS_EX_NOACTIVATE` + layered window + Chromium child HWND 的组合在 z-order 变化后会走进激活死路径。分离后输入窗口保持 `focusable: true`，避开了这个问题。
+Windows 的 hit window 由原生 activation controller 按前台全屏状态切换 `WS_EX_NOACTIVATE`：非全屏时清除该样式，避开 layered Chromium 的旧输入路由死路径；全屏时设置该样式，避免点击和拖拽把前台切到 Clawd。Electron 内部则始终保持 non-focusable，避免 Chromium 在 pointerdown 时绕过原生样式主动激活窗口。输入窗口仍和渲染窗口分离，并永久接收 mouse events，避免旧单窗口 alpha hit-test 路径的拖拽失效。
 
 ## State Machine
 
@@ -196,7 +196,7 @@ Mini 状态映射：
 ## Electron And Platform Notes
 
 - `win.setFocusable(false)`：渲染窗口永不抢焦点
-- `hitWin.focusable: true`：输入窗口允许激活，这是修复拖拽 bug 的关键
+- Windows `hitWin`：Electron 始终 non-focusable；仅在非全屏前台时由原生 controller 清除 `WS_EX_NOACTIVATE`，全屏时重新设置
 - `win.showInactive()`：显示时不打断用户输入
 - 渲染 / 输入窗口都依赖 `backgroundThrottling: false`；unfocused 节流会放大眼球追踪和输入恢复的时序问题
 - 路径统一用 `path.join(__dirname, ...)`
@@ -207,7 +207,7 @@ Mini 状态映射：
 
 ## Known Limits
 
-- `hitWin` 点击会短暂抢焦点，这是当前可接受代价
+- Windows 原生 activation controller 依赖打包目标内的 Koffi；不可用时 fail closed，不调用会扰动前台的 Electron `setFocusable(false)`
 - 当前开发环境没有 macOS 手测机；所有 macOS 特定路径都只能做 code review + best-effort 推断，真正行为变化需要额外人工验证
 - 启动恢复依赖 `detectRunningClaudeProcesses()` 与后续 hook 事件
 - Windows 前台窗口锁通过 ALT trick + `koffi` FFI 绕过，仍有边缘失败可能

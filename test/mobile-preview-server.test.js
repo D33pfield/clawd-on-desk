@@ -109,6 +109,51 @@ function waitForClose(ws, timeoutMs = 3000) {
   });
 }
 
+describe("Mobile Preview Server port fallback", () => {
+  it("advances past an occupied 23334 without a WebSocketServer error", async () => {
+    const blocker = http.createServer((_req, res) => res.end());
+    let ownsBlocker = false;
+    await new Promise((resolve, reject) => {
+      blocker.once("error", (error) => {
+        if (error && error.code === "EADDRINUSE") {
+          resolve();
+          return;
+        }
+        reject(error);
+      });
+      blocker.listen(23334, "0.0.0.0", () => {
+        ownsBlocker = true;
+        resolve();
+      });
+    });
+
+    const tmpTokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-port-fallback-"));
+    const server = initMobilePreviewServer({
+      sessions: new Map(),
+      getPendingPermissions: () => [],
+      tokenPath: path.join(tmpTokenDir, "mobile-token.json"),
+    });
+    try {
+      const port = await server.start();
+      assert.notStrictEqual(port, 23334);
+      assert.ok(port >= 23335 && port <= 23338);
+      const res = await httpGet(port, "/api/connection-info");
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(JSON.parse(res.body).port, port);
+    } finally {
+      server.cleanup();
+      // cleanup() intentionally stays synchronous for production callers;
+      // give the underlying close callbacks one turn before the next suite
+      // reuses the same fallback port.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (ownsBlocker) {
+        await new Promise((resolve) => blocker.close(resolve));
+      }
+      try { fs.rmSync(tmpTokenDir, { recursive: true }); } catch {}
+    }
+  });
+});
+
 // ── Original test suite (adapted to use injectable tokenPath) ──
 
 describe("Mobile Preview Server", () => {

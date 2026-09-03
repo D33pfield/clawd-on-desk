@@ -2805,7 +2805,7 @@ describe("pet-window-runtime", () => {
     assert.doesNotMatch(petRuntimeOptions, /[,{]\s*isNearWorkAreaEdge\s*,/);
   });
 
-  it("creates the hit window with the Windows drag focusability contract", () => {
+  it("creates the Windows hit window with Electron activation disabled", () => {
     const instances = [];
     const harness = createRuntime();
     harness.runtime.createHitWindow({
@@ -2816,7 +2816,7 @@ describe("pet-window-runtime", () => {
       guardAlwaysOnTop: (win) => harness.calls.push(["guard", win]),
     });
 
-    assert.equal(instances[0].options.focusable, true);
+    assert.equal(instances[0].options.focusable, false);
     assert.deepStrictEqual(instances[0].calls.filter((call) => call[0] === "setIgnoreMouseEvents"), [
       ["setIgnoreMouseEvents", false],
     ]);

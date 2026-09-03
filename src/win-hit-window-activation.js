@@ -1,0 +1,161 @@
+"use strict";
+
+// Electron's BrowserWindow.setFocusable(false) calls Focus(false) on Windows.
+// That deactivates whichever application currently owns the foreground, so
+// using it when a fullscreen game/video is detected makes Clawd itself take
+// foreground. The hit BrowserWindow is therefore created with Electron
+// focusability disabled for its whole lifetime, while this controller toggles
+// only native WS_EX_NOACTIVATE. Clearing that style outside fullscreen avoids
+// the old layered-window input-routing dead path; setting it in fullscreen
+// keeps Chromium's pointer path without allowing either Windows or Electron
+// to activate the transparent hit layer.
+
+const GWL_EXSTYLE = -20;
+const WS_EX_NOACTIVATE = 0x08000000n;
+const SWP_NOSIZE = 0x0001;
+const SWP_NOMOVE = 0x0002;
+const SWP_NOZORDER = 0x0004;
+const SWP_NOACTIVATE = 0x0010;
+const SWP_FRAMECHANGED = 0x0020;
+const STYLE_REFRESH_FLAGS = SWP_NOSIZE
+  | SWP_NOMOVE
+  | SWP_NOZORDER
+  | SWP_NOACTIVATE
+  | SWP_FRAMECHANGED;
+
+function asUnsignedStyle(value, pointerBits) {
+  const raw = typeof value === "bigint" ? value : BigInt(value);
+  return BigInt.asUintN(pointerBits, raw);
+}
+
+function createHitWindowActivationController(options = {}) {
+  const isWin = options.isWin != null ? !!options.isWin : process.platform === "win32";
+  const onError = typeof options.onError === "function" ? options.onError : () => {};
+
+  let bindings = options.bindings || null;
+  let hwndOf = options.hwndOf || null;
+  let pointerBits = Number(options.pointerBits) || 0;
+
+  if (isWin && !bindings) {
+    try {
+      const koffi = options.koffi || require("koffi");
+      const user32 = koffi.load("user32.dll");
+      const ptrSize = koffi.sizeof("void *");
+      pointerBits = ptrSize * 8;
+      const GetWindowLongPtrW = user32.func(
+        "intptr_t __stdcall GetWindowLongPtrW(void* hWnd, int nIndex)",
+      );
+      const SetWindowLongPtrW = user32.func(
+        "intptr_t __stdcall SetWindowLongPtrW(void* hWnd, int nIndex, intptr_t dwNewLong)",
+      );
+      const SetWindowPos = user32.func(
+        "bool __stdcall SetWindowPos(void* hWnd, void* hWndInsertAfter, int X, int Y, int cx, int cy, uint32 uFlags)",
+      );
+      bindings = {
+        getStyle: (hwnd) => GetWindowLongPtrW(hwnd, GWL_EXSTYLE),
+        setStyle: (hwnd, value) => SetWindowLongPtrW(hwnd, GWL_EXSTYLE, value),
+        refreshStyle: (hwnd) => SetWindowPos(hwnd, null, 0, 0, 0, 0, STYLE_REFRESH_FLAGS),
+      };
+      hwndOf = (win) => {
+        if (!win || typeof win.getNativeWindowHandle !== "function") return null;
+        const handle = win.getNativeWindowHandle();
+        if (!handle || handle.length < ptrSize) return null;
+        return koffi.decode(handle, "void *");
+      };
+    } catch (error) {
+      onError(error);
+      bindings = null;
+      hwndOf = null;
+    }
+  }
+
+  if (!pointerBits) pointerBits = 64;
+  const available = !!(
+    isWin
+    && bindings
+    && typeof bindings.getStyle === "function"
+    && typeof bindings.setStyle === "function"
+    && typeof bindings.refreshStyle === "function"
+    && typeof hwndOf === "function"
+  );
+
+  function liveHwnd(win) {
+    if (!available || !win) return null;
+    if (typeof win.isDestroyed === "function" && win.isDestroyed()) return null;
+    try {
+      return hwndOf(win);
+    } catch (error) {
+      onError(error);
+      return null;
+    }
+  }
+
+  function readNoActivate(win) {
+    const hwnd = liveHwnd(win);
+    if (!hwnd) return null;
+    try {
+      const style = asUnsignedStyle(bindings.getStyle(hwnd), pointerBits);
+      return (style & WS_EX_NOACTIVATE) !== 0n;
+    } catch (error) {
+      onError(error);
+      return null;
+    }
+  }
+
+  function setNoActivate(win, enabled) {
+    const hwnd = liveHwnd(win);
+    if (!hwnd) return false;
+    try {
+      const current = asUnsignedStyle(bindings.getStyle(hwnd), pointerBits);
+      const next = enabled
+        ? current | WS_EX_NOACTIVATE
+        : current & ~WS_EX_NOACTIVATE;
+      if (next === current) return true;
+
+      const nativeNext = pointerBits > 32
+        ? BigInt.asIntN(pointerBits, next)
+        : Number(BigInt.asIntN(32, next));
+      bindings.setStyle(hwnd, nativeNext);
+      if (!bindings.refreshStyle(hwnd)) return false;
+      const observed = asUnsignedStyle(bindings.getStyle(hwnd), pointerBits);
+      return ((observed & WS_EX_NOACTIVATE) !== 0n) === !!enabled;
+    } catch (error) {
+      onError(error);
+      return false;
+    }
+  }
+
+  function setFocusable(win, focusable) {
+    if (!isWin || !win) return false;
+    if (typeof win.isDestroyed === "function" && win.isDestroyed()) return false;
+    const next = !!focusable;
+
+    if (!next) {
+      // Do not fall back to BrowserWindow.setFocusable(false): that exact call
+      // deactivates the user's fullscreen foreground window. If native style
+      // control is unavailable, preserve the non-activating construction
+      // state; that is safer than stealing focus automatically.
+      return setNoActivate(win, true);
+    }
+
+    // Never call BrowserWindow.setFocusable(true). Electron must continue to
+    // consider the hit layer non-focusable, otherwise Chromium explicitly
+    // activates it on pointerdown even while WS_EX_NOACTIVATE is present.
+    // Native style removal is sufficient to retain normal desktop input
+    // routing; the Electron-level non-focusable contract remains intact.
+    return available && setNoActivate(win, false);
+  }
+
+  return {
+    available,
+    isNonActivating: readNoActivate,
+    setFocusable,
+  };
+}
+
+module.exports = {
+  createHitWindowActivationController,
+  GWL_EXSTYLE,
+  WS_EX_NOACTIVATE,
+  STYLE_REFRESH_FLAGS,
+};

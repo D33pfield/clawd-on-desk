@@ -176,6 +176,7 @@ const {
 } = require("./mac-dock-icon-runtime");
 const createTopmostRuntime = require("./topmost-runtime");
 const { WIN_TOPMOST_LEVEL } = createTopmostRuntime;
+const { createHitWindowActivationController } = require("./win-hit-window-activation");
 const createThemeFadeSequencer = require("./theme-fade-sequencer");
 const createThemeRuntime = require("./theme-runtime");
 const createAgentRuntimeMain = require("./agent-runtime-main");
@@ -229,6 +230,10 @@ const { createForegroundFullscreenProbe } = require("./win-fullscreen-detect");
 const _isForegroundFullscreen = createForegroundFullscreenProbe({
   isWin,
   onError: (err) => console.warn("Clawd: win-fullscreen-detect not available:", err && err.message),
+});
+const _hitWindowActivationController = createHitWindowActivationController({
+  isWin,
+  onError: (err) => console.warn("Clawd: win-hit-window-activation not available:", err && err.message),
 });
 
 // ── Windows: DWM cloak inspection + un-cloak (#525 self-heal) ──
@@ -1810,30 +1815,16 @@ function beginDragSnapshot() { return petWindowRuntime.beginDragSnapshot(); }
 function clearDragSnapshot() { return petWindowRuntime.clearDragSnapshot(); }
 function moveWindowForDrag() { return petWindowRuntime.moveWindowForDrag(); }
 
-// Windows-only (#538 drag focus-steal): the topmost watchdog calls this each
-// tick with the inverse of the fullscreen state. While a fullscreen app owns
-// the foreground we drop the hit window's activation so a click on the pet
-// can't steal focus from an exclusive-fullscreen game and minimize it; we
-// restore it when fullscreen ends because dragging needs activation (#545).
-// Idempotent via isFocusable() so the per-tick call is a no-op when unchanged.
+// Windows-only (#538/#562 drag focus-steal): the topmost runtime calls this
+// with the inverse of the fullscreen state. The native controller toggles
+// WS_EX_NOACTIVATE without calling BrowserWindow.setFocusable(false), whose
+// Focus(false) side effect deactivates the user's fullscreen foreground app.
+// Leaving fullscreen removes the native style, while Electron itself remains
+// non-focusable for the hit window's lifetime so Chromium cannot explicitly
+// activate Clawd on pointerdown.
 function setHitWinFocusable(focusable) {
   if (!isWin) return;
-  if (!hitWin || hitWin.isDestroyed() || typeof hitWin.setFocusable !== "function") return;
-  const next = !!focusable;
-  if (typeof hitWin.isFocusable === "function" && hitWin.isFocusable() === next) return;
-  hitWin.setFocusable(next);
-  // Electron's NativeWindowViews::SetFocusable couples activation to the
-  // taskbar on Windows: SetFocusable(true) internally calls
-  // SetSkipTaskbar(false) → ITaskbarList::AddTab, so restoring activation
-  // after a fullscreen exit (or a screenshot overlay dismissing) flashes a
-  // taskbar button for the hit window (#586). Delete the tab again in the
-  // same turn, before the taskbar repaints.
-  // true-direction ONLY: SetFocusable(false) already deletes the tab
-  // internally, and re-deleting on that path broke cursor-drag while a
-  // fullscreen app was foreground (real-machine repro during #586 review;
-  // exact Windows-side mechanism unconfirmed). Do not "simplify" this into
-  // an unconditional call.
-  if (next) keepOutOfTaskbar(hitWin);
+  _hitWindowActivationController.setFocusable(hitWin, focusable);
 }
 
 // ── Mini Mode — delegated to src/mini.js ──

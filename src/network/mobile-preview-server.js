@@ -260,9 +260,22 @@ function initMobilePreviewServer(ctx) {
     });
   }
 
-  function createServers() {
+  function createHttpServer() {
     httpServer = http.createServer(serveStatic);
+  }
+
+  // Attach ws only after the HTTP server has successfully bound a port.
+  // WebSocket.Server forwards the underlying HTTP server's pre-listen
+  // EADDRINUSE as its own `error` event. When ws was attached before the port
+  // retry loop, that forwarded event had no server-level listener and crashed
+  // the process before start() could advance from 23334 to the next candidate.
+  function attachWebSocketServer() {
     wss = new WebSocket.Server({ server: httpServer, path: "/ws" });
+    // A post-listen server error is still surfaced by ws. Keep it observable
+    // without letting an EventEmitter `error` event terminate the desktop app.
+    wss.on("error", (err) => {
+      console.error("[mobile-preview] WebSocket server error:", err && err.message ? err.message : err);
+    });
 
     wss.on("connection", (ws, req) => {
       if (closed) { ws.close(1001, "Server shutting down"); return; }
@@ -474,7 +487,7 @@ function initMobilePreviewServer(ctx) {
 
   function start() {
     closed = false;
-    createServers();
+    createHttpServer();
     const ports = [];
     for (let i = 0; i < PORT_RANGE; i++) ports.push(DEFAULT_PORT + i);
     let idx = 0;
@@ -492,6 +505,15 @@ function initMobilePreviewServer(ctx) {
         reject(err);
       };
       const onListening = () => {
+        try {
+          attachWebSocketServer();
+        } catch (err) {
+          httpServer.removeListener("error", onError);
+          httpServer.removeListener("listening", onListening);
+          cleanup();
+          reject(err);
+          return;
+        }
         activePort = ports[idx];
         console.log(`[mobile-preview] started on 0.0.0.0:${activePort}`);
         httpServer.removeListener("error", onError);

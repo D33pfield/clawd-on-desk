@@ -238,10 +238,11 @@ async function waitForSmokeCondition(check, label, { timeoutMs = 8_000, sleepFn 
 async function runWindowsFullscreenAutoHideRuntimeProbe({
   BrowserWindow,
   fullscreenProbe,
+  hitActivation,
   timeoutMs = 8_000,
 } = {}) {
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const createPetWindow = (x, backgroundColor) => {
+  const createPetWindow = (x, backgroundColor, { focusable = false } = {}) => {
     const win = new BrowserWindow({
       show: false,
       x,
@@ -252,6 +253,7 @@ async function runWindowsFullscreenAutoHideRuntimeProbe({
       alwaysOnTop: true,
       skipTaskbar: true,
       backgroundColor,
+      focusable,
     });
     win.showInactive();
     win.setAlwaysOnTop(true, "pop-up-menu");
@@ -284,7 +286,7 @@ async function runWindowsFullscreenAutoHideRuntimeProbe({
       getFullscreenOverlay: () => false,
       setFullscreenAutoHidden: (...args) => petWindowRuntime.setFullscreenAutoHidden(...args),
       isFullscreenAutoHidden: () => petWindowRuntime.isFullscreenAutoHidden(),
-      setHitWinFocusable: (focusable) => hitWin.setFocusable(focusable),
+      setHitWinFocusable: (focusable) => hitActivation.setFocusable(hitWin, focusable),
     });
     topmostRuntime.startFocusablePoll();
 
@@ -399,13 +401,20 @@ async function runWindowsFullscreenAutoHideRuntimeProbe({
 
 async function runPlatformProbe({ BrowserWindow, target, koffi }) {
   if (target.runtimePlatform === "win32") {
-    const win = new BrowserWindow({ show: false, width: 80, height: 80, skipTaskbar: true });
+    const win = new BrowserWindow({
+      show: false,
+      width: 80,
+      height: 80,
+      skipTaskbar: true,
+      focusable: false,
+    });
     try {
       win.showInactive();
       await new Promise((resolve) => setTimeout(resolve, 100));
       const { createCloakInspector } = require("./win-cloak-recovery");
       const { createForegroundFullscreenProbe } = require("./win-fullscreen-detect");
       const { createForegroundWindowsTerminalProbe } = require("./win-foreground-terminal");
+      const { createHitWindowActivationController } = require("./win-hit-window-activation");
       const logs = [];
       const cloak = createCloakInspector({ isWin: true, log: (line) => logs.push(line) });
       try {
@@ -426,8 +435,27 @@ async function runPlatformProbe({ BrowserWindow, target, koffi }) {
           fullscreenProbe,
           koffi,
         });
+        const hitActivationErrors = [];
+        const hitActivation = createHitWindowActivationController({
+          isWin: true,
+          koffi,
+          onError: (err) => hitActivationErrors.push(err && err.message ? err.message : String(err)),
+        });
+        if (!hitActivation.available) {
+          throw new Error(`Hit-window activation controller unavailable: ${hitActivationErrors.join(" | ")}`);
+        }
+        if (!hitActivation.setFocusable(win, false) || hitActivation.isNonActivating(win) !== true) {
+          throw new Error(`Packaged WS_EX_NOACTIVATE enable failed: ${hitActivationErrors.join(" | ")}`);
+        }
+        if (!hitActivation.setFocusable(win, true) || hitActivation.isNonActivating(win) !== false) {
+          throw new Error(`Packaged WS_EX_NOACTIVATE restore failed: ${hitActivationErrors.join(" | ")}`);
+        }
         const fullscreenAutoHideRuntime = fullscreenIdentity.foregroundControllable
-          ? await runWindowsFullscreenAutoHideRuntimeProbe({ BrowserWindow, fullscreenProbe })
+          ? await runWindowsFullscreenAutoHideRuntimeProbe({
+            BrowserWindow,
+            fullscreenProbe,
+            hitActivation,
+          })
           : {
             skipped: true,
             reason: "packaged-runner-cannot-focus-browser-windows",
@@ -461,6 +489,7 @@ async function runPlatformProbe({ BrowserWindow, target, koffi }) {
           foregroundFullscreen: fullscreen,
           fullscreenIdentity,
           fullscreenAutoHideRuntime,
+          hitWindowNoActivateRoundTrip: true,
           foregroundTerminalHwnd,
           foregroundTerminalExpectedMiss: foregroundTerminalHwnd === null,
           logs,
