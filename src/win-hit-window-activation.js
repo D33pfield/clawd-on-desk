@@ -3,12 +3,11 @@
 // Electron's BrowserWindow.setFocusable(false) calls Focus(false) on Windows.
 // That deactivates whichever application currently owns the foreground, so
 // using it when a fullscreen game/video is detected makes Clawd itself take
-// foreground. The hit BrowserWindow is therefore created with Electron
-// focusability disabled for its whole lifetime, while this controller toggles
-// only native WS_EX_NOACTIVATE. Clearing that style outside fullscreen avoids
-// the old layered-window input-routing dead path; setting it in fullscreen
-// keeps Chromium's pointer path without allowing either Windows or Electron
-// to activate the transparent hit layer.
+// foreground. When available, this controller lets the hit BrowserWindow stay
+// Electron-non-focusable for its lifetime and toggles only WS_EX_NOACTIVATE.
+// Desktop pointer delivery is validated independently; clearing the native
+// style restores ordinary activation semantics but is not claimed as the
+// cause of input routing.
 
 const GWL_EXSTYLE = -20;
 const WS_EX_NOACTIVATE = 0x08000000n;
@@ -133,16 +132,17 @@ function createHitWindowActivationController(options = {}) {
     if (!next) {
       // Do not fall back to BrowserWindow.setFocusable(false): that exact call
       // deactivates the user's fullscreen foreground window. If native style
-      // control is unavailable, preserve the non-activating construction
-      // state; that is safer than stealing focus automatically.
+      // control is unavailable, main uses the legacy focusable construction
+      // instead. This method stays a no-op rather than mixing Electron and
+      // native activation paths after the window has been created.
       return setNoActivate(win, true);
     }
 
     // Never call BrowserWindow.setFocusable(true). Electron must continue to
     // consider the hit layer non-focusable, otherwise Chromium explicitly
     // activates it on pointerdown even while WS_EX_NOACTIVATE is present.
-    // Native style removal is sufficient to retain normal desktop input
-    // routing; the Electron-level non-focusable contract remains intact.
+    // Clearing the native style restores ordinary desktop activation behavior;
+    // the Electron-level non-focusable contract remains intact.
     return available && setNoActivate(win, false);
   }
 
@@ -153,8 +153,21 @@ function createHitWindowActivationController(options = {}) {
   };
 }
 
+function createHitWindowFocusableSetter(options = {}) {
+  const isWin = !!options.isWin;
+  const controller = options.controller;
+  const getHitWindow = typeof options.getHitWindow === "function"
+    ? options.getHitWindow
+    : () => null;
+  return function setHitWinFocusable(focusable) {
+    if (!isWin || !controller || typeof controller.setFocusable !== "function") return false;
+    return controller.setFocusable(getHitWindow(), focusable);
+  };
+}
+
 module.exports = {
   createHitWindowActivationController,
+  createHitWindowFocusableSetter,
   GWL_EXSTYLE,
   WS_EX_NOACTIVATE,
   STYLE_REFRESH_FLAGS,

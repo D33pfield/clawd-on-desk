@@ -776,8 +776,8 @@ function createTopmostRuntime(options = {}) {
     // Sync once up front: if Clawd starts (or this re-arms) while a fullscreen
     // game is already foreground, drop the hit window's activation immediately
     // rather than leaving it activatable for up to one poll interval (the hit
-    // window is created focusable: true). Idempotent, so the desktop case is a
-    // no-op. The #935 auto-hide gets the same up-front treatment for the same
+    // window could otherwise retain activating native styles). Idempotent, so
+    // the desktop case is a no-op. The #935 auto-hide gets the same up-front
     // reason.
     syncFocusablePollTick();
     focusablePoll = setIntervalFn(syncFocusablePollTick, focusablePollMs);

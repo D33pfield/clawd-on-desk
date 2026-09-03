@@ -113,6 +113,7 @@ function createPetWindowRuntime(options = {}) {
   const isWin = !!options.isWin;
   const isMac = !!options.isMac;
   const isLinux = !!options.isLinux;
+  const windowsHitWindowFocusable = isWin && options.windowsHitWindowFocusable === true;
   const linuxWindowType = options.linuxWindowType;
   const topmostLevel = options.topmostLevel;
   const getRenderWindow = options.getRenderWindow || (() => null);
@@ -2290,13 +2291,15 @@ function createPetWindowRuntime(options = {}) {
       enableLargerThanScreen: true,
       ...(isLinux ? { type: linuxWindowType } : {}),
       ...(isMac ? { type: "panel", roundedCorners: false } : {}),
-      // Windows starts with Electron's activation path disabled. The native
-      // activation controller removes WS_EX_NOACTIVATE outside fullscreen,
-      // but Electron itself must remain non-focusable so Chromium does not
-      // explicitly activate Clawd on a fullscreen click/drag.
+      // Windows normally starts with Electron's activation path disabled. The
+      // native controller removes WS_EX_NOACTIVATE outside fullscreen, while
+      // Electron remains non-focusable so Chromium does not explicitly
+      // activate Clawd on a fullscreen click/drag. If that controller could
+      // not initialize, main opts into the legacy focusable construction so
+      // desktop pointer interaction is not stranded behind an FFI failure.
       // Linux keeps its existing non-focusable behavior; macOS is normalized
       // immediately after construction below.
-      focusable: !isWin && !isLinux,
+      focusable: isWin ? windowsHitWindowFocusable : !isLinux,
       webPreferences: {
         preload: optionsArg.preloadPath,
         backgroundThrottling: false,

@@ -176,7 +176,11 @@ const {
 } = require("./mac-dock-icon-runtime");
 const createTopmostRuntime = require("./topmost-runtime");
 const { WIN_TOPMOST_LEVEL } = createTopmostRuntime;
-const { createHitWindowActivationController } = require("./win-hit-window-activation");
+const {
+  createHitWindowActivationController,
+  createHitWindowFocusableSetter,
+} = require("./win-hit-window-activation");
+const { startMobilePreviewServerSafely } = require("./network/mobile-preview-lifecycle");
 const createThemeFadeSequencer = require("./theme-fade-sequencer");
 const createThemeRuntime = require("./theme-runtime");
 const createAgentRuntimeMain = require("./agent-runtime-main");
@@ -1042,6 +1046,7 @@ const petWindowRuntime = createPetWindowRuntime({
   isWin,
   isMac,
   isLinux,
+  windowsHitWindowFocusable: isWin && !_hitWindowActivationController.available,
   linuxWindowType: LINUX_WINDOW_TYPE,
   topmostLevel: WIN_TOPMOST_LEVEL,
   getRenderWindow: () => win,
@@ -1819,13 +1824,16 @@ function moveWindowForDrag() { return petWindowRuntime.moveWindowForDrag(); }
 // with the inverse of the fullscreen state. The native controller toggles
 // WS_EX_NOACTIVATE without calling BrowserWindow.setFocusable(false), whose
 // Focus(false) side effect deactivates the user's fullscreen foreground app.
-// Leaving fullscreen removes the native style, while Electron itself remains
-// non-focusable for the hit window's lifetime so Chromium cannot explicitly
-// activate Clawd on pointerdown.
-function setHitWinFocusable(focusable) {
-  if (!isWin) return;
-  _hitWindowActivationController.setFocusable(hitWin, focusable);
-}
+// Leaving fullscreen removes the native style. When the native controller is
+// available, Electron itself remains non-focusable for the hit window's
+// lifetime so Chromium cannot explicitly activate Clawd on pointerdown. If
+// Koffi/user32 initialization failed, construction deliberately falls back to
+// the legacy focusable window so desktop click/drag remains available.
+const setHitWinFocusable = createHitWindowFocusableSetter({
+  isWin,
+  controller: _hitWindowActivationController,
+  getHitWindow: () => hitWin,
+});
 
 // ── Mini Mode — delegated to src/mini.js ──
 // Initialized after state module (needs applyState, resolveDisplayState, etc.)
@@ -4455,7 +4463,7 @@ _settingsController.subscribeKey("slackNotify", () => {
   slackNotifyConfigRevision += 1;
   broadcastSlackNotifyStatus();
 });
-_settingsController.subscribeKey("mobilePreviewEnabled", async (enabled) => {
+_settingsController.subscribeKey("mobilePreviewEnabled", (enabled) => {
   if (enabled) {
     if (!_lanWss) {
       const { initMobilePreviewServer } = require("./network/mobile-preview-server");
@@ -4465,7 +4473,13 @@ _settingsController.subscribeKey("mobilePreviewEnabled", async (enabled) => {
         isEnabled: () => _settingsController.get("mobilePreviewEnabled") === true,
       });
     }
-    await _lanWss.start();
+    void startMobilePreviewServerSafely(_lanWss, {
+      source: "settings-enable",
+      onError: (err) => console.warn(
+        "Clawd mobile preview: settings start failed:",
+        err && err.message ? err.message : err,
+      ),
+    });
   } else if (_lanWss) {
     _lanWss.cleanup();
   }
@@ -4967,7 +4981,15 @@ function createWindow() {
       console.warn("Clawd remote-ssh: connect-on-launch failed:", err && err.message);
     });
   }).catch(() => {});
-  if (_settingsController.get("mobilePreviewEnabled") === true) _lanWss.start();
+  if (_settingsController.get("mobilePreviewEnabled") === true) {
+    void startMobilePreviewServerSafely(_lanWss, {
+      source: "app-startup",
+      onError: (err) => console.warn(
+        "Clawd mobile preview: startup failed:",
+        err && err.message ? err.message : err,
+      ),
+    });
+  }
   startStaleCleanup();
   // Wait for renderer to be ready before sending initial state
   // If hooks arrived during startup, respect them instead of forcing idle

@@ -43,6 +43,10 @@ const MIME = {
   ".webmanifest": "application/manifest+json",
 };
 
+function isRetryablePortError(err) {
+  return !!(err && (err.code === "EADDRINUSE" || err.code === "EACCES"));
+}
+
 // ── Token persistence ──
 
 function atomicWrite(tokenPath, state) {
@@ -105,6 +109,8 @@ function initMobilePreviewServer(ctx) {
   let activePort = null;
   let heartbeatTimer = null;
   let rotationTimer = null;
+  let startPromise = null;
+  let cancelPendingStart = null;
   let closed = false;
 
   // ── Token rotation ──
@@ -261,7 +267,7 @@ function initMobilePreviewServer(ctx) {
   }
 
   function createHttpServer() {
-    httpServer = http.createServer(serveStatic);
+    return http.createServer(serveStatic);
   }
 
   // Attach ws only after the HTTP server has successfully bound a port.
@@ -269,15 +275,19 @@ function initMobilePreviewServer(ctx) {
   // EADDRINUSE as its own `error` event. When ws was attached before the port
   // retry loop, that forwarded event had no server-level listener and crashed
   // the process before start() could advance from 23334 to the next candidate.
-  function attachWebSocketServer() {
-    wss = new WebSocket.Server({ server: httpServer, path: "/ws" });
+  function attachWebSocketServer(server) {
+    const WebSocketServer = ctx && ctx.WebSocketServer
+      ? ctx.WebSocketServer
+      : WebSocket.Server;
+    const socketServer = new WebSocketServer({ server, path: "/ws" });
+    wss = socketServer;
     // A post-listen server error is still surfaced by ws. Keep it observable
     // without letting an EventEmitter `error` event terminate the desktop app.
-    wss.on("error", (err) => {
+    socketServer.on("error", (err) => {
       console.error("[mobile-preview] WebSocket server error:", err && err.message ? err.message : err);
     });
 
-    wss.on("connection", (ws, req) => {
+    socketServer.on("connection", (ws, req) => {
       if (closed) { ws.close(1001, "Server shutting down"); return; }
 
       let url;
@@ -349,26 +359,27 @@ function initMobilePreviewServer(ctx) {
         if (!meta) return;
         const nowMs = Date.now();
         if (nowMs - meta.windowStart > RATE_WINDOW_MS) { meta.messageCount = 0; meta.windowStart = nowMs; }
-      if (++meta.messageCount > RATE_MAX) { ws.close(1008, "Rate limit"); return; }
-      // Handle token_rotate_ack — purely informational, no state change
-      try {
-        const parsed = JSON.parse(data);
-        if (parsed && parsed.type === "token_rotate_ack") {
-          meta.pendingRotationAcks = 0;
-          console.log(`[mobile-preview] token_rotate_ack from ${meta.ip}`);
-          return;
-        }
-      } catch {}
-      // M1: read-only — ignore all other client messages (rate-limit still applies above)
-    });
+        if (++meta.messageCount > RATE_MAX) { ws.close(1008, "Rate limit"); return; }
+        // Handle token_rotate_ack — purely informational, no state change
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed && parsed.type === "token_rotate_ack") {
+            meta.pendingRotationAcks = 0;
+            console.log(`[mobile-preview] token_rotate_ack from ${meta.ip}`);
+            return;
+          }
+        } catch {}
+        // M1: read-only — ignore all other client messages (rate-limit still applies above)
+      });
 
-    ws.on("close", () => {
-      clients.delete(ws);
-      clientMeta.delete(ws);
-      if (clients.size === 0) stopHeartbeat();
+      ws.on("close", () => {
+        clients.delete(ws);
+        clientMeta.delete(ws);
+        if (clients.size === 0) stopHeartbeat();
+      });
+      ws.on("error", () => { clients.delete(ws); clientMeta.delete(ws); });
     });
-    ws.on("error", () => { clients.delete(ws); clientMeta.delete(ws); });
-  });
+    return socketServer;
   }
 
   function startHeartbeat() {
@@ -486,52 +497,128 @@ function initMobilePreviewServer(ctx) {
   // ── Public API ──
 
   function start() {
+    if (Number.isInteger(activePort) && httpServer && httpServer.listening) {
+      return Promise.resolve(activePort);
+    }
+    if (startPromise) return startPromise;
+
     closed = false;
-    createHttpServer();
+    let server;
+    try {
+      server = createHttpServer();
+      httpServer = server;
+    } catch (err) {
+      closed = true;
+      return Promise.reject(err);
+    }
     const ports = [];
     for (let i = 0; i < PORT_RANGE; i++) ports.push(DEFAULT_PORT + i);
     let idx = 0;
+    let socketServer = null;
+    let settled = false;
 
     const ready = new Promise((resolve, reject) => {
+      const detachStartListeners = () => {
+        server.removeListener("error", onError);
+        server.removeListener("listening", onListening);
+      };
+      const closeAttempt = () => {
+        if (socketServer) { try { socketServer.close(); } catch {} }
+        // A cancelled listen can still surface its queued error after close().
+        // Keep that EventEmitter error observed while this discarded server is
+        // collected; it is no longer part of the active lifecycle.
+        server.on("error", () => {});
+        try { server.close(); } catch {}
+        if (wss === socketServer) wss = null;
+        if (httpServer === server) httpServer = null;
+        activePort = null;
+      };
+      const failStart = (err) => {
+        if (settled) return;
+        settled = true;
+        detachStartListeners();
+        closeAttempt();
+        closed = true;
+        reject(err);
+      };
       const onError = (err) => {
-        if (err.code === "EADDRINUSE" && idx < ports.length - 1) {
+        if (isRetryablePortError(err) && idx < ports.length - 1) {
           idx++;
-          httpServer.listen(ports[idx], "0.0.0.0");
+          try {
+            server.listen(ports[idx], "0.0.0.0");
+          } catch (listenErr) {
+            failStart(listenErr);
+          }
           return;
         }
         console.error("[lan-ws] Server error:", err.message);
-        httpServer.removeListener("error", onError);
-        httpServer.removeListener("listening", onListening);
-        reject(err);
+        failStart(err);
       };
       const onListening = () => {
+        if (closed || httpServer !== server) {
+          const err = new Error("Mobile preview server start cancelled");
+          err.code = "ECANCELED";
+          failStart(err);
+          return;
+        }
         try {
-          attachWebSocketServer();
+          socketServer = attachWebSocketServer(server);
         } catch (err) {
-          httpServer.removeListener("error", onError);
-          httpServer.removeListener("listening", onListening);
-          cleanup();
-          reject(err);
+          failStart(err);
           return;
         }
         activePort = ports[idx];
+        try {
+          pollSessions(); // Prime cache only after the listener is usable.
+          scheduleRotation(); // Failed starts must not mutate token state later.
+        } catch (err) {
+          failStart(err);
+          return;
+        }
+        settled = true;
         console.log(`[mobile-preview] started on 0.0.0.0:${activePort}`);
-        httpServer.removeListener("error", onError);
-        httpServer.removeListener("listening", onListening);
+        detachStartListeners();
+        cancelPendingStart = null;
         resolve(activePort);
       };
-      httpServer.on("error", onError);
-      httpServer.on("listening", onListening);
+      cancelPendingStart = () => {
+        const err = new Error("Mobile preview server start cancelled");
+        err.code = "ECANCELED";
+        failStart(err);
+      };
+      server.on("error", onError);
+      server.on("listening", onListening);
+      try {
+        server.listen(ports[0], "0.0.0.0");
+      } catch (err) {
+        failStart(err);
+      }
     });
 
-    httpServer.listen(ports[0], "0.0.0.0");
-    pollSessions(); // Prime cache from current state
-    scheduleRotation(); // Start the 24h rotation timer
-    return ready;
+    let trackedPromise;
+    trackedPromise = ready.then(
+      (port) => {
+        if (startPromise === trackedPromise) startPromise = null;
+        return port;
+      },
+      (err) => {
+        if (startPromise === trackedPromise) startPromise = null;
+        if (cancelPendingStart) cancelPendingStart = null;
+        throw err;
+      },
+    );
+    startPromise = trackedPromise;
+    return trackedPromise;
   }
 
   function cleanup() {
     closed = true;
+    const cancel = cancelPendingStart;
+    cancelPendingStart = null;
+    if (cancel) cancel();
+    // A same-tick disable → enable transition must create a fresh listener,
+    // not inherit the cancelled promise until its rejection microtask runs.
+    startPromise = null;
     sessionCache.clear();
     stopHeartbeat();
     if (rotationTimer) { clearTimeout(rotationTimer); rotationTimer = null; }
@@ -540,6 +627,9 @@ function initMobilePreviewServer(ctx) {
     clientMeta.clear();
     if (wss) { try { wss.close(); } catch {} }
     if (httpServer) { try { httpServer.close(); } catch {} }
+    wss = null;
+    httpServer = null;
+    activePort = null;
   }
 
   function onSnapshot() {
@@ -559,4 +649,4 @@ function initMobilePreviewServer(ctx) {
   };
 }
 
-module.exports = { initMobilePreviewServer, PROTOCOL_VERSION };
+module.exports = { initMobilePreviewServer, isRetryablePortError, PROTOCOL_VERSION };

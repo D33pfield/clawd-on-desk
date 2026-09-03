@@ -138,6 +138,7 @@ function createRuntime(overrides = {}) {
     isWin: overrides.isWin ?? true,
     isMac: overrides.isMac ?? false,
     isLinux: overrides.isLinux ?? false,
+    windowsHitWindowFocusable: overrides.windowsHitWindowFocusable ?? false,
     linuxWindowType: "toolbar",
     topmostLevel: "pop-up-menu",
     getRenderWindow: () => renderWin,
@@ -2825,6 +2826,19 @@ describe("pet-window-runtime", () => {
       true,
       "pop-up-menu",
     ]);
+  });
+
+  it("uses legacy Windows focusability when the native activation controller is unavailable", () => {
+    const instances = [];
+    const harness = createRuntime({ windowsHitWindowFocusable: true });
+    harness.runtime.createHitWindow({
+      BrowserWindow: makeBrowserWindow(instances),
+      preloadPath: "preload-hit.js",
+      loadFilePath: "hit.html",
+      hitThemeConfig: { ok: true },
+    });
+
+    assert.equal(instances[0].options.focusable, true);
   });
 
   it("reloadWindowWebContents ignores destroyed windows and webContents", () => {

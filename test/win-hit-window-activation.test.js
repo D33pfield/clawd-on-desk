@@ -7,6 +7,7 @@ const path = require("node:path");
 
 const {
   createHitWindowActivationController,
+  createHitWindowFocusableSetter,
   WS_EX_NOACTIVATE,
   STYLE_REFRESH_FLAGS,
 } = require("../src/win-hit-window-activation");
@@ -130,12 +131,38 @@ describe("Windows hit-window activation controller", () => {
 
   it("routes main's fullscreen focusability changes through the native controller", () => {
     const mainSource = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
-    const start = mainSource.indexOf("function setHitWinFocusable(focusable)");
+    const start = mainSource.indexOf("const setHitWinFocusable = createHitWindowFocusableSetter({");
     const end = mainSource.indexOf("// ── Mini Mode", start);
     assert.ok(start >= 0 && end > start);
     const setterSource = mainSource.slice(start, end);
 
-    assert.match(setterSource, /_hitWindowActivationController\.setFocusable\(hitWin, focusable\)/);
-    assert.doesNotMatch(setterSource, /hitWin\.setFocusable\(false\)/);
+    assert.match(setterSource, /controller:\s*_hitWindowActivationController/);
+    assert.match(setterSource, /getHitWindow:\s*\(\)\s*=>\s*hitWin/);
+    assert.doesNotMatch(mainSource, /hitWin\.setFocusable\(/);
+    assert.match(mainSource, /setHitWinFocusable,\s*\n/);
+    assert.match(
+      mainSource,
+      /windowsHitWindowFocusable:\s*isWin\s*&&\s*!_hitWindowActivationController\.available/,
+    );
+  });
+
+  it("the main-wiring setter delegates dynamically to the owned hit window", () => {
+    const calls = [];
+    let hitWin = { id: 1 };
+    const setter = createHitWindowFocusableSetter({
+      isWin: true,
+      controller: {
+        setFocusable: (win, focusable) => {
+          calls.push([win.id, focusable]);
+          return true;
+        },
+      },
+      getHitWindow: () => hitWin,
+    });
+
+    assert.equal(setter(false), true);
+    hitWin = { id: 2 };
+    assert.equal(setter(true), true);
+    assert.deepStrictEqual(calls, [[1, false], [2, true]]);
   });
 });

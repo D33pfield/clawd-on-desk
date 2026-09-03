@@ -7,7 +7,36 @@ const http = require("http");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { initMobilePreviewServer, PROTOCOL_VERSION } = require("../src/network/mobile-preview-server");
+const {
+  initMobilePreviewServer,
+  isRetryablePortError,
+  PROTOCOL_VERSION,
+} = require("../src/network/mobile-preview-server");
+
+async function occupyPort(port) {
+  const blocker = http.createServer((_req, res) => res.end());
+  let owned = false;
+  await new Promise((resolve, reject) => {
+    blocker.once("error", (error) => {
+      if (error && error.code === "EADDRINUSE") {
+        resolve();
+        return;
+      }
+      reject(error);
+    });
+    blocker.listen(port, "0.0.0.0", () => {
+      owned = true;
+      resolve();
+    });
+  });
+  return { blocker, owned };
+}
+
+async function closeOwnedBlockers(blockers) {
+  await Promise.all(blockers.map(({ blocker, owned }) => (
+    owned ? new Promise((resolve) => blocker.close(resolve)) : Promise.resolve()
+  )));
+}
 
 function waitForMessage(ws, type, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
@@ -110,7 +139,13 @@ function waitForClose(ws, timeoutMs = 3000) {
 }
 
 describe("Mobile Preview Server port fallback", () => {
-  it("advances past an occupied 23334 without a WebSocketServer error", async () => {
+  it("classifies occupied and Windows-reserved ports as retryable", () => {
+    assert.equal(isRetryablePortError({ code: "EADDRINUSE" }), true);
+    assert.equal(isRetryablePortError({ code: "EACCES" }), true);
+    assert.equal(isRetryablePortError({ code: "EINVAL" }), false);
+  });
+
+  it("advances past an occupied 23334 and serves on the next candidate", async () => {
     const blocker = http.createServer((_req, res) => res.end());
     let ownsBlocker = false;
     await new Promise((resolve, reject) => {
@@ -149,6 +184,98 @@ describe("Mobile Preview Server port fallback", () => {
       if (ownsBlocker) {
         await new Promise((resolve) => blocker.close(resolve));
       }
+      try { fs.rmSync(tmpTokenDir, { recursive: true }); } catch {}
+    }
+  });
+
+  it("rejects after all candidate ports without arming token rotation", async () => {
+    const blockers = [];
+    for (let port = 23334; port <= 23338; port++) blockers.push(await occupyPort(port));
+    const tmpTokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-port-exhaustion-"));
+    const tokenPath = path.join(tmpTokenDir, "mobile-token.json");
+    const originalState = {
+      token: "a".repeat(32),
+      previous: null,
+      graceUntil: null,
+      rotatedAt: 1,
+      rotationPending: false,
+    };
+    fs.writeFileSync(tokenPath, JSON.stringify(originalState), "utf8");
+    const server = initMobilePreviewServer({
+      sessions: new Map(),
+      getPendingPermissions: () => [],
+      tokenPath,
+    });
+
+    try {
+      await assert.rejects(server.start(), (err) => isRetryablePortError(err));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(server.getPort(), null);
+      assert.deepStrictEqual(JSON.parse(fs.readFileSync(tokenPath, "utf8")), originalState);
+    } finally {
+      server.cleanup();
+      await closeOwnedBlockers(blockers);
+      try { fs.rmSync(tmpTokenDir, { recursive: true }); } catch {}
+    }
+  });
+
+  it("coalesces concurrent starts and cleanup cancels a pending start", async () => {
+    const tmpTokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-start-lifecycle-"));
+    const server = initMobilePreviewServer({
+      sessions: new Map(),
+      getPendingPermissions: () => [],
+      tokenPath: path.join(tmpTokenDir, "mobile-token.json"),
+    });
+
+    try {
+      const first = server.start();
+      const second = server.start();
+      assert.strictEqual(second, first);
+      const port = await first;
+      assert.equal(server.getPort(), port);
+      assert.equal(await server.start(), port);
+    } finally {
+      server.cleanup();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      try { fs.rmSync(tmpTokenDir, { recursive: true }); } catch {}
+    }
+
+    const blockers = [];
+    for (let port = 23334; port <= 23338; port++) blockers.push(await occupyPort(port));
+    const cancelDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-start-cancel-"));
+    const cancellable = initMobilePreviewServer({
+      sessions: new Map(),
+      getPendingPermissions: () => [],
+      tokenPath: path.join(cancelDir, "mobile-token.json"),
+    });
+    try {
+      const pending = cancellable.start();
+      cancellable.cleanup();
+      await assert.rejects(pending, (err) => err && err.code === "ECANCELED");
+      assert.equal(cancellable.getPort(), null);
+    } finally {
+      cancellable.cleanup();
+      await closeOwnedBlockers(blockers);
+      try { fs.rmSync(cancelDir, { recursive: true }); } catch {}
+    }
+  });
+
+  it("releases the HTTP listener when WebSocket attachment fails", async () => {
+    const tmpTokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-ws-attach-failure-"));
+    const server = initMobilePreviewServer({
+      sessions: new Map(),
+      getPendingPermissions: () => [],
+      tokenPath: path.join(tmpTokenDir, "mobile-token.json"),
+      WebSocketServer: class ThrowingWebSocketServer {
+        constructor() { throw new Error("synthetic ws attach failure"); }
+      },
+    });
+    try {
+      await assert.rejects(server.start(), /synthetic ws attach failure/);
+      assert.equal(server.getPort(), null);
+    } finally {
+      server.cleanup();
+      await new Promise((resolve) => setTimeout(resolve, 100));
       try { fs.rmSync(tmpTokenDir, { recursive: true }); } catch {}
     }
   });
