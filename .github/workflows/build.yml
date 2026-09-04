@@ -179,6 +179,12 @@ jobs:
           fi
           echo "mode=developer-id" >> "$GITHUB_OUTPUT"
 
+      - name: Correct macOS signing keychain password
+        if: steps.mac-signing.outputs.mode == 'developer-id'
+        run: |
+          node --test test/macos-signing-keychain.test.js
+          node scripts/prepare-macos-signing.js
+
       - name: Build macOS (Developer ID signed and notarized)
         if: steps.mac-signing.outputs.mode == 'developer-id'
         env:
