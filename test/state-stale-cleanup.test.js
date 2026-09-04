@@ -158,6 +158,24 @@ describe("state stale cleanup decisions", () => {
     })).result, { action: null });
   });
 
+  it("keeps an actively reporting working session whose source process already exited", () => {
+    // Several agents launch each hook through a throwaway shell (on Windows
+    // Claude Code uses a per-event pwsh wrapper), so the source_pid that ships
+    // with an event is dead again within the second. Source liveness only means
+    // something once the turn has actually gone quiet for the working window.
+    const now = 2_000_000;
+    assert.deepStrictEqual(decision(session({
+      state: "working",
+      agentId: "claude-code",
+      agentPid: 10,
+      sourcePid: 20,
+      updatedAt: now - 1_000,
+    }), {
+      now,
+      alivePids: new Set([10]),
+    }).result, { action: null });
+  });
+
   it("keeps working-like state set explicit", () => {
     assert.strictEqual(isWorkingLikeState("working"), true);
     assert.strictEqual(isWorkingLikeState("thinking"), true);
