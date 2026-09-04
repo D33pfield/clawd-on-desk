@@ -35,16 +35,18 @@ Codex CLI 状态同步（official hooks primary + JSONL fallback）：
     → src/agent-runtime-main.js 对 hook-active session 做事件级 suppression，避免重复状态/重复气泡；本地 JSONL 路径不经过 HTTP server
 
 本机 Codex 注册使用每个 `CODEX_HOME` 下固定的分平台入口。Windows 的固定
-`commandWindows` 使用 PowerShell call-operator 直连：`& "node" "codex-hook.js"`；
+`commandWindows` 使用 PowerShell call-operator 直连：
+`& "node" "codex-hook.js" --clawd-windows-stable`；
 hook 进程启动时自读 UTF-8/Base64 `clawd-hooks/codex-hook.js.windows.run`
 数据 sidecar 注入 env（2026-09-04 起由内联 PowerShell dispatcher 改为直连：
 原 dispatcher 的“解码并执行”命令行被 Windows Defender ML 判为
 Trojan:Win32/Commando.A!ml，见 clawd-on-desk#986）；不落地或二次启动 `.ps1`。
-旁路 JSON manifest 只供 Doctor 做完整性与目标健康校验。POSIX 使用
+旁路 JSON manifest 供安装器恢复与 Doctor 做完整性、目标健康校验。POSIX 使用
 `clawd-hooks/codex-hook.js.sh` 与对应 manifest。
-正式包、开发目录、不同 worktree、Node 安装路径切换时只原子更新
-这些受管 artifact，不再改 `hooks.json` 的命令字符串，因此首次迁移 review 后
-不会反复触发 `/hooks` review。Windows 与 WSL 的 manifest/wrapper 分开保存，
+Windows 原地升级只要 Node 与安装目录不变就保持同一命令；切换正式包、开发目录、
+worktree 或 Node 安装路径会改写直连命令，并需要重新完成一次 `/hooks` review。
+sidecar 中仅有 env 变化时不改命令。POSIX 仍只原子更新受管 wrapper，不改
+`hooks.json` 的命令字符串。Windows 与 WSL 的 manifest/wrapper 分开保存，
 共用 `CODEX_HOME` 时不会互相覆盖目标。Remote SSH 部署继续直接引用已部署的
 远端 hook 文件，不经过本机固定入口。Doctor 按 Codex 官方的归一化 handler
 SHA-256 精确核对 `trusted_hash`，命令变更后不会因原位置仍有旧 hash 而误报

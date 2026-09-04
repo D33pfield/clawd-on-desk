@@ -4,6 +4,7 @@ const os = require("os");
 const crypto = require("crypto");
 const {
   APPIMAGE_HOOK_MARKER_FILE,
+  CODEX_WINDOWS_STABLE_ARG,
   CODEX_WSL_INTEROP_ARG,
   resolveNodeBin,
 } = require("./server-config");
@@ -466,8 +467,8 @@ function buildStableCodexHookCommand(launcherPath, platform = process.platform) 
     // shape as Trojan:Win32/Commando.A!ml on every Codex PowerShell launch
     // (clawd-on-desk#986). Production registers the direct call-operator form
     // (desiredCommandWindows / buildCodexHookCommand) and codex-hook.js reads
-    // the sidecar itself. This branch remains only for legacy entries, WSL
-    // interop callers and back-compat tests.
+    // the sidecar itself. This branch remains only for recognizing/removing
+    // legacy entries and for non-executing compatibility tests.
     const runFile = quotePowerShellLiteral(launcherPath);
     const signature = quotePowerShellLiteral(CODEX_STABLE_WINDOWS_RUN_SIGNATURE);
     // Codex already evaluates commandWindows in PowerShell. Read the mutable
@@ -509,7 +510,18 @@ function extractStableCodexHookLauncherPath(command, platform = process.platform
 function inspectStableCodexHookCommand(command, options = {}) {
   const platform = options.platform || process.platform;
   const fsApi = options.fs || fs;
-  const launcherPath = extractStableCodexHookLauncherPath(command, platform);
+  let launcherPath = extractStableCodexHookLauncherPath(command, platform);
+  let directWindowsCommand = false;
+  if (
+    !launcherPath
+    && platform === "win32"
+    && options.codexDir
+    && String(command || "").trim().endsWith(` ${CODEX_WINDOWS_STABLE_ARG}`)
+  ) {
+    const paths = stableCodexHookPaths(options.codexDir, { ...options, platform });
+    launcherPath = paths.windowsRunPath;
+    directWindowsCommand = true;
+  }
   if (!launcherPath) return { matched: false };
   const manifestPath = platform === "win32"
     ? path.join(path.dirname(launcherPath), "codex-hook.windows.json")
@@ -553,6 +565,22 @@ function inspectStableCodexHookCommand(command, options = {}) {
         manifestPath,
       };
     }
+    if (
+      directWindowsCommand
+      && command !== `${buildCodexHookCommand(
+        manifest.record.nodeBin,
+        manifest.record.target,
+        "win32"
+      )} ${CODEX_WINDOWS_STABLE_ARG}`
+    ) {
+      return {
+        matched: true,
+        ok: false,
+        issue: "stable-launcher-stale",
+        launcherPath,
+        manifestPath,
+      };
+    }
     return {
       matched: true,
       ok: true,
@@ -561,6 +589,7 @@ function inspectStableCodexHookCommand(command, options = {}) {
       nodeBin: manifest.record.nodeBin,
       scriptPath: manifest.record.target,
       mode: manifest.record.mode,
+      directWindowsCommand,
     };
   }
   let source;
@@ -698,7 +727,8 @@ function windowsPathToWslPath(value) {
 // binds 127.0.0.1 only) even in WSL's default NAT mode, where a Linux-side
 // process gets connection-refused. Requires WSL interop (on by default).
 // Env-var prefixes (`KEY=value node.exe ...`) do NOT cross the interop
-// boundary — never prepend env here; put env in commandWindows instead.
+// boundary — never prepend env here; keep it on the native Windows path
+// (the stable local hook imports it from its data sidecar).
 function buildCodexHookPosixInteropCommand(nodeBin, hookScript) {
   const wslNodeBin = windowsPathToWslPath(nodeBin);
   // A UNC node path (\\server\share\node.exe or //server/share/node.exe)
@@ -1287,18 +1317,18 @@ function registerCodexCommandHooks(options = {}) {
   // call-operator form — AGENTS.md requires the PowerShell call operator; a
   // bare `"node" "hook.js"` exits 1 — and codex-hook.js reads the same
   // mutable sidecar itself and applies env before any hook code runs. The
-  // sidecar/manifest artifacts are still written (data-driven hook, Doctor
-  // validation). Remote installs never opt into the stable launcher and keep
+  // sidecar/manifest artifacts are still written (data-driven hook, installer
+  // recovery, Doctor validation). Remote installs never opt into the stable launcher and keep
   // their env-prefixed direct form unchanged. Note codex builds before
   // openai/codex#22159 (2026-05) ignore commandWindows and would run the
   // POSIX form on Windows.
   const desiredCommandWindows = isWindowsHost
     ? (stableLauncher
-      ? withCommandEnv(
-        buildCodexHookCommand(stableLauncher.nodeBin, stableLauncher.target, "win32"),
-        commandEnv,
+      ? `${buildCodexHookCommand(
+        stableLauncher.nodeBin,
+        stableLauncher.target,
         "win32"
-      )
+      )} ${CODEX_WINDOWS_STABLE_ARG}`
       : withCommandEnv(buildCodexHookCommand(nodeBin, hookScript, "win32"), commandEnv, "win32"))
     : null;
   const desiredCommand = stableLauncher
@@ -1316,7 +1346,7 @@ function registerCodexCommandHooks(options = {}) {
   // emit a false warning — repairCodexHooks escalates any warning to error.
   if (isWindowsHost && filterCommandEnvEntries(commandEnv).length) {
     warnings.push(
-      "Env vars don't cross the WSL interop boundary; they were applied to commandWindows only."
+      "Env vars don't cross the WSL interop boundary; they were applied to the native Windows hook only."
     );
   }
 
@@ -1455,6 +1485,7 @@ function unregisterCodexCommandHooks(options = {}) {
 
 module.exports = {
   CODEX_HOOK_EVENTS,
+  CODEX_WINDOWS_STABLE_ARG,
   CODEX_WSL_INTEROP_ARG,
   CODEX_HOOKS_FEATURE_KEY,
   LEGACY_CODEX_HOOKS_FEATURE_KEY,
