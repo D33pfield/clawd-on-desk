@@ -107,7 +107,8 @@ test("only the recognized macOS build module is changed; version/platform mismat
 
 test("the workaround runs only in the Developer ID macOS job before signing", () => {
   const root = path.join(__dirname, "..");
-  const workflow = fs.readFileSync(path.join(root, ".github", "workflows", "build.yml"), "utf8");
+  const workflow = fs.readFileSync(path.join(root, ".github", "workflows", "build.yml"), "utf8")
+    .replace(/\r\n?/g, "\n");
   const macStart = workflow.indexOf("\n  build-mac:");
   const nextJob = workflow.indexOf("\n  build-linux:", macStart);
   const macJob = workflow.slice(macStart, nextJob);
