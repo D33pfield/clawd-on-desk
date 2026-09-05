@@ -2,6 +2,8 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
+const { __test: { findMissingHookDependencies } } = require("../hooks/install");
 
 const SCRIPT_PATH = path.join(__dirname, "..", "scripts", "remote-deploy.sh");
 const HOOKS_DIR = path.join(__dirname, "..", "hooks");
@@ -13,8 +15,8 @@ function parseDeployedFiles() {
 
 function findRelativeRequires(filePath) {
   const content = fs.readFileSync(filePath, "utf8");
-  const matches = [...content.matchAll(/require\(["'](\.\.?\/[^"')]+)["']\)/g)];
-  return matches.map((match) => match[1]);
+  const matches = [...content.matchAll(/\brequire\s*\(\s*(["'])(\.\.?\/[^"'\r\n]+)\1\s*\)/g)];
+  return matches.map((match) => match[2]);
 }
 
 describe("Remote SSH secure hook manifest", () => {
@@ -100,6 +102,7 @@ describe("WSL setup guide hook copy instructions", () => {
   it("never hand-enumerates hook files", () => {
     for (const relative of GUIDES) {
       const content = fs.readFileSync(path.join(__dirname, "..", relative), "utf8");
+      assert.ok(!content.includes("/mnt/d/animation/"), `${relative} contains an author-specific path`);
       const enumerated = content.match(/hooks\/\{[^}\n]*\}\.js/g) || [];
       assert.deepStrictEqual(
         enumerated,
@@ -115,9 +118,51 @@ describe("WSL setup guide hook copy instructions", () => {
       const content = fs.readFileSync(path.join(__dirname, "..", relative), "utf8");
       assert.match(
         content,
-        /cp \S*hooks\/\*\.js ~\/\.claude\/hooks\//,
+        /^cp (?:"[^"\n]*hooks\/"|[^\s"\n]*hooks\/)\*\.js ~\/\.claude\/hooks\/\s*$/m,
         `${relative} must tell WSL users to copy every hook file`
       );
+    }
+  });
+});
+
+// Compare the CLI preflight with an independently traversed manifest closure.
+// Removing each file catches a scanner that silently visits only entry points.
+describe("Claude preflight and deployed dependency closure", () => {
+  it("recognizes the supported literal require grammar", (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-grammar-"));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const entry = path.join(dir, "entry.js");
+    fs.writeFileSync(entry, `require ( './child.js' );
+require(
+ "./other"
+);`);
+    assert.deepStrictEqual(findRelativeRequires(entry), ["./child.js", "./other"]);
+    assert.deepStrictEqual(findMissingHookDependencies(["entry.js"], { hooksDir: dir }).map((e) => e.name), ["child.js", "other.js"]);
+  });
+
+  it("reports each file removed from the Claude manifest closure", (t) => {
+    const entries = ["clawd-hook.js", "claude-statusline.js"];
+    const pending = [...entries];
+    const closure = new Set();
+    while (pending.length) {
+      const name = pending.pop();
+      if (closure.has(name)) continue;
+      closure.add(name);
+      assert.ok(HOOK_FILES.includes(name), `Claude dependency ${name} must be deployed`);
+      for (const spec of findRelativeRequires(path.join(HOOKS_DIR, name))) {
+        const target = path.resolve(HOOKS_DIR, path.dirname(name), path.extname(spec) ? spec : `${spec}.js`);
+        pending.push(path.relative(HOOKS_DIR, target).split(path.sep).join("/"));
+      }
+    }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-closure-"));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    for (const name of closure) fs.copyFileSync(path.join(HOOKS_DIR, name), path.join(dir, name));
+    assert.deepStrictEqual(findMissingHookDependencies(entries, { hooksDir: dir }), []);
+    for (const name of closure) {
+      fs.unlinkSync(path.join(dir, name));
+      try {
+        assert.ok(findMissingHookDependencies(entries, { hooksDir: dir }).some((e) => e.name === name && e.code === "ENOENT"), `preflight missed ${name}`);
+      } finally { fs.copyFileSync(path.join(HOOKS_DIR, name), path.join(dir, name)); }
     }
   });
 });

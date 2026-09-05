@@ -2952,7 +2952,7 @@ describe("hook dependency closure validation", () => {
 
   it("accepts the real hooks/ directory", () => {
     const missing = findMissingHookDependencies(
-      ["clawd-hook.js", "claude-statusline.js", "auto-start.js"],
+      ["clawd-hook.js", "claude-statusline.js"],
       { hooksDir: HOOKS_DIR }
     );
     assert.deepStrictEqual(missing, [], "the shipped hooks/ tree must be self-contained");
@@ -3001,7 +3001,7 @@ describe("hook dependency closure validation", () => {
     const hooksDir = makePartialHooksDir(["server-config.js"]);
     const missing = findMissingHookDependencies(["claude-statusline.js"], { hooksDir });
 
-    assert.deepStrictEqual(missing, [{ name: "claude-statusline.js", from: null }]);
+    assert.deepStrictEqual(missing, [{ name: "claude-statusline.js", from: null, code: "ENOENT" }]);
   });
 
   it("does not walk out of hooks/ into the app tree", () => {
@@ -3014,29 +3014,42 @@ describe("hook dependency closure validation", () => {
     );
 
     const missing = findMissingHookDependencies(["entry.js"], { hooksDir: tmpDir });
-    assert.deepStrictEqual(missing, [], "requires above hooks/ resolve in the packaged app only");
+    assert.deepStrictEqual(missing, [{ name: "../src/definitely-not-shipped-to-remote-hosts.js", from: "entry.js", code: "OUTSIDE_HOOKS" }]);
   });
 
-  it("tolerates a present-but-unreadable file instead of guessing", () => {
+  it("reports a present-but-unreadable file without guessing its dependencies", () => {
     const hooksDir = makePartialHooksDir(["clawd-hook.js"]);
     const missing = findMissingHookDependencies(["clawd-hook.js"], {
       hooksDir,
       readFileSync: () => {
-        throw new Error("EACCES");
+        throw Object.assign(new Error("permission denied"), { code: "EACCES" });
       },
     });
 
-    assert.deepStrictEqual(missing, [], "an unreadable entry point yields no invented dependencies");
+    assert.deepStrictEqual(missing, [{ name: "clawd-hook.js", from: null, code: "EACCES" }]);
+  });
+
+  it("handles whitespace, extensionless requires, and normalized cycles without executing hooks", () => {
+    const hooksDir = makePartialHooksDir([]);
+    fs.writeFileSync(path.join(hooksDir, "entry.js"), `throw new Error("must not execute");
+require ( './child.js' );
+require("./missing");`);
+    fs.writeFileSync(path.join(hooksDir, "child.js"), `require(
+ "./entry"
+); require('././missing.js');`);
+    assert.deepStrictEqual(findMissingHookDependencies(["./entry.js"], { hooksDir }), [
+      { name: "missing.js", from: "entry.js", code: "ENOENT" },
+    ]);
   });
 
   it("tells the user to copy the whole directory", () => {
     const message = formatMissingHookDependencies([
-      { name: "state-payload-size.js", from: "clawd-hook.js" },
-      { name: "claude-statusline.js", from: null },
+      { name: "state-payload-size.js", from: "clawd-hook.js", code: "ENOENT" },
+      { name: "claude-statusline.js", from: null, code: "EACCES" },
     ]);
 
-    assert.match(message, /state-payload-size\.js {2}\(required by clawd-hook\.js\)/);
-    assert.match(message, /^ {2}missing: claude-statusline\.js$/m, "entry points carry no attribution");
+    assert.match(message, /state-payload-size\.js \[ENOENT\] {2}\(required by clawd-hook\.js\)/);
+    assert.match(message, /^ {2}claude-statusline\.js \[EACCES\]$/m, "entry points carry no attribution");
     assert.match(message, /hooks\/\*\.js/, "must point at the directory-wide copy");
   });
 });
