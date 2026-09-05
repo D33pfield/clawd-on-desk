@@ -230,111 +230,73 @@ macOS Claude Keychain auth. See the dedicated guide for the exact boundary.
 
 ## WSL (Windows Subsystem for Linux)
 
-> This section mainly covers Claude Code and other hook-based agents inside WSL. For the official `Codex CLI + WSL` status, Codex hook feature-flag behavior, and why Clawd does not auto-detect Codex logs under WSL's Linux home by default, see: [codex-wsl-clarification.md](codex-wsl-clarification.md)
+Run Clawd on Windows and install the agent integration in the WSL distro where the agent runs. Start with **Settings → Agents → Connected → WSL Scan**, find the matching agent/distro row, and choose **Pair**. The row may be under **Unavailable** when the agent is absent from Windows. Confirm that the agent is **enabled** in Clawd: Pair does not generally turn on a disabled agent and does not install or mark a Windows-local integration as installed.
 
-If an agent runs inside WSL while Clawd runs on the Windows host, its integration posts to `127.0.0.1:23333-23337`. WSL1 shares that loopback. WSL2 normally needs mirrored networking; default NAT does not make the Windows loopback server reachable from Linux. The in-app Pair flow probes this path and warns when installation succeeded but connectivity did not.
-
-For supported agents, open **Settings → Agents**, use **WSL Scan** from the Connected section, then find the matching distro row and choose **Pair**. A WSL-only agent can remain under the **Unavailable** collapsible section because local installation status and WSL pairing are separate. Pairing enables Clawd's event ingress but does not mark or install a Windows-local integration.
+Pair installs the integration and probes connectivity separately. An installed result is not proof that Windows Clawd is reachable; a failed or unknown probe is not a connection success. Start a new agent session and check that it appears in Clawd. For Codex's separate-home and shared-home paths, see [Codex + WSL clarification](codex-wsl-clarification.md).
 
 **Hermes Agent in WSL:** Hermes must already be installed in the selected distro. Pair copies a private, temporary installer payload into WSL, installs and enables `clawd-on-desk` in the primary Hermes home and its discovered profiles, then removes the temporary payload. **Unpair** disables/removes only Clawd's Hermes plugin from that distro; it preserves unrelated plugins and does not disable Hermes events globally when another local or WSL source may still be active. Custom WSL `HERMES_HOME` is resolved from the distro's login shell.
 
-**Setup:**
+### Manual installation when Pair is unavailable
+
+Use Linux Node.js inside WSL and a complete source checkout. Run only the installer for the agent you use. For Claude Code, the default command uses WSL detection, matching Pair's installation mode, and does not install a statusline:
 
 ```bash
-# Inside your WSL shell:
-mkdir -p ~/.claude/hooks
-
-# Copy hook files from the Windows-side repo (adjust the /mnt/ path to your Clawd location)
-# Copy every hook file — hooks/ has internal require() dependencies, so a
-# hand-picked subset leaves each installed hook dead at MODULE_NOT_FOUND.
-# This matches what the in-app WSL Pair flow copies.
-cp /mnt/c/path/to/clawd-on-desk/hooks/*.js ~/.claude/hooks/
-
-# Register Claude hooks in remote mode
-node ~/.claude/hooks/install.js --remote
-
-# Register Codex official hooks in remote mode when Codex CLI is installed in WSL
-node ~/.claude/hooks/codex-install.js --remote
-
-# Register Copilot CLI hooks in remote mode when Copilot CLI is installed in WSL
-node ~/.claude/hooks/copilot-install.js --remote
-```
-
-After setup, start Clawd on Windows and run Claude Code in WSL — Clawd reacts to your sessions automatically. Permission bubbles work too.
-
-The in-app WSL deploy path intentionally runs the Claude installer without `--statusline`, so it provides transcript fallback only and does not claim an authoritative custom-provider window. The manual `--remote` command above does install a visible statusline in WSL's separate home, but the Windows app accepts its context/quota metadata only while **Collect local Claude usage** is enabled. With the switch off, those POSTs are successful no-ops. Windows startup reconciliation cannot remove a statusline from WSL's separate home.
-
-For Codex in WSL, official hooks work when Codex runs inside the WSL environment and `~/.codex` exists there. If you prefer sharing the Windows Codex home, set `CODEX_HOME=/mnt/c/Users/<windows-user>/.codex` inside WSL before running Codex.
-
-### WSL Networking & Hook Registration (Alternative Approach)
-
-Clawd runs as a Windows Electron app, while your AI coding agents (Claude Code, Kiro CLI, etc.) may run inside WSL. Hook scripts in WSL POST HTTP requests to `127.0.0.1:23333`, so WSL and Windows must share the same localhost.
-
-- **WSL1** — works out of the box. WSL1 naturally shares localhost with Windows, no extra configuration needed.
-- **WSL2** — requires mirrored networking mode. WSL2 has its own network stack by default, so `127.0.0.1` points to WSL itself, not Windows. Enable mirrored mode in `%USERPROFILE%\.wslconfig` (create the file if it doesn't exist), then run `wsl --shutdown` to restart WSL:
-
-```ini
-[wsl2]
-networkingMode=mirrored
-```
-
-**Manually register hooks inside WSL:**
-
-Clawd auto-registers Claude Code hooks to `~/.claude/settings.json` on Windows startup. But if your agent runs in WSL, hooks need to be registered in WSL's own home directory. Run inside WSL:
-
-```bash
-git clone https://github.com/rullerzhou-afk/clawd-on-desk.git
-cd clawd-on-desk
-
-# Claude Code
+# In WSL; use a Linux destination without spaces and keep this checkout.
+git clone https://github.com/rullerzhou-afk/clawd-on-desk.git ~/clawd-on-desk
+cd ~/clawd-on-desk
 node hooks/install.js
 
-# Codex CLI
-node hooks/codex-install.js --remote
-
-# Kiro CLI - registers hooks for all custom agents under ~/.kiro/agents/,
-# and auto-creates a clawd agent
-node hooks/kiro-install.js
-
-# Kimi Code CLI (Kimi-CLI)
-node hooks/kimi-install.js
-
-# Qwen Code
-node hooks/qwen-code-install.js
-
-# Cursor Agent
-node hooks/cursor-install.js
-
-# Gemini CLI
-node hooks/gemini-install.js
-
-# Antigravity CLI (agy)
-node hooks/antigravity-install.js
-
-# CodeBuddy
-# Preserves an existing marker-owned custom permission URL.
-node hooks/codebuddy-install.js
-# Explicit alternatives:
-# node hooks/codebuddy-install.js --permission-url local
-# node hooks/codebuddy-install.js --permission-url https://approval.example/permission
-
-# WorkBuddy
-node hooks/workbuddy-install.js
-
-# opencode
-node hooks/opencode-install.js
-
-# MiMo Code
-npm run install:mimocode-plugin
-
-# Pi
-node hooks/pi-install.js
-
-# OpenClaw
-node hooks/openclaw-install.js
+# Optional: also install the Claude statusline for context/quota metadata.
+node hooks/install.js --statusline
 ```
 
-> **Tip:** If the repo is cloned inside WSL (e.g. `~/clawd-on-desk`), hook scripts will automatically use WSL's Node.js path. If the repo is on a Windows drive (e.g. `/mnt/c/...`), make sure `node` is in WSL's `PATH`.
+The statusline installer preserves an existing third-party statusline unless you explicitly opt into chaining; see [Agent Setup](#agent-setup). The Windows app accepts WSL Claude context/quota metadata only while **Collect local Claude usage** is enabled. With that switch off, metadata POSTs are successful no-ops. Pair itself does not install the statusline and supplies transcript fallback rather than an authoritative custom-provider context window. Windows startup reconciliation cannot remove a statusline from WSL's separate home.
+
+Other manual hook commands, run from the same checkout:
+
+| Agent | Command |
+| --- | --- |
+| Codex CLI | `node hooks/codex-install.js --remote` |
+| Copilot CLI | `node hooks/copilot-install.js --remote` |
+| Kiro CLI | `node hooks/kiro-install.js` |
+| Kimi Code CLI (Kimi-CLI) | `node hooks/kimi-install.js` |
+| Qwen Code | `node hooks/qwen-code-install.js` |
+| Cursor Agent | `node hooks/cursor-install.js` |
+| Gemini CLI | `node hooks/gemini-install.js` |
+| Antigravity CLI (agy) | `node hooks/antigravity-install.js` |
+| CodeBuddy | `node hooks/codebuddy-install.js` |
+
+Kiro registers hooks in custom agents under `~/.kiro/agents/` and creates a `clawd` agent. CodeBuddy's bare installer preserves an existing managed custom permission URL; explicit alternatives are `--permission-url local` or `--permission-url https://approval.example/permission`. General installer commands are also listed in [Agent Setup](#agent-setup).
+
+WorkBuddy has no verified standalone Linux/WSL CLI; use its macOS/Windows desktop integration. opencode, MiMo Code, Pi, and OpenClaw are not currently in the WSL Pair mapping and their WSL integration remains unverified. A general installer for one of these agents is not a verified WSL recipe.
+
+If the complete source checkout is only on Windows, copy **all top-level JavaScript files** from its `hooks/` directory into WSL. Persistent hook agents in Pair also copy this complete set; Hermes uses the separate temporary payload described above. Do not maintain a hand-picked file list: hooks have direct and transitive dependencies.
+
+```bash
+# In WSL; replace the quoted source path with your complete source checkout.
+mkdir -p ~/.claude/hooks
+cp "/mnt/c/path/to/clawd-on-desk/hooks/"*.js ~/.claude/hooks/
+node ~/.claude/hooks/install.js
+
+# Optional Claude statusline:
+node ~/.claude/hooks/install.js --statusline
+```
+
+For another hook agent, use its installer filename from the table in the copied directory and keep its listed flags. The Claude CLI checks the requested hook entry points and their local dependencies before writing configuration; if files are missing or unreadable, restore the complete set from the same source version and retry.
+
+Claude's default WSL hook command currently has unquoted paths. Keep the final Linux Node and hook paths free of spaces; quoting the Windows **copy source** is supported, but successful installation from a path containing spaces does not prove the generated hook can execute from it.
+
+Claude's legacy `--remote` remains supported. It also installs the statusline, sets `CLAWD_REMOTE=1`, uses the remote command form and host label, raises state-hook timeouts from 5 to 10 seconds, and skips SessionStart PID pre-resolution. Use `--statusline` for the explicit WSL statusline option above; `--remote` has broader semantics. This default applies to Claude, not every agent's installer.
+
+### Networking and troubleshooting
+
+Windows Clawd listens on loopback in `127.0.0.1:23333-23337`. **Linux Node → Windows Clawd** normally requires WSL2 mirrored networking; default NAT does not expose the Windows loopback listener to Linux. Mirrored mode requires Windows 11 22H2 or later. Microsoft documents `networkingMode=mirrored` in `%USERPROFILE%\.wslconfig` and the restart procedure in [WSL networking](https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking); restarting WSL stops its running sessions. WSL1 shares loopback, but this network fact does not imply current Codex support for WSL1.
+
+**Codex shared-home Windows interop** runs the hook with Windows `node.exe` and uses Windows loopback, so that transport does not require mirrored networking. A shared `CODEX_HOME` alone does not select interop: a WSL-owned native launcher still uses Linux Node and the Linux network path. Check the [three-path comparison](codex-wsl-clarification.md#configuration-and-execution-paths) before changing network settings.
+
+Ordinary WSL **state events** discover the service across ports 23333–23337. Claude's HTTP **PermissionRequest** URL is fixed when installed; it does not scan ports when a permission request fires. The installer uses an explicit port or a valid local `~/.clawd/runtime.json`, otherwise 23333. A separate WSL home normally has no Windows runtime record, so both Pair and manual installation normally register 23333. If Windows Clawd listens on 23334 or above, state updates may work while permission bubbles do not. Compare Windows' actual runtime port with the URL in WSL's Claude settings; a successful state probe does not validate the permission URL. Automatic WSL permission-port synchronization remains a follow-up limitation.
+
+If a new session does not appear, check the selected distro, the agent's enabled state, the registered command and its Node executable, then the connectivity result. Installation, reachability, and receipt of a real session are separate checks.
 
 ## Windows Notes
 
