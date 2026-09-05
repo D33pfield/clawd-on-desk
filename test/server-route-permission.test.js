@@ -76,6 +76,7 @@ function makeCtx(overrides = {}) {
     showPermissionBubble: [],
     sendPermissionResponse: [],
     replyOpencodeFamilyPermission: [],
+    dismissOpencodeFamilyPermissionResolvedExternally: [],
     resolved: [],
     maybeStartRemoteApproval: [],
     addPendingPermission: [],
@@ -99,6 +100,10 @@ function makeCtx(overrides = {}) {
       res.end(behavior);
     },
     replyOpencodeFamilyPermission: (payload) => calls.replyOpencodeFamilyPermission.push(payload),
+    dismissOpencodeFamilyPermissionResolvedExternally: (payload) => {
+      calls.dismissOpencodeFamilyPermissionResolvedExternally.push(payload);
+      return 0;
+    },
     resolvePermissionEntry: (entry, behavior, message) => calls.resolved.push({ entry, behavior, message }),
     maybeStartRemoteApproval: (entry) => calls.maybeStartRemoteApproval.push(entry),
     addPendingPermission(entry) {
@@ -207,6 +212,59 @@ function callPermissionPostThroughAutomation(body, mode, options = {}) {
   });
 }
 
+describe("Claude ExitPlanMode updatedInput compatibility", () => {
+  it("keeps the exact request input separate from the truncated display copy", async () => {
+    const rawInput = {
+      plan: `Start of plan ${"x".repeat(700)} end-of-plan`,
+      planFilePath: "C:\\Users\\Ruller\\.claude\\plans\\exact.md",
+      metadata: { source: "permission-hook", untouched: true },
+      steps: ["first", "second"],
+    };
+    const res = await callPermissionPostThroughAutomation(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "claude:exact-plan-input",
+      tool_name: "ExitPlanMode",
+      tool_input: rawInput,
+    }), "off", { showPermissionBubble() {} });
+
+    assert.strictEqual(res.permission.pendingPermissions.length, 1);
+    const entry = res.permission.pendingPermissions[0];
+    assert.notStrictEqual(entry.toolInput.plan, rawInput.plan, "display copy should remain truncated");
+    assert.deepStrictEqual(entry.planReviewWireInput, rawInput, "wire input must remain unmodified");
+
+    res.permission.resolvePermissionEntry(entry, "allow");
+
+    assert.strictEqual(res.body, JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: {
+          behavior: "allow",
+          updatedInput: rawInput,
+        },
+      },
+    }));
+  });
+
+  it("drops the connection instead of allowing when the request omitted tool_input", async () => {
+    const res = await callPermissionPostThroughAutomation(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "claude:missing-plan-input",
+      tool_name: "ExitPlanMode",
+    }), "off", { showPermissionBubble() {} });
+
+    assert.strictEqual(res.permission.pendingPermissions.length, 1);
+    const entry = res.permission.pendingPermissions[0];
+    assert.strictEqual(entry.planReviewWireInput, null);
+
+    res.permission.resolvePermissionEntry(entry, "allow");
+
+    assert.strictEqual(res.body, "", "fallback must not write a decision payload");
+    assert.strictEqual(res.writableFinished, false, "fallback must not end with a false allow");
+    assert.strictEqual(res.destroyed, true, "connection drop returns control to Claude's native prompt");
+    assert.deepStrictEqual(res.permission.pendingPermissions, []);
+  });
+});
+
 describe("server-route-permission helpers", () => {
   it("preserves bubble bypass decisions for CC, Codex, and opencode", () => {
     assert.strictEqual(shouldBypassCCBubble({ hideBubbles: true }, interaction("claude-code", "Bash"), "claude-code"), true);
@@ -285,6 +343,84 @@ describe("server-route-permission POST", () => {
         `${agentId} permission identity must reach the main-owned session path`
       );
     }
+  });
+
+  it("keeps a bounded compact preview and a complete local detail across permission adapters", async () => {
+    const marker = "__CLAWD_PERMISSION_DETAIL_END__";
+    const command = `${"printf x; ".repeat(260)}${marker}`;
+    const cases = [
+      { agentId: "claude-code", body: {} },
+      { agentId: "codebuddy", body: {} },
+      { agentId: "codex", body: { tool_input_description: "Run a generated command" } },
+      { agentId: "qwen-code", body: {} },
+      { agentId: "zcode", body: {} },
+      { agentId: "copilot-cli", body: {} },
+      { agentId: "hermes", body: {} },
+      {
+        agentId: "opencode",
+        body: {
+          request_id: "req-detail",
+          bridge_url: "http://127.0.0.1:9",
+          bridge_token: "detail-token",
+        },
+      },
+    ];
+
+    for (const { agentId, body } of cases) {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: agentId,
+        session_id: `${agentId}:detail`,
+        tool_name: "Bash",
+        tool_input: { command },
+        ...body,
+      }));
+      assert.strictEqual(res.ctx.pendingPermissions.length, 1, agentId);
+      const entry = res.ctx.pendingPermissions[0];
+      assert.strictEqual(entry.detailText.endsWith(marker), true, agentId);
+      assert.strictEqual(entry.detailTruncated, false, agentId);
+      assert.strictEqual(JSON.stringify(entry.toolInput).includes(marker), false, agentId);
+    }
+  });
+
+  it("keeps long Ask text for the expanded view without changing the wire answer keys", async () => {
+    const marker = "__CLAWD_ASK_DETAIL_END__";
+    const question = [
+      "Compare the tradeoffs carefully.",
+      "",
+      "1. Keep the compact window.",
+      "2. Open a scrollable detail view.",
+      "",
+      `${"Include every relevant constraint. ".repeat(20)}${marker}`,
+    ].join("\n");
+    const optionDescription = [
+      "Open the detail view.",
+      "",
+      "- Preserve paragraphs.",
+      "- Preserve list structure.",
+    ].join("\n");
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "claude-code:ask-detail",
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [{
+          question,
+          header: "Approach",
+          multiSelect: false,
+          options: [
+            { label: "Option A", description: "Keep the compact window." },
+            { label: "Option B", description: optionDescription },
+          ],
+        }],
+      },
+    }));
+
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.toolInput.questions[0].question.includes(marker), false);
+    assert.strictEqual(entry.elicitationDetailInput.questions[0].question, question);
+    assert.strictEqual(entry.elicitationDetailInput.questions[0].options[1].description, optionDescription);
+    assert.strictEqual(entry.elicitationWireInput.questions[0].question, question);
   });
 
   it("uses the raw permission session id and ignores sender eligibility claims", async () => {
@@ -511,13 +647,15 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.recorder.length, 0);
   });
 
-  it("uses the existing deny response for oversized permission bodies", async () => {
+  it("never forges a deny for oversized permission bodies (connection closed, native fallback)", async () => {
     const res = await callPermissionPost("x".repeat(MAX_PERMISSION_BODY_BYTES + 1));
 
-    assert.deepStrictEqual(res.ctx.calls.sendPermissionResponse, [{
-      behavior: "deny",
-      message: "Permission request too large for Clawd bubble; answer in terminal",
-    }]);
+    // A transport-level rejection happens before the agent is identified, and
+    // qwen/zcode hooks pass hookSpecificOutput denies straight through as real
+    // decisions — so the only safe answer is no answer: destroy the socket so
+    // CC/CodeBuddy fall back to their chat prompt and qwen/zcode emit "{}".
+    assert.deepStrictEqual(res.ctx.calls.sendPermissionResponse, []);
+    assert.strictEqual(res.destroyed, true);
   });
 
   it("returns no-decision for Codex DND fallback", async () => {
@@ -729,6 +867,29 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
   });
 
+  it("rejects non-loopback or path-bearing opencode bridges before enqueue", async () => {
+    for (const bridgeUrl of [
+      "https://127.0.0.1:1234",
+      "http://localhost:1234",
+      "http://127.0.0.1:1234/reply",
+      "http://192.168.1.20:1234",
+      "http://example.com:1234",
+    ]) {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: "opencode",
+        session_id: "opencode:invalid-bridge",
+        tool_name: "Bash",
+        request_id: "req-invalid-bridge",
+        bridge_url: bridgeUrl,
+        bridge_token: "token",
+      }));
+      assert.strictEqual(res.statusCode, 200, bridgeUrl);
+      assert.deepStrictEqual(res.ctx.pendingPermissions, [], bridgeUrl);
+      assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [], bridgeUrl);
+      assert.deepStrictEqual(res.ctx.calls.replyOpencodeFamilyPermission, [], bridgeUrl);
+    }
+  });
+
   it("silently drops headless opencode sessions before auto-pilot can bridge allow", async () => {
     const sessionId = "opencode:headless";
     const res = await callPermissionPost(JSON.stringify({
@@ -805,6 +966,140 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(reply.requestId, "req-boom");
     assert.strictEqual(reply.bridgeUrl, "http://127.0.0.1:1234");
     assert.strictEqual(reply.bridgeToken, "token");
+  });
+
+  it("routes a strict family replied lifecycle before every create/decision gate and never records a request", async () => {
+    const lifecycleCalls = [];
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "opencode",
+      hook_source: "opencode-plugin",
+      permission_event: "replied",
+      session_id: "opencode:ses-life",
+      request_id: "per-life",
+      lifecycle_bridge_url: "http://127.0.0.1:43210",
+      lifecycle_bridge_token: "token_life",
+    }), {
+      ctx: {
+        doNotDisturb: true,
+        hideBubbles: true,
+        isAgentEnabled: () => false,
+        isAgentPermissionsEnabled: () => false,
+        dismissOpencodeFamilyPermissionResolvedExternally: (identity) => {
+          lifecycleCalls.push(identity);
+          return 1;
+        },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.headers[CLAWD_SERVER_HEADER], CLAWD_SERVER_ID);
+    assert.strictEqual(res.body, "ok");
+    assert.deepStrictEqual(lifecycleCalls, [{
+      agentId: "opencode",
+      requestId: "per-life",
+      sessionId: localSessionKey("opencode:ses-life"),
+      bridgeUrl: "http://127.0.0.1:43210",
+      bridgeToken: "token_life",
+    }]);
+    assert.deepStrictEqual(res.recorder, [], "lifecycle must not create a PermissionRequest recorder");
+    assert.deepStrictEqual(res.ctx.calls.updateSession, []);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
+    assert.deepStrictEqual(res.ctx.calls.addPendingPermission, []);
+    assert.deepStrictEqual(res.ctx.calls.replyOpencodeFamilyPermission, []);
+    assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, []);
+  });
+
+  it("200-no-ops malformed lifecycle identity without a default session or a thrown validator error", async () => {
+    const invalidBodies = [
+      { session_id: null },
+      { session_id: 42 },
+      { lifecycle_bridge_url: "http://localhost:43210" },
+      { lifecycle_bridge_url: { href: "http://127.0.0.1:43210" } },
+      { lifecycle_bridge_token: 42 },
+      { lifecycle_bridge_token: "x".repeat(129) },
+      { request_id: "" },
+    ];
+    for (const delta of invalidBodies) {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: "opencode",
+        permission_event: "replied",
+        session_id: "opencode:strict",
+        request_id: "per-strict",
+        lifecycle_bridge_url: "http://127.0.0.1:43210",
+        lifecycle_bridge_token: "token_strict",
+        ...delta,
+      }));
+      assert.strictEqual(res.statusCode, 200);
+      assert.strictEqual(res.headers[CLAWD_SERVER_HEADER], CLAWD_SERVER_ID);
+      assert.deepStrictEqual(res.recorder, []);
+      assert.deepStrictEqual(
+        res.ctx.calls.dismissOpencodeFamilyPermissionResolvedExternally,
+        [],
+        JSON.stringify(delta)
+      );
+      assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+      assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
+    }
+  });
+
+  it("fails closed for unknown permission_event instead of creating an unknown family bubble", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "opencode",
+      permission_event: "resolved-someday",
+      session_id: "opencode:unknown-event",
+      request_id: "per-unknown-event",
+      lifecycle_bridge_url: "http://127.0.0.1:1234",
+      lifecycle_bridge_token: "token-unknown-event",
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(res.recorder, []);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
+    assert.deepStrictEqual(res.ctx.calls.dismissOpencodeFamilyPermissionResolvedExternally, []);
+  });
+
+  it("keeps ACK and ordinary family enqueue in one synchronous execution segment", () => {
+    const body = JSON.stringify({
+      agent_id: "opencode",
+      session_id: "opencode:sync",
+      tool_name: "Bash",
+      request_id: "per-sync",
+      bridge_url: "http://127.0.0.1:1234",
+      bridge_token: "token",
+    });
+    const ctx = makeCtx();
+    let dataHandler = null;
+    const req = {
+      headers: {},
+      on(eventName, handler) {
+        if (eventName === "data") dataHandler = handler;
+        if (eventName === "end") {
+          dataHandler(Buffer.from(body));
+          handler();
+        }
+        return this;
+      },
+    };
+    const res = makeRes();
+    let pendingAtAck = null;
+    const originalEnd = res.end;
+    res.end = function endAndSnapshot(data) {
+      originalEnd.call(this, data);
+      pendingAtAck = ctx.pendingPermissions.length;
+    };
+
+    handlePermissionPost(req, res, {
+      ctx,
+      createRequestHookRecorder: () => ({
+        accepted() {}, droppedByDisabled() {}, droppedByDnd() {},
+        droppedInvalidAgent() {}, droppedUnsupported() {},
+      }),
+    });
+
+    assert.strictEqual(pendingAtAck, 0, "ACK is written immediately before enqueue");
+    assert.strictEqual(ctx.pendingPermissions.length, 1, "enqueue completes before the handler returns");
+    assert.strictEqual(ctx.pendingPermissions[0].familyRequestId, "per-sync");
   });
 
   it("destroys the Claude/CodeBuddy connection during DND", async () => {
@@ -2020,6 +2315,25 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.statusCode, 204);
     assert.deepStrictEqual(res.ctx.pendingPermissions, []);
     assert.deepStrictEqual(res.ctx.calls.removePendingPermission.map((item) => item.reason), ["dsh-bubble-failed"]);
+    assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, []);
+  });
+
+  it("returns DSH no-decision without enqueue when the session update fails", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "deepseek-harness",
+      session_id: "deepseek-harness:update-fail",
+      tool_name: "execute_shell",
+      tool_input: {},
+    }), {
+      ctx: { updateSession() { throw new Error("state unavailable"); } },
+    });
+    assert.strictEqual(res.statusCode, 204);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.ctx.calls.addPendingPermission, []);
+    assert.deepStrictEqual(res.ctx.calls.removePendingPermission.map((item) => item.reason), [
+      "dsh-update-session-failed",
+    ]);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
     assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, []);
   });
 });

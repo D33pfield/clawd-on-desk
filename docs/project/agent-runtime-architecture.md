@@ -28,18 +28,25 @@ Codex CLI 状态同步（official hooks primary + JSONL fallback）：
     → hooks/codex-hook.js（stdin JSON，session_id 优先与 transcript_path 的 rollout UUID 对齐）
     → HTTP POST 127.0.0.1:23333/state { state, session_id, event, turn_id, hook_source }
     → 同上状态机（agent_id: codex）
+
+本机 Codex `SessionStart` 首次 POST 发现 Clawd 离线时，只有 durable gate 同时满足 `integrationInstalled=true`、`enabled=true`、`autoStartWithCodex=true` 才调用 `auto-start.js` 冷启动桌面应用并重试事件。全新安装的独立开关默认关闭；prefs v17→v18 为已有用户回填 true 以保持升级前行为。remote、WSL 与 WSL interop 路径一律不冷启动。
   Codex 写入 ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
     → agents/codex-log-monitor.js（fallback：hook 未覆盖事件、hook 禁用/不可用、历史兼容）
     → src/agent-runtime-main.js 对 hook-active session 做事件级 suppression，避免重复状态/重复气泡；本地 JSONL 路径不经过 HTTP server
 
 本机 Codex 注册使用每个 `CODEX_HOME` 下固定的分平台入口。Windows 的固定
-`commandWindows` 在 Codex 已启动的 PowerShell 进程内读取 UTF-8/Base64
-`clawd-hooks/codex-hook.js.windows.run` 数据 sidecar，再直接调用其中的 Node /
-hook target；不落地或二次启动 `.ps1`。旁路 JSON manifest 只供 Doctor 做完整性
-与目标健康校验。POSIX 使用 `clawd-hooks/codex-hook.js.sh` 与对应 manifest。
-正式包、开发目录、不同 worktree、Node 安装路径切换时只原子更新
-这些受管 artifact，不再改 `hooks.json` 的命令字符串，因此首次迁移 review 后
-不会反复触发 `/hooks` review。Windows 与 WSL 的 manifest/wrapper 分开保存，
+`commandWindows` 使用 PowerShell call-operator 直连：
+`& "node" "codex-hook.js" --clawd-windows-stable`；
+hook 进程启动时自读 UTF-8/Base64 `clawd-hooks/codex-hook.js.windows.run`
+数据 sidecar 注入 env（2026-09-04 起由内联 PowerShell dispatcher 改为直连：
+原 dispatcher 的“解码并执行”命令行被 Windows Defender ML 判为
+Trojan:Win32/Commando.A!ml，见 clawd-on-desk#986）；不落地或二次启动 `.ps1`。
+旁路 JSON manifest 供安装器恢复与 Doctor 做完整性、目标健康校验。POSIX 使用
+`clawd-hooks/codex-hook.js.sh` 与对应 manifest。
+Windows 原地升级只要 Node 与安装目录不变就保持同一命令；切换正式包、开发目录、
+worktree 或 Node 安装路径会改写直连命令，并需要重新完成一次 `/hooks` review。
+sidecar 中仅有 env 变化时不改命令。POSIX 仍只原子更新受管 wrapper，不改
+`hooks.json` 的命令字符串。Windows 与 WSL 的 manifest/wrapper 分开保存，
 共用 `CODEX_HOME` 时不会互相覆盖目标。Remote SSH 部署继续直接引用已部署的
 远端 hook 文件，不经过本机固定入口。Doctor 按 Codex 官方的归一化 handler
 SHA-256 精确核对 `trusted_hash`，命令变更后不会因原位置仍有旧 hash 而误报
@@ -101,20 +108,40 @@ QwenWork（千问办公）状态同步（hook-only / state-only，settings.json�
   平台边界：官方只提供 macOS 14+ / Windows 10+ / HarmonyOS 6.1+（https://qwenwork.cn/download），没有 Linux 客户端，
   因此 processNames.linux 与 resolver linux agent name 均为空，也不进 WSL Pair；桌面主进程长驻，无 startup recovery。
 
+TraeCode（Trae CN）状态同步（hook-only / state-only，hooks.json）：
+  Trae CN 触发 SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Stop / Notification
+    → hooks/traecode-hook.js（hook 事件 → agents/traecode.js 映射 → HTTP POST）
+    → 同上状态机（agent_id: traecode，session_id 规范化为 traecode:<raw>；缺 session_id 的事件直接应答 stdout，不进 /state）
+  Hook 注册到 ~/.trae-cn/hooks.json（marker `traecode-hook.js`，增量合并；混合 entry 里第三方 hook 原样保留）。
+  Windows command 用无引号外壳的 PowerShell `-EncodedCommand`（解码后为 `& 'node' 'hook'`，无 `shell` 字段），避免 Trae sandbox 的 native argv 包装拆坏带空格路径；Trae 通过 PowerShell 执行 hook 命令（cloudide.icube-agent-shell-exec）。
+  必须在 Trae IDE 里手动开启 hooks（Settings → Hooks → Enable，运行方式：沙箱运行），无程序化绕过。
+  stdout 恒为 `{}`：不注册 /permission、不进 permission automation eligibility，Allow / Deny 全部留在 Trae 原生权限流程。
+  Trae 服务端存储会话标题，Clawd 从首次 prompt 首行派生并保持首个标题（server 端 first-wins）。
+  无 SessionEnd：关闭的会话由 traecode-desktop-idle-timeout 桌面空闲清理退役。
+  首版只覆盖 Trae CN（~/.trae-cn、进程名 Trae CN.exe）；国际版 Trae（~/.trae/hooks.json）不在范围内。
+
 Kimi Code CLI（Kimi-CLI）状态同步（hook-only，config.toml）：
   Kimi Code CLI（Kimi-CLI）触发事件
     → hooks/kimi-hook.js（hook 事件 → agents/kimi-cli.js 映射 → HTTP POST）
     → 同上状态机（agent_id: kimi-cli）
   Hook 注册到 ~/.kimi/config.toml 的 [[hooks]] 条目；Clawd 启动时会自动同步这些条目。
 
-ZCode 状态同步（hook-only，config.json）：
-  ZCode 触发 SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure / Stop
-    → hooks/zcode-hook.js（hook 事件 → agents/zcode.js 映射 → HTTP POST）
+ZCode 状态同步与权限审批（hook-only，config.json）：
+  状态事件 SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure / Stop
+    → hooks/zcode-hook.js（hook 事件 → agents/zcode.js 映射 → HTTP POST /state）
     → 同上状态机（agent_id: zcode，session_id 规范化为 zcode:<raw>）
-  Hook 注册到 ~/.zcode/cli/config.json 的 hooks.events.*。Phase 1 仅同步状态，不注册 PermissionRequest；
-  ZCode 原生流程继续处理权限。显式 hooks.enabled=false 或 Clawd 单项 hook enabled=false 是用户选择，
-  启动同步 / Settings Repair 均保留，Doctor 只提示。旧版 zcode-cli 与当前 Electron Node-mode
-  Resources/glm/zcode.cjs 进程均受支持；GUI shell 只有在命令行同时含 zcode.cjs 时才会被认作 runtime。
+  权限事件 PermissionRequest（Phase 2 起）
+    → hooks/zcode-hook.js 构造权限 body（tool_name 缺失 / unknown 时 fail-closed 落回 state 路径）
+    → 长阻塞 HTTP POST /permission（等待 590s；installer 注册 per-hook timeoutMs 600000）
+    → 本地 bubble / Telegram / 飞书远程审批产生人工决定（automation 未审计，全部 defer）
+    → 有决定时 stdout 返回最小 hookSpecificOutput（allow 裸 behavior；deny 可带 message），
+      无决定 / 超时 / 断连输出 "{}" 并 exit 0，ZCode 回退原生权限流程
+  Hook 注册到 ~/.zcode/cli/config.json 的 hooks.events.*（7 个支持事件全部注册）。显式 hooks.enabled=false
+  或 Clawd 单项 hook enabled=false 是用户选择，启动同步 / Settings Repair 均保留，Doctor 只提示。
+  旧版 zcode-cli 与当前 Electron Node-mode Resources/glm/zcode.cjs 进程均受支持；GUI shell 只有在
+  命令行同时含 zcode.cjs 时才会被认作 runtime。ZCode 不进入 permission automation 白名单：
+  在工具面与会话身份审计完成前，global / per-session automation 全部 defer。prefs v14→v15 迁移翻转 Phase 1 的
+  zcode.permissionsEnabled=false 为 true。
 
 opencode 状态同步（in-process plugin，~0ms 延迟）：
   opencode 触发事件（session.created / session.status / message.part.updated 等）
@@ -125,6 +152,9 @@ opencode 状态同步（in-process plugin，~0ms 延迟）：
     → 同上状态机（agent_id: opencode）
   permission.asked 通过 plugin POST /permission 进入 Clawd；决定经随机 localhost 端口上的反向 bridge 返回，
   CLI/TUI bridge 使用 Bun.serve，Desktop bridge 使用 node:http，再由 plugin 调用宿主 SDK 的 permission reply route。
+  permission.replied 使用 current requestID/sessionID 契约回送 completion lifecycle；同一 request 的 asked/replied
+  在 plugin 内因果串行，lifecycle 最多投递 3 次。Clawd 只按 agent/request/canonical session/bridge generation
+  精确清理 pending UI、timer 与 notification，不向宿主反向发送第二次决定。
 
 MiMo Code 状态同步（in-process plugin，~0ms 延迟）：
   MiMo Code 触发事件（session.created / session.status / message.part.updated 等）
@@ -169,6 +199,11 @@ opencode 权限气泡（event hook + 反向 bridge，非阻塞）：
     → Clawd 创建 bubble 窗口 → 用户 Allow/Always/Deny
     → Clawd POST plugin 的反向 bridge → bridge 用 ctx.client._client.post() 调 opencode 内置 Hono 路由 /permission/:id/reply
     → opencode 执行对应行为（once/always/reject）
+  用户先在 opencode 原生 UI 回答 → event hook 收到 permission.replied（sessionID/requestID/reply）
+    → plugin 同步失效 request 的反向 target，并在同 request asked POST 之后发送 replied lifecycle
+    → lifecycle 使用 lifecycle_bridge_url/token（不复用普通 bridge 字段，对旧 Clawd fail-safe）
+    → Clawd exact-match 删除该 request 的本地 pending、bubble、timer 与 notification
+    → 不调用 reverse bridge，不复制 reply，不产生第二次宿主决定
 
 MiMo Code 权限气泡（event hook + 反向 bridge，非阻塞，与 opencode 同源协议）：
   MiMo Code 请求权限 → event hook 收到 permission.asked
@@ -176,6 +211,8 @@ MiMo Code 权限气泡（event hook + 反向 bridge，非阻塞，与 opencode �
     → Clawd 创建 bubble 窗口 → 用户 Allow/Always/Deny
     → Clawd POST plugin 的反向 bridge → bridge 用 ctx.client._client.post() 调 MiMo Code 内置 Hono 路由 /permission/:id/reply
     → MiMo Code 执行对应行为（once/always/reject）
+  MiMo Code 原生 UI 的 permission.replied 走同一 request-specific completion lifecycle；共享 core 与自动化已覆盖，
+  但发布物真机验证必须单列，不能从 OpenCode 真机结果推断。
 
 DeepSeek Harness 权限气泡（approval waterfall，阻塞）：
   DSH approval/request → bridge prepend listener 挂起 POST /permission
@@ -210,6 +247,14 @@ DeepSeek Harness 权限气泡（approval waterfall，阻塞）：
     → 显式 native 模式：server 记录 notification 并立即返回 no-decision，Codex AutoReview / 原生审批继续处理
     → DND / disabled / bubble hidden / Clawd unavailable 时 stdout "{}"，Codex 回到原生审批提示
 ```
+
+## Local Recap Projection
+
+The recap is a local projection of accepted runtime activity, not a second observer at the HTTP or `updateSession()` entry. After agent gates, Codex source/replay arbitration, permission provenance handling, subagent filtering, and completion arbitration settle, `src/state.js` maps the accepted boundary through `src/recap-metrics.js` and sends an allowlisted canonical event to `src/recap-runtime.js`.
+
+`src/recap-journal.js` freezes the desktop civil time and replaces any stable scope/session/dedupe identities with installation-local HMACs before appending a 14-day ticket. The same normalized record updates `src/recap-aggregate.js`; `src/recap-coverage.js` independently records when Clawd could receive signals. Daily aggregates and coverage remain bounded to 400 local days under `~/.clawd/recap-v1/`. Query IPC returns only the broad `local` / `wsl` / `remote` scope class and never returns HMAC values, profile IDs, or distribution names. Startup rebuilds the 14-day aggregate in bounded event-loop batches; unsupported pre-release aggregate/coverage schemas are quarantined instead of migrated.
+
+DND remains an interaction/visual gate and does not stop recap or coverage. Suspend, process shutdown, and `recapEnabled=false` close coverage. Historical records retain the time zone, UTC offset, local date, and local hour captured at acceptance; Codex JSONL uses only an accepted line's trusted timestamp. See `docs/guides/recap.md` for the full metric, privacy, and DST contract.
 
 ## Runtime Ownership Boundaries
 
@@ -247,7 +292,7 @@ CodeBuddy direct HTTP `PermissionRequest` 不经过 Clawd command hook，因此�
 - `agents/gemini-cli.js` — Gemini CLI hook 事件映射
 - `agents/antigravity-cli.js` — Antigravity CLI (agy) hook 事件映射（state-only，无权限气泡）
 - `agents/kimi-cli.js` — Kimi Code CLI（Kimi-CLI）hook 事件映射 + permission 分类策略
-- `agents/zcode.js` — ZCode config-file hook 事件映射（state-only，无权限气泡）
+- `agents/zcode.js` — ZCode config-file hook 事件映射与阻塞式 PermissionRequest 人工权限审批（automation 未审计，全部 defer）
 - `agents/kiro-cli.js` — Kiro CLI 事件映射（camelCase），无 HTTP hook / 无权限 / 无 subagent
 - `agents/codebuddy.js` — CodeBuddy 事件映射（PascalCase，Claude Code 兼容），支持权限
 - `agents/workbuddy.js` — WorkBuddy 事件映射（PascalCase，Claude Code 兼容），state + Notification only，无 Clawd 权限审批
@@ -305,8 +350,13 @@ CodeBuddy 的 PermissionRequest HTTP 所有权只认严格的本机 managed URL�
 - DeepSeek Harness 普通 approval 进入独立 blocking adapter；人工 Allow/Deny 可用，但 auto-tools、unattended 与 per-session grant 全部 DEFER。`ask_user_question` 返回 204 交给 DSH 原生 provider
 - Codex 的 PermissionRequest 是 official command hook；hook 脚本挂起等待 `/permission`，再把 sanitized allow/deny JSON 写到 stdout
 - `POST /permission` 接收 `{ tool_name, tool_input, session_id, permission_suggestions }`；Codex 额外带 `turn_id`、`tool_input_description`、`tool_input_fingerprint`
-- 每个权限请求都会创建独立 `BrowserWindow`，多个 bubble 从右下向上堆叠
-- bubble 会通过 IPC `bubble-height` 回报真实高度，主进程据此重排
+- 每个权限请求都会创建独立 `BrowserWindow`。普通卡片默认保持约 340 CSS px 的三行摘要；长内容和次级操作通过用户点击进入约 500 CSS px 的详情态，详情正文独立滚动，标题与决定按钮固定可见。安全 normal layout 中到达的首张可回答 Ask 默认直接进入详情态；桌面同时最多一个详情 owner，其他请求仍是摘要卡。切换详情不会销毁窗口，因此 Ask/Plan 的选择、输入草稿、步骤和滚动位置都保留
+- 普通工具摘要态保留 Allow/Deny、permission suggestions（含 Always）和可用的会话授权；Plan 摘要态同时提供「查看计划」与快速批准，反馈/回终端等次级操作只在详情态出现；未能创建期默认展开的 Ask 摘要态只提供「回答」。Plan 与默认展开的 Ask 到达时都不抢焦点；只有本地显式展开或 queue selection 才聚焦窗口并发送一次 restore-active-control。Win/Linux 由创建期 `focusable` 覆盖其潜在输入需求
+- bubble 通过 IPC `bubble-height` 回报 `{state, measurementEpoch, height}`。主进程只接受当前摘要/详情 epoch 的测量，避免展开→收起→展开期间的旧高度覆盖新布局；详情高度以 `min(60% workArea, 620 CSS px)` 为偏好，并以实测 chrome + 5 行正文为可读下限、当前 workArea 为硬上限。卡片没有自己的宽度（`html/body` 撑满窗口），自然高度随 BrowserWindow 宽度变化，所以 renderer 在窗口宽度真正改变后会再报一次高度；详情→摘要的 presentation 早于 `repositionBubbles()` 收窄窗口，没有这次补测就会按详情宽度少算一个折行，摘要卡底部被窗口裁掉
+- `permission.js` 是 permission presentation 的唯一 owner：它用目标 workArea、text scale、HUD avoid rect 和每张卡实测宽高先尝试原逐窗栈；不安全时按 agent + session 选 FIFO 代表并预留队列入口，再只向减少非保护代表的方向收敛。详情、IME composition、文本输入和用户显式选中的请求是保护项。可选代表准入按 expanded owner 的 frozen size 计算，不能靠压扁保护项腾位置；代表集合确定后，带 launcher 的最终 layout 才从 expanded viewport 的本轮有效高度中扣除 launcher、已选其他代表和全部 gaps。该 effective cap 不改 frozen normal-mode budget；含 expanded representative 且最终仍不安全的候选不得进入新的 queue revision/ACK。首次从 normal mode 命中该 guard 时仍应用 crowded normal bounds 并同步全可见 ownership，已有 committed overflow 则保持原样；普通非展开请求继续沿用既有 queue-failure fallback。Follow 模式详情朝远离桌宠的一侧扩展，Fixed 模式保持所选角的边缘对齐
+- overflow 队列使用独立 `permission-queue.html` / preload / renderer，只暴露 open、close、select、ACK 四类导航 IPC，没有任何决定 IPC，也不接收本地详情、wire input、suggestions 或 token。抽屉打开时隐藏请求窗口但不销毁；选中项后恢复原 BrowserWindow/DOM。每个队列 revision 必须先 ACK 再提交 visible/hidden 集合，提交期限从第一条尚未被当前 ACK 表示的请求开始且不会被后续 revision 续期；队列加载、renderer、window 或 ACK 失败时，本 overflow episode 只回退逐窗栈且不重建、不决定请求
+- 全局 Allow/Deny 快捷键对已有窗口的请求，只作用于 presentation owner 选定、可见且可操作、完整处于 workArea 内并避开 HUD 的原目标卡片；ACK 前、队列失败回退与保留 crowded normal bounds 的保护项回退也必须满足这一条件。normal 模式没有窗口的请求保留既有 fallback。目标不安全时停用快捷键，不能跳过它去决定另一张卡片；Slack 只在请求窗口自身 height ACK 或已 ACK 队列的 main-owned hidden snapshot 上执行现有 once-guard。petHidden 使用 request ordinal cutoff 隔离旧请求与隐藏期间的新请求；topmost、IME overlap、HUD/update/Orbit 避让和 roam hold 都只扫描 presentation owner 返回的真实可见 permission windows（含队列及仍在 fade 的请求窗）
+- 本地详情数据与网络/决策数据分离：route 在生成有界摘要的同时保留最多 128 KiB 的仅本地显示详情；fingerprint、automation、HTTP 回包、Telegram/飞书/Slack payload 继续使用原有数据。Ask 的 wire question/answer key 保持上游原文，长正文和选项说明只影响详情显示
 - 支持 Allow / Deny / suggestion 决策，以及 `addRules` / `setMode` suggestion 类型
 - `permission-automation-policy.js` 的 off / auto-tools / unattended 与 `session-automation-coordinator.js` 的 per-session grant 会在 bubble 渲染前产生真实决定。auto-tools 对 Claude/Qwen 的未知 built-in（除有效 namespaced MCP）fail closed，但其他已知 adapter 对非空工具名不都使用逐工具 allowlist；unattended 在识别已知 decision tools 后仍有意对可作 Allow/Deny 的未知请求保留“handle every request”行为。新增 agent/tool/interaction 必须同时审查 policy 与 tests，不能笼统假设 unknown 一律 defer
 - Telegram 与飞书 / Lark 是和本地 bubble 并行的远程决策通道；关闭本地 bubble 不等于关闭远程审批。远程 client 超时、断连、未配置或启动失败不得产生决定或 deny：本地 bubble 存在时请求继续 pending；仅在 remote-only 且所有可用 client 都无决定时，整体请求才 no-decision 并让 agent 回原生 UI 重问
@@ -339,11 +389,11 @@ opencode、MiMo Code、OpenClaw、Hermes 和 DeepSeek Harness 是 plugin 形式�
 - Hermes plugin 使用同步 POST，避免短命 `hermes -z` 进程退出前丢事件；Clawd 未启动时有短 cooldown，避免反复扫端口
 - Hermes 的 `agent_pid` 当前是 plugin worker 进程 PID；`source_pid` 来自异步进程树解析，给终端聚焦使用
 - Hermes config.yaml 是用户 YAML，不做 line-oriented 编辑；安装只复制托管 plugin 文件并调用 `hermes plugins enable clawd-on-desk`
-- DeepSeek Harness 首发只支持 web profile 与 npm 发布物 `@deepseek-ai/dsh@0.1.0-rc.6`。安装器按 canonical `DSH_HOME` 哈希命名空间把 bridge 复制成 immutable hash generation，再用官方 `dsh plugin --profile web add/remove` mutation；dependency、bundle row、installation-first/profile-second resolution 与 Clawd marker 必须同时验证，foreign 同名 package 永不覆盖或删除；不同 DSH_HOME 不共享可删除 generation、mutation lock 或 inspection latch
+- DeepSeek Harness 首发只支持 web profile，并维护一张 verified 版本契约表（`0.1.1-rc.2` 优先、`0.1.0-rc.6` 保留），每个版本绑定自己的 npm artifact 与 integrity；Install/Repair 按检测到的 host 版本（无 CLI 时按 owned marker）选择契约，Uninstall 与手动 npx 命令按 marker 契约选择，未列入表内的版本一律禁止 mutation。安装器按 canonical `DSH_HOME` 哈希命名空间把 bridge 复制成 immutable hash generation，再用官方 `dsh plugin --profile web add/remove` mutation；dependency、bundle row、installation-first/profile-second resolution 与 Clawd marker 必须同时验证，foreign 同名 package 永不覆盖或删除；不同 DSH_HOME 不共享可删除 generation、mutation lock 或 inspection latch
 - DSH mutation lock 只在 owner/schema/token/PID/timestamp/owner-recorded operation timeout 全合法、年龄超过该 owner timeout 的两倍、且 PID probe 明确返回 `ESRCH` 时通过 sibling atomic rename 接管；live PID、`EPERM`、unknown、corrupt/foreign owner 均 fail closed，错误必须暴露精确 lock path。owner write/release 只允许隔离并删除 exact owner file 与空 lock dir，禁止 recursive canonical cleanup。无全局 CLI 的手动 npx generation 通过同 namespace 的 owned reference 持久保活，直到验证或显式卸载；命令显式 pin shell-quoted canonical `DSH_HOME`，malformed/foreign/concurrent anchor 一律保留 generation 并要求人工检查
 - DSH state listener 是 fire-and-forget FIFO；approval listener 是唯一例外，必须阻塞等待决定或 `next()`。`session/created` observer 顶层 non-throwing，避免同步异常 veto DSH session 创建
 - DSH projection storage 不是稳定协议：首发不读取 workspace/projcache，也不运行 fallback monitor
-- DSH Install/Repair 成功与 Doctor healthy 都是 disk-only 结论，必须提示重启正在运行的 `dsh web`。安装器/Doctor 对非 `0.1.0-rc.6` 禁止 mutation 并报警；上游没有 external plugin 可用的公开 runtime host-version/activation seam，因此已安装 bridge 遇到 DSH 原地升级时无法在 listener 注册前可靠自禁用，这是 experimental residual，不得写成 runtime fail-closed 保证
+- DSH Install/Repair 成功与 Doctor healthy 都是 disk-only 结论，必须提示重启正在运行的 `dsh web`。安装器/Doctor 对未列入版本契约表的 DSH 禁止 mutation 并报警（rc.6 与 rc.2 各自按精确版本契约选择）；上游没有 external plugin 可用的公开 runtime host-version/activation seam，因此已安装 bridge 遇到 DSH 原地升级时无法在 listener 注册前可靠自禁用，这是 experimental residual，不得写成 runtime fail-closed 保证
 
 ## Pi Notes
 
@@ -403,7 +453,10 @@ Remote SSH 有两条明确分开的 transport 路径：
 ## Updating
 
 - Git 模式（非打包，主要是 macOS/Linux 源码运行）会 `git fetch` 比较 HEAD，有更新则 `git pull` + 必要时 `npm install`，然后 `app.relaunch()`
-- Windows NSIS 打包模式走 `electron-updater`
+- Windows NSIS 与 macOS DMG 打包模式走 `electron-updater`；均保持 `autoDownload=false`，用户确认后才下载
+- macOS Release 同时发布 x64 / arm64 的 DMG 与 ZIP；DMG 用于首次/手动安装，Squirrel.Mac 只消费 ZIP。`latest-mac.yml` 必须同时列出两架构的 ZIP 与 DMG，且 top-level `path` 指向 x64 ZIP
+- macOS 下载完成后可选择立即重启，或稍后正常退出并重新打开；安装请求期间复用 update bubble 显示准备状态，ready/staging 错误必须作为真实错误显示，不能降级成“已是最新”
+- 旧版 DMG 没有 ZIP 更新载荷，不能自举到首个支持应用内更新的桥接版；现有用户仍需手动安装桥接版一次。单元/metadata/包结构验证不等于同一 Developer ID 的 A→B 真机升级证据
 - 托盘菜单里的 “Check for Updates” 可以手动触发
 
 ## i18n

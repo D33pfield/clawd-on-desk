@@ -40,7 +40,7 @@ Claude Code 只有一个用户级 statusline 槽位，因此 Clawd 绝不会静�
 
 普通本机修复命令 `npm run install:claude-hooks` 不会开启采集。显式调试命令 `npm run install:claude-hooks -- --statusline` 可以安装并显示 Clawd 状态栏，但 Settings 开关关闭时，应用仍会把其本机 context/quota POST 当作成功 no-op；下次本机启动 reconcile 也会移除这个 Clawd 管理的调试槽位。Remote SSH 部署是另一项显式操作；若远端已有自己的 statusline，请在 profile 中开启 **部署时串联远端已有的 statusline**，以便保留并在卸载时恢复原注册。
 
-**Codex CLI** — 开箱即用。Clawd 会在检测到 Codex 时自动注册 official hooks 到 `~/.codex/hooks.json`，并在用户没有显式关闭 hooks 时启用 `[features].hooks = true`。Installer 会把已废弃的 `[features].codex_hooks` 迁移到 `hooks`，同时保留用户显式设置的 false。Official hooks 提供实时状态和真实 Allow/Deny 权限气泡；`~/.codex/sessions/` JSONL 轮询只保留为状态 / metadata fallback，用于 hook 被禁用或 hook 未覆盖事件；审批不再从 JSONL 猜测。Codex 发出 `request_user_input` 时，Clawd 会从 transcript 中识别该调用，播放通知反应并显示问题/选项的只读预览。回答仍在 Codex 原生界面中完成，卡片不会注入选择；匹配的工具输出写入后会自动关闭。
+**Codex CLI** — 开箱即用。Clawd 会在检测到 Codex 时自动注册 official hooks 到 `~/.codex/hooks.json`，并在用户没有显式关闭 hooks 时启用 `[features].hooks = true`。Installer 会把已废弃的 `[features].codex_hooks` 迁移到 `hooks`，同时保留用户显式设置的 false。Official hooks 提供实时状态和真实 Allow/Deny 权限气泡。**Settings → Agents → Codex → 随 Codex 启动** 单独控制本机 Codex 的 `SessionStart` 能否在 Clawd 未运行时拉起桌宠；关闭它不会停用状态或审批接入，Clawd 已运行时仍然正常工作。全新安装默认关闭，升级用户则保留此前的开启行为；Remote SSH 与 WSL hook 永远不会冷启动桌面应用。`~/.codex/sessions/` JSONL 轮询只保留为状态 / metadata fallback，用于 hook 被禁用或 hook 未覆盖事件；审批不再从 JSONL 猜测。Codex 发出 `request_user_input` 时，Clawd 会从 transcript 中识别该调用，播放通知反应并显示问题/选项的只读预览。回答仍在 Codex 原生界面中完成，卡片不会注入选择；匹配的工具输出写入后会自动关闭。
 
 **Copilot CLI** — 需要本机 Copilot CLI 追踪时，先到 **Settings → Agents** 安装。安装且启用后，Clawd 启动时会自动在 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json` 注册 hooks（marker-based 合并，你已有的 hook 条目和其他 `hooks/*.json` 文件原样保留）。SSH 远程部署走应用内 **Settings → 远程 SSH → 部署 / 修复 Hook** 自动配置。`hooks.json` 或 `settings.json` 顶层 `disableAllHooks: true` 时 doctor 会报 warning 并不挂 Fix 按钮。详见 [copilot-setup.zh-CN.md](copilot-setup.zh-CN.md)（含手动备选与 `COPILOT_HOME` 说明）。
 
@@ -60,7 +60,7 @@ Claude Code 只有一个用户级 statusline 槽位，因此 Clawd 绝不会静�
 
 **Qwen Code** — hooks 配置在 `~/.qwen/settings.json`。需要本机 Qwen 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步 hooks。也可以手动执行 `npm run install:qwen-hooks`。Qwen Code 在 Clawd 中采用 hook-only 集成：状态更新和阻塞式 `PermissionRequest` 审批都来自 Qwen hook 事件。如果 Qwen settings 里有 `disableAllHooks: true`，Clawd 可以注册条目，但 Qwen 不会触发它们，直到用户移除该开关。
 
-**ZCode** — config-file hooks 配置在 `~/.zcode/cli/config.json` 的 `hooks.events.*`。需要本机 ZCode 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 会持续同步 6 个 state-only 事件。也可以手动执行 `npm run install:zcode-hooks`。安装后请新建一个 ZCode 会话，让它读取当前 hook 配置。ZCode 只有在 `hooks.enabled: true` 时才执行 config-file hooks：字段缺失时 Clawd 会补 true，但用户显式设置的全局 `hooks.enabled: false` 或单项 hook `enabled: false` 都会保留，Doctor 只提示，不提供会覆盖该选择的 Fix。集成不注册 `PermissionRequest`，审批始终留在 ZCode。如果 ZCode 曾导入 Claude 配置，Clawd 只会从 ZCode 配置里删除明确引用自身 `clawd-hook.js` 的旧条目，绝不修改 `~/.claude/settings.json`。
+**ZCode** — config-file hooks 配置在 `~/.zcode/cli/config.json` 的 `hooks.events.*`。需要本机 ZCode 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 会持续同步全部 7 个支持事件——6 个状态事件加上阻塞式 `PermissionRequest` 审批 hook（由 Clawd 本地气泡或远程审批产生人工 allow/deny；Clawd 无决定时由 ZCode 自己的权限流程接管）。在完成 ZCode 工具面与会话身份审计前，全局和 per-session 权限自动化都会 defer。也可以手动执行 `npm run install:zcode-hooks`。安装后请新建一个 ZCode 会话，让它读取当前 hook 配置。ZCode 只有在 `hooks.enabled: true` 时才执行 config-file hooks：字段缺失时 Clawd 会补 true，但用户显式设置的全局 `hooks.enabled: false` 或单项 hook `enabled: false` 都会保留，Doctor 只提示，不提供会覆盖该选择的 Fix。如果 ZCode 曾导入 Claude 配置，Clawd 只会从 ZCode 配置里删除明确引用自身 `clawd-hook.js` 的旧条目，绝不修改 `~/.claude/settings.json`。
 
 **CodeWhale** — lifecycle hooks 配置在 `~/.codewhale/config.toml`（`[[hooks.hooks]]` 条目）。需要本机 CodeWhale 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步 hooks。也可以手动执行 `npm run install:codewhale-hooks`。Phase 1 是 state-only：Clawd 只驱动生命周期、工具调用和模式切换动画，不弹权限气泡，也不追踪子代理。详见 [codewhale-setup.md](codewhale-setup.md)。
 
@@ -255,13 +255,13 @@ node hooks/openclaw-install.js
 ## macOS 说明
 
 - **源码运行**（`npm start`）：Intel 和 Apple Silicon 均可直接使用。
-- **DMG 安装包**：未签名 Apple 开发者证书，macOS Gatekeeper 会拦截。解决方法：
-  - 右键点击应用 → **打开** → 在弹窗中点击 **打开**，或
-  - 在终端运行 `xattr -cr /Applications/Clawd\ on\ Desk.app`
+- **正式 DMG 安装包**：GitHub 正式 Release 同时提供 x64 与 arm64 DMG；发布工作流会用 Developer ID 签名、Apple 公证并 stapled。手动 `workflow_dispatch` 在没有签名凭据时可能只生成 ad-hoc 验证 artifact，不能当作正式安装包分发。
+- **自动更新桥接**：旧版 DMG 没有 ZIP 更新载荷，不能把自己自动升级到首个支持应用内更新的版本。现有用户需要从 GitHub Releases 手动安装一次首个桥接版 DMG；装上桥接版后，后续正式版本可在 Clawd 内下载，选择“立即重启”安装，或选择“稍后”并在退出、重新打开后完成。真实能力仍以同一 Developer ID 的 A→B 真机升级记录为准，不能用单元测试代替。
+- **源码自动更新**：源码运行时，“检查更新”会执行 `git pull` + `npm install`（依赖有变化时）并自动重启。
 
 ## Linux 说明
 
 - **源码运行**（`npm start`）：默认启用 Electron sandbox。如果你的 Linux 开发环境仍然遇到 chrome-sandbox 初始化失败，可临时使用 `CLAWD_DISABLE_SANDBOX=1 npm start` 作为兼容方案。
 - **安装包**：AppImage 和 `.deb` 可从 [GitHub Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases) 下载。deb 安装后应用图标会出现在 GNOME 应用菜单。
 - **终端聚焦**：依赖 `wmctrl` 或 `xdotool`（有一个就行）。安装：`sudo apt install wmctrl` 或 `sudo apt install xdotool`。
-- **自动更新**：源码运行时，"检查更新"会执行 `git pull` + `npm install`（依赖有变化时）并自动重启。
+- **自动更新**：AppImage / deb 安装包仍需从 GitHub Releases 手动下载；源码运行时，“检查更新”会执行 `git pull` + `npm install`（依赖有变化时）并自动重启。

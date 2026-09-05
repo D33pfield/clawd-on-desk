@@ -12,7 +12,7 @@
 // `validate(snapshot)` — coerces an arbitrary object into a valid snapshot, dropping bad fields
 // `migrate(raw)` — applies version-to-version migrations, returns the upgraded raw snapshot
 //
-// Bad-file handling: unparseable file → backup as `clawd-prefs.json.bak` → return defaults.
+// Bad-file handling: readable invalid contents → backup as `clawd-prefs.json.bak` → return defaults.
 //   Unreadable file (EACCES/EIO/...) → defaults in memory, but `locked` so save() will not
 //   overwrite a file we were never able to read.
 // Future-version handling: read succeeds but version > current → warn + refuse to overwrite
@@ -41,6 +41,10 @@ const {
   normalizeFeishuApproval,
 } = require("./feishu-approval-settings");
 const {
+  cloneDefaultSlackNotify,
+  normalizeSlackNotify,
+} = require("./slack-notify-settings");
+const {
   NOTIFICATION_DEFAULT_SECONDS,
   UPDATE_DEFAULT_SECONDS,
   PERMISSION_DEFAULT_SECONDS,
@@ -56,9 +60,10 @@ const {
 const {
   PET_TINT_IDS,
   PET_ACCESSORY_IDS,
+  PET_MOUTH_ACCESSORY_IDS,
 } = require("./pet-customization-catalog");
 
-const CURRENT_VERSION = 14;
+const CURRENT_VERSION = 19;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
 const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 
@@ -137,6 +142,10 @@ const SCHEMA = {
   // Pure data prefs
   lang: { type: "string", default: "en", enum: ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"] },
   showTray: { type: "boolean", default: true },
+  // Local activity recap is enabled by default for both fresh installs and
+  // upgrades. It stores only bounded aggregate/ticket data under ~/.clawd;
+  // there is no network export and the user can disable or clear it later.
+  recapEnabled: { type: "boolean", default: true },
   // Default off (macOS): a fresh install runs as an accessory/agent app — pet +
   // menu-bar icon, no Dock tile. Existing users keep their Dock — a persisted
   // showDock is kept (save() bakes the full snapshot), and the v11->v12 migration
@@ -146,6 +155,10 @@ const SCHEMA = {
   showDock: { type: "boolean", default: false },
   manageClaudeHooksAutomatically: { type: "boolean", default: true },
   autoStartWithClaude: { type: "boolean", default: false },
+  // Fresh installs require an explicit opt-in before a local Codex
+  // SessionStart hook may cold-launch Clawd. The v17 -> v18 migration pins
+  // this on for existing users so an upgrade does not change prior behavior.
+  autoStartWithCodex: { type: "boolean", default: false },
   // Codex approval awareness depends entirely on the official PermissionRequest
   // hook (JSONL no longer infers approvals). These surface its health: the
   // toggle gates the startup nudge, and LastNotified is the edge-trigger dedup
@@ -157,6 +170,9 @@ const SCHEMA = {
   // requires native verification. Cleared after native activation or an
   // explicit switch-off so a future migration requirement can warn once.
   telegramMigrationLastNotified: { type: "string", default: "" },
+  // One-time upgrade nudge for Feishu/Lark credentials saved before platform
+  // and approver provenance binding existed. Cleared after repair or disable.
+  feishuApprovalMigrationLastNotified: { type: "string", default: "" },
   // System-backed: actual truth lives in OS login items / autostart files.
   // `openAtLoginHydrated` starts false; main.js's startup hydrate helper imports
   // the current system value into prefs on first run, then flips this flag.
@@ -165,6 +181,12 @@ const SCHEMA = {
   openAtLogin: { type: "boolean", default: false },
   openAtLoginHydrated: { type: "boolean", default: false },
   bubbleFollowPet: { type: "boolean", default: false },
+  bubbleFollowPreference: { type: "string", default: "auto", enum: ["auto", "left", "right"] },
+  bubbleFixedCorner: {
+    type: "string",
+    default: "bottom-right",
+    enum: ["top-left", "top-right", "bottom-left", "bottom-right"],
+  },
   sessionHudEnabled: { type: "boolean", default: true },
   sessionHudShowStateLabels: { type: "boolean", default: true },
   sessionHudShowElapsed: { type: "boolean", default: false },
@@ -209,6 +231,16 @@ const SCHEMA = {
     type: "number",
     default: 300000,
     validate: (v) => Number.isInteger(v) && v >= 30_000 && v <= 86_400_000,
+  },
+  // Local Codex Desktop/CLI turns can remain legitimately silent while the
+  // model or network retries. Keep the historical 20-minute guard as the
+  // default, but make it explicit and independently disableable so it does
+  // not inherit Claude Code's missing-Stop fallback.
+  codexWorkingStaleMs: {
+    type: "number",
+    default: 1_200_000,
+    validate: (v) =>
+      Number.isInteger(v) && (v === 0 || (v >= 30_000 && v <= 86_400_000)),
   },
   detachedIdleStaleMs: {
     type: "number",
@@ -298,6 +330,14 @@ const SCHEMA = {
   // settings-tab-general.js); this pref persists as an escape hatch and can be
   // re-exposed.
   fullscreenOverlay: { type: "boolean", default: true },
+  // #935: opt-in auto-hide — when a real fullscreen app owns the foreground
+  // (win-fullscreen-detect probe), hide the pet + its floating surfaces
+  // entirely and restore them when fullscreen ends. Takes precedence over
+  // fullscreenOverlay while active (a hidden pet has nothing to overlay).
+  // Windows-only in effect: the probe is constant false elsewhere. Default OFF
+  // so existing behavior — overlay by default, #538 stand-down as the escape
+  // hatch — is untouched.
+  fullscreenAutoHide: { type: "boolean", default: false },
   // Text-window zoom (bubbles, HUD, dashboard, settings, resume input). The
   // pet itself scales via `size` and is never zoomed. `textScale` is the
   // global default; `textScaleByDisplay` overrides it per display id (the
@@ -337,6 +377,13 @@ const SCHEMA = {
     defaultFactory: () => ({}),
     normalize: normalizePetAccessory,
   },
+  // Per-theme mouth-slot choice. Missing entries mean no mouth accessory.
+  // This is intentionally independent from the legacy-stable head slot above.
+  petMouthAccessory: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizePetMouthAccessory,
+  },
   // Per-theme opt-in for temporary date-based holiday accessories. Missing
   // entries mean disabled; the saved manual petAccessory choice remains the
   // source restored outside a holiday window.
@@ -372,13 +419,17 @@ const SCHEMA = {
       // desktop app owns its permission loop natively, so permission bubbles
       // default off (like qoderwork).
       "workbuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      // TraeCode is state-only: hook protocol is Claude Code-compatible but it
+      // has no PermissionRequest event, so permission bubbles default off.
+      "traecode": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       "kiro-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "kimi-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "qwen-code": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
-      // ZCode (智谱/Z.ai desktop ADE) is state-only (Phase 1), so permission
-      // bubbles default off. Its ~/.zcode/cli/config.json schema is distinct:
-      // config-file hooks live under hooks.events.* and use timeoutMs.
-      "zcode": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      // ZCode (智谱/Z.ai desktop ADE) supports blocking PermissionRequest
+      // hooks since Phase 2, so permission bubbles default on like qwen. Its
+      // ~/.zcode/cli/config.json schema is distinct: config-file hooks live
+      // under hooks.events.* and use timeoutMs.
+      "zcode": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "codewhale": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       "opencode": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "mimocode": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
@@ -465,6 +516,11 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => cloneDefaultFeishuApproval(),
     normalize: normalizeFeishuApproval,
+  },
+  slackNotify: {
+    type: "object",
+    defaultFactory: () => cloneDefaultSlackNotify(),
+    normalize: normalizeSlackNotify,
   },
   // v0.9.0 migration state. transport defaults to null (undecided) so v0.8.x
   // users upgrading without this key fall onto the "detect legacy artefacts"
@@ -620,6 +676,21 @@ function normalizeStaleTriple(out) {
 // v3 → v4: Pi returns to a state-only integration. Clawd no longer inserts a
 //   permission prompt into Pi's default YOLO flow, so the Pi permission subgate
 //   is reset off.
+// v15 → v16: preserve the legacy meaning of literal `Control` shortcut tokens
+//   before v16 gives that token Electron's native Control meaning on macOS.
+function migrateLegacyControlShortcuts(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const migrated = { ...value };
+  for (const [actionId, accelerator] of Object.entries(migrated)) {
+    if (typeof accelerator !== "string") continue;
+    migrated[actionId] = accelerator
+      .split("+")
+      .map((token) => token.trim().toLowerCase() === "control" ? "CommandOrControl" : token)
+      .join("+");
+  }
+  return migrated;
+}
+
 function migrate(raw) {
   if (!raw || typeof raw !== "object") return raw;
   const originalAgentIds = raw.agents && typeof raw.agents === "object" && !Array.isArray(raw.agents)
@@ -790,6 +861,76 @@ function migrate(raw) {
   // Settings step above.
   if (out.version < 14) {
     out.version = 14;
+  }
+  // v14 -> v15: ZCode Phase 2 permission bubbles. Phase 1 persisted
+  // permissionsEnabled:false while the Settings switch was never rendered
+  // (capabilities.permissionApproval was false), so no user intent exists
+  // behind that stored false — flip it to the new on-default. A false set on
+  // v15 or later is a real user choice and never migrates again.
+  if (out.version < 15) {
+    if (
+      out.agents
+      && typeof out.agents === "object"
+      && out.agents.zcode
+      && typeof out.agents.zcode === "object"
+      && out.agents.zcode.permissionsEnabled === false
+    ) {
+      out.agents.zcode.permissionsEnabled = true;
+    }
+    out.version = 15;
+  }
+  // v15 -> v16: `Control` used to be an accepted alias for
+  // `CommandOrControl`. Rewrite only pre-v16 persisted values before the
+  // parser starts using `Control` for macOS's distinct native Control key.
+  if (out.version < 16) {
+    out.shortcuts = migrateLegacyControlShortcuts(out.shortcuts);
+    out.version = 16;
+  }
+  // v16 -> v17: introduce an independent mouth-accessory map. Never infer a
+  // cigarette choice from the existing head accessory or from theme ids. A
+  // valid explicit map may exist in an unreleased v16 development snapshot;
+  // preserve it instead of erasing that selection during the version split.
+  if (out.version < 17) {
+    if (
+      !out.petMouthAccessory
+      || typeof out.petMouthAccessory !== "object"
+      || Array.isArray(out.petMouthAccessory)
+    ) {
+      out.petMouthAccessory = {};
+    }
+    out.version = 17;
+  }
+  // v17 -> v18: split Codex event intake from permission to cold-launch the
+  // desktop app. Existing installs previously got auto-start whenever Codex
+  // itself was enabled, so preserve that behavior on upgrade. Fresh installs
+  // never run migrate() and therefore keep the schema's opt-in default false.
+  if (out.version < 18) {
+    if (!Object.prototype.hasOwnProperty.call(out, "autoStartWithCodex")) {
+      out.autoStartWithCodex = true;
+    } else if (typeof out.autoStartWithCodex !== "boolean") {
+      // An explicitly-present malformed value is not reliable user consent.
+      out.autoStartWithCodex = false;
+    }
+    out.version = 18;
+  }
+  // v18 -> v19: recap is a local, privacy-minimized application history. Match
+  // Codex-style activity summaries by recording on upgrade without inserting
+  // a consent interstitial; Settings still exposes an immediate off switch.
+  if (out.version < 19) {
+    out.recapEnabled = typeof out.recapEnabled === "boolean" ? out.recapEnabled : true;
+    out.version = 19;
+  }
+  // Field-level migration also covers development snapshots that already have
+  // the current schema. Preserve the old effective Codex timeout only when no
+  // explicit independent value exists; fresh installs do not run migrate().
+  if (!Object.prototype.hasOwnProperty.call(out, "codexWorkingStaleMs")) {
+    const legacy = normalizeStaleTriple({
+      workingStaleMs: isValidValue(SCHEMA.workingStaleMs, out.workingStaleMs)
+        ? out.workingStaleMs : SCHEMA.workingStaleMs.default,
+      sessionStaleMs: isValidValue(SCHEMA.sessionStaleMs, out.sessionStaleMs)
+        ? out.sessionStaleMs : SCHEMA.sessionStaleMs.default,
+    });
+    out.codexWorkingStaleMs = Math.max(SCHEMA.codexWorkingStaleMs.default, legacy.workingStaleMs);
   }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;
@@ -1248,6 +1389,17 @@ function normalizePetAccessory(value, defaultsValue) {
   return out;
 }
 
+function normalizePetMouthAccessory(value, defaultsValue) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
+  const out = {};
+  for (const [themeId, accessoryId] of Object.entries(value)) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)) continue;
+    if (!PET_MOUTH_ACCESSORY_IDS.includes(accessoryId)) continue;
+    if (accessoryId !== "none") out[themeId] = accessoryId;
+  }
+  return out;
+}
+
 function normalizeHolidayAccessoryEnabled(value, defaultsValue) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
   const out = {};
@@ -1273,6 +1425,18 @@ function normalizeIdleVisual(value, defaultsValue) {
 }
 
 // ── Disk I/O ──
+
+function backupInvalidPrefs(prefsPath, reason) {
+  try {
+    const bak = prefsPath + ".bak";
+    fs.copyFileSync(prefsPath, bak);
+    console.warn(`Clawd: invalid prefs file backed up to ${bak}:`, reason);
+    return true;
+  } catch (bakErr) {
+    console.warn("Clawd: invalid prefs file backup failed:", reason, bakErr.message);
+    return false;
+  }
+}
 
 // Read prefs from disk. Returns
 // `{ snapshot, locked, fresh?, recovered?, codexAutoStartAuthoritative? }`:
@@ -1329,22 +1493,31 @@ function load(prefsPath) {
     raw = JSON.parse(text);
   } catch (err) {
     // The file WAS readable and its contents are not valid JSON. Backing it up
-    // and continuing from defaults is the intended recovery, unchanged.
-    try {
-      const bak = prefsPath + ".bak";
-      fs.copyFileSync(prefsPath, bak);
-      console.warn(`Clawd: prefs file unreadable, backed up to ${bak}:`, err.message);
-    } catch (bakErr) {
-      console.warn("Clawd: prefs file unreadable and backup failed:", err.message, bakErr.message);
-    }
-    return { snapshot: getDefaults(), locked: false, recovered: true };
+    // and continuing from defaults is the intended recovery. If backup fails,
+    // lock persistence so startup hydration cannot destroy the only copy.
+    const backupCreated = backupInvalidPrefs(prefsPath, err.message);
+    return {
+      snapshot: getDefaults(),
+      locked: !backupCreated,
+      recovered: true,
+      recoveryBackupFailed: !backupCreated,
+    };
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return { snapshot: getDefaults(), locked: false, recovered: true };
+    const backupCreated = backupInvalidPrefs(prefsPath, "root must be a JSON object");
+    return {
+      snapshot: getDefaults(),
+      locked: !backupCreated,
+      recovered: true,
+      recoveryBackupFailed: !backupCreated,
+    };
   }
   const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
   const isObjectRecord = (value) => !!value && typeof value === "object" && !Array.isArray(value);
   let codexAutoStartAuthoritative = true;
+  if (hasOwn(raw, "autoStartWithCodex") && typeof raw.autoStartWithCodex !== "boolean") {
+    codexAutoStartAuthoritative = false;
+  }
   if (hasOwn(raw, "agents")) {
     if (!isObjectRecord(raw.agents)) {
       codexAutoStartAuthoritative = false;
@@ -1352,8 +1525,11 @@ function load(prefsPath) {
       if (!isObjectRecord(raw.agents.codex)) {
         codexAutoStartAuthoritative = false;
       } else if (
-        hasOwn(raw.agents.codex, "enabled")
-        && typeof raw.agents.codex.enabled !== "boolean"
+        (hasOwn(raw.agents.codex, "enabled") && typeof raw.agents.codex.enabled !== "boolean")
+        || (
+          hasOwn(raw.agents.codex, "integrationInstalled")
+          && typeof raw.agents.codex.integrationInstalled !== "boolean"
+        )
       ) {
         codexAutoStartAuthoritative = false;
       }
@@ -1427,6 +1603,7 @@ module.exports = {
   mapLocaleToLang,
   normalizeThemeOverrides,
   normalizePetTint,
+  normalizePetMouthAccessory,
   normalizeShortcuts,
   normalizeOptionalHttpUrl,
   normalizePathList,

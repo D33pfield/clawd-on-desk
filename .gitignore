@@ -11,6 +11,7 @@ Thumbs.db
 # OpenCode local config
 .opencode/
 # Development plans & review notes
+/.release-reviews/
 PLAN.md
 PLAN-*.md
 codex-*.md
@@ -22,7 +23,9 @@ docs/**
 !docs/guides/guide-theme-creation.md
 !docs/guides/known-limitations.md
 !docs/guides/known-limitations.zh-CN.md
+!docs/guides/recap.md
 !docs/guides/setup-guide.md
+!docs/guides/slack-notifications.md
 !docs/guides/setup-guide.zh-CN.md
 !docs/guides/guide-remote-ssh.md
 !docs/guides/roam-fence.md
@@ -32,6 +35,7 @@ docs/**
 !docs/guides/state-mapping.zh-CN.md
 !docs/guides/telegram-approval.md
 !docs/guides/feishu-lark-remote-approval.md
+!docs/guides/release-signing.md
 !docs/guides/codex-wsl-clarification.md
 !docs/guides/codex-wsl-clarification.zh-CN.md
 !docs/guides/codex-wsl-clarification.ko-KR.md
@@ -62,6 +66,8 @@ docs/**
 !docs/releases/release-v0.13.0.md
 !docs/releases/release-v0.14.0.md
 !docs/releases/release-v0.15.0.md
+!docs/releases/release-v0.16.0.md
+!docs/releases/release-v1.0.0.md
 
 # Temp files from testing
 .tmp_*
@@ -97,6 +103,8 @@ logs/
 
 # GIF recording tools (not part of main project)
 scripts/*
+# Deterministic source-backed macOS tray asset generator
+!scripts/generate-mac-tray-icons.js
 !scripts/manual/
 scripts/manual/*
 !scripts/manual/README.md
@@ -119,6 +127,8 @@ scripts/manual/*
 !scripts/audit-repository-assets.js
 !scripts/assert-no-retired-telegram-sidecar.js
 !scripts/verify-release-version.js
+!scripts/verify-release-contributors.js
+!scripts/prepare-macos-signing.js
 !scripts/after-pack-koffi.js
 !scripts/audit-packaged-native.js
 !scripts/native-package-policy.json

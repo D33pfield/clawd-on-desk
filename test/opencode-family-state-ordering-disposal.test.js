@@ -10,6 +10,15 @@ const { pathToFileURL } = require("node:url");
 const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-family-ordering-"));
 process.env.HOME = TMP_HOME;
 process.env.USERPROFILE = TMP_HOME;
+const runtimeDir = path.join(TMP_HOME, ".clawd");
+fs.mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+const runtimePath = path.join(runtimeDir, "runtime.json");
+fs.writeFileSync(runtimePath, JSON.stringify({
+  app: "clawd-on-desk",
+  port: 23333,
+  ownerPid: process.pid,
+}), { mode: 0o600 });
+if (process.platform !== "win32") fs.chmodSync(runtimePath, 0o600);
 
 const CONFIG = Object.freeze({
   agentId: "opencode",
@@ -137,6 +146,21 @@ function metadataState(sessionID, fields) {
     hook_source: "opencode-plugin",
     metadata_only: true,
     ...fields,
+  };
+}
+
+function contextMessage(sessionID, used) {
+  return {
+    type: "message.updated",
+    properties: {
+      sessionID,
+      info: {
+        role: "assistant",
+        providerID: "openai",
+        modelID: "synthetic-model",
+        tokens: { input: used },
+      },
+    },
   };
 }
 
@@ -1159,5 +1183,89 @@ describe("opencode-family directory-scoped instance disposal", () => {
     assert.strictEqual(plugin.__test._sessionParentById.size, 0);
     assert.strictEqual(plugin.__test._rootSessionId, null);
     assert.strictEqual(plugin.__test._lastSeenSessionId, null);
+  });
+});
+
+describe("opencode-family context usage event wiring", () => {
+  it("routes a real message.updated hook event into metadata delivery", async () => {
+    const plugin = createOpencodeFamilyPlugin(CONFIG);
+    const hooks = await plugin(createContext(path.join(TMP_HOME, "context-wire")));
+    const calls = [];
+    fetchImpl = async (url, opts) => {
+      const call = parseFetchCall(url, opts);
+      calls.push(call);
+      return clawdResponse(call.body);
+    };
+
+    await emit(hooks, contextMessage("context_wire", 321));
+    await waitFor(
+      () => calls.some((call) => call.body.metadata_only === true),
+      "message.updated never reached the context usage handler"
+    );
+
+    const metadata = calls.find((call) => call.body.metadata_only === true).body;
+    assert.strictEqual(metadata.session_id, "opencode:context_wire");
+    assert.deepStrictEqual(metadata.context_usage, {
+      used: 321,
+      limit: null,
+      source: "opencode",
+    });
+  });
+
+  it("a real session.created event invalidates the prior context generation", async () => {
+    const directory = path.join(TMP_HOME, "context-reopen");
+    const plugin = createOpencodeFamilyPlugin(CONFIG);
+    const hooks = await plugin(createContext(directory));
+
+    await emit(hooks, contextMessage("context_reopen", 400));
+    await waitFor(
+      () => [...plugin.__test._contextStateByInstance.values()]
+        .some((sessions) => sessions.has("opencode:context_reopen")),
+      "the original context generation was not created"
+    );
+    await emit(hooks, lifecycle("session.created", "context_reopen", directory, "Reopened"));
+
+    assert.strictEqual(
+      [...plugin.__test._contextStateByInstance.values()]
+        .some((sessions) => sessions.has("opencode:context_reopen")),
+      false,
+      "session reuse must remove the old provider lookup/dedup generation"
+    );
+  });
+
+  it("instance disposal sends SessionEnd for a context-only session and clears its bucket", async () => {
+    const directory = path.join(TMP_HOME, "context-dispose");
+    const plugin = createOpencodeFamilyPlugin(CONFIG);
+    const context = createContext(directory);
+    const hooks = await plugin(context);
+    const calls = [];
+    fetchImpl = async (url, opts) => {
+      const call = parseFetchCall(url, opts);
+      calls.push(call);
+      return clawdResponse(call.body);
+    };
+
+    await emit(hooks, contextMessage("owned_context", 10));
+    await waitFor(() => plugin.__test._contextStateByInstance.size === 1, "instance token was not established");
+    const instanceToken = [...plugin.__test._contextStateByInstance.keys()][0];
+    await plugin.__test.handleContextUsageEvent(
+      contextMessage("context_only", 20),
+      { client: context.client, instanceToken }
+    );
+    assert.ok(plugin.__test._contextStateByInstance.get(instanceToken).has("opencode:context_only"));
+    calls.length = 0;
+
+    await emit(hooks, {
+      type: "server.instance.disposed",
+      properties: { directory },
+    });
+    await waitForQueueEmpty(plugin);
+
+    assert.ok(
+      calls.some((call) => call.body.event === "SessionEnd"
+        && call.body.session_id === "opencode:context_only"),
+      "the disposal hook must terminate sessions known only to context telemetry"
+    );
+    assert.strictEqual(plugin.__test._contextStateByInstance.has(instanceToken), false);
   });
 });

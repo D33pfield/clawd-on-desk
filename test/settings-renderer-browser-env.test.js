@@ -34,6 +34,7 @@ const TAB_MODULES = [
   path.join(SRC_DIR, "settings-tab-shortcuts.js"),
   path.join(SRC_DIR, "settings-tab-telegram-approval.js"),
   SETTINGS_TAB_DISCORD_PRESENCE,
+  path.join(SRC_DIR, "settings-tab-recap.js"),
   path.join(SRC_DIR, "settings-tab-about.js"),
 ];
 const VERIFIED_GITHUB_CONTRIBUTORS = [
@@ -58,6 +59,9 @@ const VERIFIED_GITHUB_CONTRIBUTORS = [
   "weed33834",
   "arismarioneves",
   "Zamaniego",
+  "CheeseAgent",
+  "RS-Nocsi",
+  "Cobb04",
 ];
 
 function createDeferred() {
@@ -84,6 +88,7 @@ function loadSettingsI18nForTest() {
 function loadSettingsCoreForTest(settingsAPI, {
   document: documentOverride = null,
   localStorage: localStorageOverride = null,
+  matchMedia = null,
   requestAnimationFrame = (cb) => {
     cb();
     return 1;
@@ -101,6 +106,7 @@ function loadSettingsCoreForTest(settingsAPI, {
       setItem: () => {},
     },
     document,
+    matchMedia,
     requestAnimationFrame,
     window: null,
     globalThis: null,
@@ -149,6 +155,193 @@ function createQueuedRaf() {
     },
   };
 }
+
+function attachDisclosureForHarness({
+  root,
+  trigger,
+  body,
+  expanded = false,
+  onExpandedChange = null,
+}) {
+  let isExpanded = !!expanded;
+  const sync = () => {
+    root.classList.toggle("expanded", isExpanded);
+    root.classList.toggle("collapsed", !isExpanded);
+    trigger.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+    body.setAttribute("aria-hidden", isExpanded ? "false" : "true");
+    body.inert = !isExpanded;
+  };
+  const onClick = () => {
+    isExpanded = !isExpanded;
+    sync();
+    if (typeof onExpandedChange === "function") onExpandedChange(isExpanded, { persist: true });
+  };
+  trigger.addEventListener("click", onClick);
+  sync();
+  return {
+    get expanded() { return isExpanded; },
+    dispose() { trigger.removeEventListener("click", onClick); },
+  };
+}
+
+function createMountedDisposableHarness() {
+  const scopes = new Map();
+  const getScope = (scope = "content") => {
+    if (!scopes.has(scope)) scopes.set(scope, new Set());
+    return scopes.get(scope);
+  };
+  return {
+    scopes,
+    register(disposable, { scope = "content" } = {}) {
+      if (disposable && typeof disposable.dispose === "function") getScope(scope).add(disposable);
+      return disposable;
+    },
+    dispose(disposable) {
+      if (!disposable || typeof disposable.dispose !== "function") return;
+      for (const [scope, controls] of scopes) {
+        controls.delete(disposable);
+        if (controls.size === 0) scopes.delete(scope);
+      }
+      disposable.dispose();
+    },
+    disposeScope(scope = null) {
+      const scopeNames = scope === null ? Array.from(scopes.keys()) : [scope];
+      for (const scopeName of scopeNames) {
+        const controls = scopes.get(scopeName);
+        if (!controls) continue;
+        scopes.delete(scopeName);
+        for (const disposable of Array.from(controls)) disposable.dispose();
+      }
+    },
+  };
+}
+
+describe("recap metadata refresh", () => {
+  it("rerenders an open recap page when delayed agent metadata arrives", () => {
+    let rawScrollTop = 620;
+    let maxScrollTop = 2000;
+    const raf = createQueuedRaf();
+    const content = {
+      children: [],
+      get scrollTop() {
+        return Math.min(rawScrollTop, maxScrollTop);
+      },
+      set scrollTop(value) {
+        rawScrollTop = Math.max(0, Math.min(Number(value) || 0, maxScrollTop));
+      },
+    };
+    const document = {
+      body: { contains: () => false },
+      getElementById: (id) => (id === "content" ? content : null),
+    };
+    const core = loadSettingsCoreForTest({}, {
+      document,
+      requestAnimationFrame: raf.requestAnimationFrame,
+    });
+    core.state.activeTab = "recap";
+    let renders = 0;
+    core.ops.installRenderHooks({
+      sidebar: () => {},
+      content: () => {
+        renders += 1;
+        maxScrollTop = 0;
+        content.scrollTop = content.scrollTop;
+        maxScrollTop = 2000;
+      },
+      modal: () => {},
+    });
+
+    core.ops.applyAgentMetadata([{ id: "codex", name: "Codex" }]);
+
+    assert.strictEqual(renders, 1);
+    assert.strictEqual(core.runtime.agentMetadata[0].name, "Codex");
+    assert.strictEqual(content.scrollTop, 620);
+    content.scrollTop = 0;
+    raf.flush();
+    assert.strictEqual(content.scrollTop, 620);
+  });
+
+  it("does not enable recap scroll preservation for delayed metadata on Agents", () => {
+    let rawScrollTop = 620;
+    let maxScrollTop = 2000;
+    const raf = createQueuedRaf();
+    const content = {
+      children: [],
+      get scrollTop() {
+        return Math.min(rawScrollTop, maxScrollTop);
+      },
+      set scrollTop(value) {
+        rawScrollTop = Math.max(0, Math.min(Number(value) || 0, maxScrollTop));
+      },
+    };
+    const document = {
+      body: { contains: () => false },
+      getElementById: (id) => (id === "content" ? content : null),
+    };
+    const core = loadSettingsCoreForTest({}, {
+      document,
+      requestAnimationFrame: raf.requestAnimationFrame,
+    });
+    core.state.activeTab = "agents";
+    core.ops.installRenderHooks({
+      content: () => {
+        maxScrollTop = 0;
+        content.scrollTop = content.scrollTop;
+        maxScrollTop = 2000;
+      },
+    });
+
+    core.ops.applyAgentMetadata([{ id: "codex", name: "Codex" }]);
+
+    assert.strictEqual(content.scrollTop, 0);
+    raf.flush();
+    assert.strictEqual(content.scrollTop, 0);
+  });
+
+  it("preserves recap scroll for generic settings changes without changing Agents", () => {
+    for (const tabId of ["recap", "agents"]) {
+      let rawScrollTop = 620;
+      let maxScrollTop = 2000;
+      const raf = createQueuedRaf();
+      const content = {
+        children: [],
+        get scrollTop() {
+          return Math.min(rawScrollTop, maxScrollTop);
+        },
+        set scrollTop(value) {
+          rawScrollTop = Math.max(0, Math.min(Number(value) || 0, maxScrollTop));
+        },
+      };
+      const document = {
+        body: { contains: () => false },
+        getElementById: (id) => (id === "content" ? content : null),
+      };
+      const core = loadSettingsCoreForTest({}, {
+        document,
+        requestAnimationFrame: raf.requestAnimationFrame,
+      });
+      core.state.activeTab = tabId;
+      core.state.snapshot = { soundMuted: false };
+      core.tabs[tabId] = {};
+      core.ops.installRenderHooks({
+        sidebar: () => {},
+        content: () => {
+          maxScrollTop = 0;
+          content.scrollTop = content.scrollTop;
+          maxScrollTop = 2000;
+        },
+      });
+
+      core.ops.applyChanges({ changes: { soundMuted: true } });
+
+      const expected = tabId === "recap" ? 620 : 0;
+      assert.strictEqual(content.scrollTop, expected, `${tabId} immediate scroll`);
+      content.scrollTop = 0;
+      raf.flush();
+      assert.strictEqual(content.scrollTop, expected, `${tabId} deferred scroll`);
+    }
+  });
+});
 
 class FakeClassList {
   constructor(el) {
@@ -224,6 +417,9 @@ class FakeElement {
       _values: {},
       setProperty(name, value) {
         this._values[name] = String(value);
+      },
+      removeProperty(name) {
+        delete this._values[name];
       },
       getPropertyValue(name) {
         return this._values[name] || "";
@@ -424,6 +620,122 @@ class FakeElement {
     if (!this.isConnected) return 0;
     return Math.max(40, this.children.length * 40);
   }
+}
+
+function loadRecapTabForTest({ data, agentMetadata = [], queryRecap } = {}) {
+  const body = new FakeElement("body");
+  const content = new FakeElement("main");
+  body.appendChild(content);
+  const document = {
+    body,
+    createElement: (tagName) => new FakeElement(tagName),
+    getElementById: () => null,
+  };
+  const strings = loadSettingsI18nForTest().en;
+  const renderRequests = [];
+  const context = {
+    console,
+    document,
+    Intl,
+    setTimeout,
+    clearTimeout,
+    window: null,
+    globalThis: null,
+    settingsAPI: {
+      queryRecap: queryRecap || (async () => data),
+      update: async () => ({ status: "ok" }),
+      clearRecap: async () => ({ status: "ok" }),
+    },
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-recap.js"), "utf8"), context);
+  const core = {
+    state: { activeTab: "recap", snapshot: { lang: "en", recapEnabled: true } },
+    runtime: { agentMetadata },
+    helpers: {
+      t: (key) => strings[key] || key,
+      setSwitchVisual: (element, enabled) => element.setAttribute("aria-checked", String(enabled)),
+      buildSection: (title, rows) => {
+        const section = document.createElement("section");
+        section.setAttribute("aria-label", title);
+        for (const row of rows) section.appendChild(row);
+        return section;
+      },
+      showSettingsConfirmModal: async () => "cancel",
+    },
+    ops: {
+      requestRender: (payload = {}) => {
+        renderRequests.push(payload);
+        const { content: shouldRender } = payload;
+        if (shouldRender) render();
+      },
+      showToast: () => {},
+    },
+    tabs: {},
+  };
+  context.ClawdSettingsTabRecap.init(core);
+  function render() {
+    content.innerHTML = "";
+    core.tabs.recap.render(content, core);
+  }
+  render();
+  return {
+    content,
+    core,
+    document,
+    renderRequests,
+    async settle() {
+      for (let index = 0; index < 6; index += 1) await Promise.resolve();
+    },
+  };
+}
+
+function sampleRecapView() {
+  const coverageMinutes = Array(24).fill(0);
+  coverageMinutes[8] = 30;
+  coverageMinutes[9] = 60;
+  const codexHours = Array(24).fill(0);
+  codexHours[9] = 9;
+  const claudeHours = Array(24).fill(0);
+  claudeHours[9] = 3;
+  const hourCapacities = Array(24).fill(60);
+  return {
+    schemaVersion: 1,
+    status: "ready",
+    period: "today",
+    anchorDate: "2026-08-29",
+    startDate: "2026-08-29",
+    endDate: "2026-08-29",
+    currentLocalHour: 10,
+    recordingStartedDate: "2026-08-29",
+    recordingStartedLocalHour: 8,
+    recordingEnabled: true,
+    days: [{
+      localDate: "2026-08-29",
+      coverage: { coverageMinutes, hourCapacities },
+      hourCapacities,
+      rows: [
+        {
+          agentId: "codex",
+          scope: "local",
+          scopeInstance: "local-1",
+          metrics: { sessionsStarted: null, turnsCompleted: 2, toolCalls: 4, activityEvents: 9 },
+          sessionsStartedPartial: true,
+          hours: codexHours,
+        },
+        {
+          agentId: "claude-code",
+          scope: "remote",
+          scopeInstance: "remote-1",
+          metrics: { sessionsStarted: 1, turnsCompleted: 1, toolCalls: 2, activityEvents: 3 },
+          sessionsStartedPartial: false,
+          hours: claudeHours,
+        },
+      ],
+    }],
+  };
 }
 
 function loadSharedLanguagePickerForTest({
@@ -842,6 +1154,8 @@ function makeGeneralSnapshot(overrides = {}) {
     autoStartWithClaude: false,
     hideBubbles: false,
     bubbleFollowPet: true,
+    bubbleFollowPreference: "auto",
+    bubbleFixedCorner: "bottom-right",
     permissionBubblesEnabled: true,
     notificationBubbleAutoCloseSeconds: 8,
     updateBubbleAutoCloseSeconds: 12,
@@ -1020,6 +1334,7 @@ function loadThemeTabForTest({
   snapshot,
   petTintOptions,
   petAccessoryOptions,
+  petMouthAccessoryOptions,
   settingsAPI = {},
 } = {}) {
   const documentListeners = new Map();
@@ -1063,6 +1378,7 @@ function loadThemeTabForTest({
             ? {
                 petTint: target.capabilities && target.capabilities.petTint === true,
                 accessories: target.capabilities && target.capabilities.accessories === true,
+                mouthAccessories: target.capabilities && target.capabilities.mouthAccessories === true,
               }
             : null,
         });
@@ -1123,6 +1439,7 @@ function loadThemeTabForTest({
     lang: "en",
     petTint: {},
     petAccessory: {},
+    petMouthAccessory: {},
     holidayAccessoryEnabled: {},
     ...(snapshot || {}),
   };
@@ -1131,6 +1448,9 @@ function loadThemeTabForTest({
   core.runtime.petTintOptions = Array.isArray(petTintOptions) ? petTintOptions : [];
   core.runtime.petAccessoryOptions = Array.isArray(petAccessoryOptions)
     ? petAccessoryOptions
+    : [];
+  core.runtime.petMouthAccessoryOptions = Array.isArray(petMouthAccessoryOptions)
+    ? petMouthAccessoryOptions
     : [];
   context.ClawdSettingsTabTheme.init(core);
   const renderContent = () => {
@@ -1228,6 +1548,8 @@ function loadAgentsTabForTest({
           rowAgentIdleAlertsDesc: "Idle alert desc",
           rowAgentPermissions: "Permissions",
           rowAgentPermissionsDesc: "Permissions desc",
+          rowStartWithCodex: "Start with Codex",
+          rowStartWithCodexDesc: "Start with Codex desc",
           rowCodexPermissionMode: "Permission mode",
           rowCodexPermissionModeDesc: "Permission mode desc",
           codexPermissionModeNative: "Native",
@@ -1235,6 +1557,7 @@ function loadAgentsTabForTest({
           rowCodexNativeNotificationSound: "Native sound",
           rowCodexNativeNotificationSoundDesc: "Native sound desc",
           badgePermissionBubble: "Permission bubble",
+          traecodeEnableHint: "Enable hooks in Trae before they fire.",
           eventSourceHook: "Hook",
           eventSourceLogPoll: "Log poll",
           eventSourcePlugin: "Plugin",
@@ -1422,6 +1745,11 @@ function loadTelegramApprovalTabForTest({
         document.activeElement = element;
       };
       return element;
+    },
+    createTextNode(value) {
+      const node = new FakeElement("#text");
+      node.textContent = String(value || "");
+      return node;
     },
     getElementById(id) {
       if (id === "content") return content;
@@ -1965,6 +2293,7 @@ function loadAboutTabForTest({
   body.appendChild(content);
   const updateCalls = [];
   const toasts = [];
+  const disposableHarness = createMountedDisposableHarness();
   const document = {
     body,
     createElement: (tagName) => new FakeElement(tagName),
@@ -2010,6 +2339,15 @@ function loadAboutTabForTest({
     runtime: { about: { infoCache: null, clickCount: 0, updateCheckSnapshot: { state: "idle" } } },
     helpers: {
       t: (key) => key,
+      attachSettingsDisclosure: attachDisclosureForHarness,
+      registerMountedDisposable: disposableHarness.register,
+      disposeMountedDisposable: disposableHarness.dispose,
+      createDisclosureChevron: (className) => {
+        const chevron = document.createElement("span");
+        chevron.className = className;
+        chevron.setAttribute("aria-hidden", "true");
+        return chevron;
+      },
       setSwitchVisual: (element, checked, options = {}) => {
         element.classList.toggle("on", !!checked);
         element.classList.toggle("pending", !!options.pending);
@@ -2026,7 +2364,7 @@ function loadAboutTabForTest({
   };
   context.ClawdSettingsTabAbout.init(core);
   core.tabs.about.render(content, core);
-  return { core, content, updateCalls, toasts };
+  return { core, content, updateCalls, toasts, disposableHarness };
 }
 
 function loadAnimOverridesTabForTest({
@@ -2037,6 +2375,7 @@ function loadAnimOverridesTabForTest({
   readersOverrides = {},
   helpersOverrides = {},
 }) {
+  const disposableHarness = createMountedDisposableHarness();
   const documentListeners = new Map();
   const content = new FakeElement("main");
   content.id = "content";
@@ -2081,6 +2420,7 @@ function loadAnimOverridesTabForTest({
   };
   context.globalThis = context;
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "language-picker.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-overrides.js"), "utf8"), context);
   const core = {
     state: { activeTab: "animOverrides", mountedControls: {} },
@@ -2093,10 +2433,14 @@ function loadAnimOverridesTabForTest({
         chevron.setAttribute("aria-hidden", "true");
         return chevron;
       },
+      attachSettingsDisclosure: attachDisclosureForHarness,
+      registerMountedDisposable: disposableHarness.register,
+      disposeMountedDisposable: disposableHarness.dispose,
       attachActivation: (el, invoke) => {
         if (typeof invoke === "function") el.addEventListener("click", () => invoke());
         return el;
       },
+      buildSettingsSelect: (config) => context.ClawdLanguagePicker.createSettingsSelect(config),
       ...helpersOverrides,
     },
     ops: {
@@ -2109,6 +2453,7 @@ function loadAnimOverridesTabForTest({
       closeAssetPicker: () => {},
       normalizeAssetPickerSelection: () => {},
       showToast: () => {},
+      clearMountedControls: () => disposableHarness.disposeScope(),
       ...opsOverrides,
     },
     i18n: {
@@ -2129,6 +2474,7 @@ function loadAnimOverridesTabForTest({
     content,
     document,
     documentListenerCount: (type) => (documentListeners.get(type) || new Set()).size,
+    disposableHarness,
   };
 }
 
@@ -2202,6 +2548,351 @@ function createAnimOverridesRuntime(card, overrides = {}) {
 }
 
 describe("settings renderer browser environment", () => {
+  it("defers recap recovery queries while the Settings document is hidden", async () => {
+    let queryCount = 0;
+    const harness = loadRecapTabForTest({
+      queryRecap: async () => {
+        queryCount += 1;
+        return queryCount === 1
+          ? { status: "unavailable", reason: "RECAP_PRIVATE_ACL_FAILED" }
+          : sampleRecapView();
+      },
+    });
+    await harness.settle();
+    assert.strictEqual(queryCount, 1);
+
+    harness.document.visibilityState = "hidden";
+    harness.core.tabs.recap.applyDataChanged();
+    await harness.settle();
+    assert.strictEqual(queryCount, 1);
+
+    harness.document.visibilityState = "visible";
+    harness.core.tabs.recap.applyDataChanged();
+    await harness.settle();
+    assert.strictEqual(queryCount, 2);
+  });
+
+  it("re-queries an unavailable recap page after the runtime recovery signal", async () => {
+    let queryCount = 0;
+    const ready = sampleRecapView();
+    const harness = loadRecapTabForTest({
+      queryRecap: async () => {
+        queryCount += 1;
+        return queryCount === 1
+          ? { status: "unavailable", reason: "RECAP_PRIVATE_ACL_FAILED" }
+          : ready;
+      },
+    });
+    await harness.settle();
+    assert.strictEqual(queryCount, 1);
+    assert.ok(harness.content.querySelector(".recap-error"));
+    const retry = harness.content.querySelector(".recap-error button");
+    assert.strictEqual(retry.getAttribute("data-settings-focus-key"), "recap-retry-today");
+    assert.strictEqual(
+      retry.getAttribute("data-settings-focus-fallback-key"),
+      "recap-period-today",
+    );
+
+    harness.core.tabs.recap.applyDataChanged();
+    await harness.settle();
+    assert.strictEqual(queryCount, 2);
+    assert.ok(harness.content.querySelector(".recap-card"));
+    assert.strictEqual(harness.content.querySelector(".recap-error"), null);
+  });
+
+  it("preserves a recovery signal queued while the initial recap query is failing", async () => {
+    let queryCount = 0;
+    let rejectInitial;
+    const harness = loadRecapTabForTest({
+      queryRecap: () => {
+        queryCount += 1;
+        if (queryCount === 1) {
+          return new Promise((_resolve, reject) => { rejectInitial = reject; });
+        }
+        return Promise.resolve(sampleRecapView());
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.strictEqual(typeof rejectInitial, "function");
+    harness.core.tabs.recap.applyDataChanged();
+    rejectInitial(new Error("transient query failure"));
+    await harness.settle();
+    assert.strictEqual(queryCount, 2);
+    assert.ok(harness.content.querySelector(".recap-card"));
+  });
+
+  it("drains a final live signal queued during a recap background query", async () => {
+    const background = createDeferred();
+    const initial = sampleRecapView();
+    const latest = JSON.parse(JSON.stringify(initial));
+    latest.days[0].rows[0].metrics.toolCalls = 5;
+    let queryCount = 0;
+    const harness = loadRecapTabForTest({
+      queryRecap: () => {
+        queryCount += 1;
+        if (queryCount === 1) return Promise.resolve(initial);
+        if (queryCount === 2) return background.promise;
+        return Promise.resolve(latest);
+      },
+    });
+    await harness.settle();
+    assert.strictEqual(queryCount, 1);
+
+    harness.core.tabs.recap.applyDataChanged();
+    await harness.settle();
+    assert.strictEqual(queryCount, 2);
+    harness.core.tabs.recap.applyDataChanged();
+    background.resolve(initial);
+    await harness.settle();
+    await harness.settle();
+
+    assert.strictEqual(queryCount, 3);
+    const codexRow = harness.content.querySelectorAll(".recap-agent-row")
+      .find((row) => row.querySelector("strong").textContent === "codex");
+    const codexMetrics = codexRow.querySelectorAll("dd");
+    assert.strictEqual(codexMetrics[2].textContent, "5");
+  });
+
+  it("renders the recap grid as one keyboard stop with accessible agent locks", async () => {
+    const harness = loadRecapTabForTest({
+      data: sampleRecapView(),
+      agentMetadata: [
+        { id: "codex", name: "Codex" },
+        { id: "claude-code", name: "Claude Code" },
+      ],
+    });
+    await harness.settle();
+
+    const grid = harness.content.querySelector(".recap-grid");
+    const cells = harness.content.querySelectorAll(".recap-cell");
+    const rows = harness.content.querySelectorAll(".recap-agent-row");
+    assert.strictEqual(cells.length, 24);
+    assert.strictEqual(harness.content.querySelectorAll(".recap-bar-slot").length, 24);
+    assert.strictEqual(harness.content.querySelectorAll(".recap-bar-fill").length, 24);
+    assert.strictEqual(harness.content.querySelector(".recap-footnote"), null);
+    assert.ok(collectText(harness.content).includes("Footprints"));
+    assert.ok(collectText(harness.content).includes("Look back on your work trail."));
+    assert.strictEqual(grid.getAttribute("role"), "grid");
+    assert.strictEqual(grid.getAttribute("data-settings-focus-key"), "recap-grid-today");
+    assert.strictEqual(grid.querySelectorAll(".recap-today-band").length, 1);
+    assert.strictEqual(grid.querySelector(".recap-today-band").getAttribute("role"), "row");
+    assert.strictEqual(grid.querySelector(".recap-hour-labels").getAttribute("aria-hidden"), "true");
+    assert.strictEqual(grid.tabIndex, 0);
+    assert.ok(cells.every((cell) => cell.tabIndex === undefined));
+    assert.strictEqual(rows.length, 2);
+    assert.ok(rows.every((row) => row.getAttribute("role") === "button" && row.tabIndex === 0));
+    assert.ok(rows.every((row) => row.getAttribute("aria-pressed") === "false"));
+    assert.ok(rows.every((row) => row.getAttribute("data-settings-focus-key")
+      === `recap-agent-${row.dataset.rowKey}`));
+    assert.deepStrictEqual(
+      harness.content.querySelectorAll(".recap-period-button")
+        .map((button) => button.getAttribute("data-settings-focus-key")),
+      ["recap-period-today", "recap-period-week", "recap-period-month", "recap-period-year"]
+    );
+    assert.strictEqual(
+      harness.content.querySelector(".switch").getAttribute("data-settings-focus-key"),
+      "recap-recording-toggle"
+    );
+    const clearButton = harness.content.querySelector(".soft-btn");
+    assert.strictEqual(clearButton.getAttribute("data-settings-focus-key"), "recap-clear");
+    assert.strictEqual(
+      clearButton.getAttribute("data-settings-focus-fallback-key"),
+      "recap-recording-toggle"
+    );
+    assert.match(rows[0].getAttribute("aria-label"), /Sessions started: .*Turns completed: .*Tool calls: .*Activity signals:/);
+
+    const firstActiveDescendant = grid.getAttribute("aria-activedescendant");
+    grid.dispatchEvent({ type: "keydown", key: "ArrowRight", bubbles: false });
+    assert.notStrictEqual(grid.getAttribute("aria-activedescendant"), firstActiveDescendant);
+    assert.ok(collectText(harness.content.querySelector(".recap-sr-only")).length > 0);
+
+    grid.dispatchEvent({ type: "keydown", key: "End", bubbles: false });
+    const rowEnd = grid.getAttribute("aria-activedescendant");
+    assert.strictEqual(rowEnd, cells.filter((cell) => cell.getAttribute("role") === "gridcell").at(-1).id);
+    grid.dispatchEvent({ type: "keydown", key: "Home", ctrlKey: true, bubbles: false });
+    assert.strictEqual(grid.getAttribute("aria-activedescendant"), cells[0].id);
+
+    harness.content.querySelectorAll(".recap-period-button")[1].click();
+    await harness.settle();
+    const weekGrid = harness.content.querySelector(".recap-grid");
+    assert.strictEqual(weekGrid.querySelector(".recap-bar-fill"), null);
+    weekGrid.dispatchEvent({ type: "keydown", key: "ArrowDown", bubbles: false });
+    weekGrid.dispatchEvent({ type: "keydown", key: "End", bubbles: false });
+    let active = weekGrid.querySelectorAll(".recap-cell")
+      .find((cell) => cell.id === weekGrid.getAttribute("aria-activedescendant"));
+    assert.strictEqual(active.getAttribute("aria-rowindex"), "2");
+    assert.strictEqual(active.getAttribute("aria-colindex"), "24");
+    weekGrid.dispatchEvent({ type: "keydown", key: "End", ctrlKey: true, bubbles: false });
+    active = weekGrid.querySelectorAll(".recap-cell")
+      .find((cell) => cell.id === weekGrid.getAttribute("aria-activedescendant"));
+    assert.strictEqual(active.getAttribute("aria-rowindex"), "7");
+  });
+
+  it("keeps every recap keyboard focus key stable across a live data refresh", async () => {
+    const data = sampleRecapView();
+    const harness = loadRecapTabForTest({
+      queryRecap: async () => data,
+      agentMetadata: [
+        { id: "codex", name: "Codex" },
+        { id: "claude-code", name: "Claude Code" },
+      ],
+    });
+    await harness.settle();
+
+    const focusKeys = () => [
+      ...harness.content.querySelectorAll(".recap-period-button"),
+      ...harness.content.querySelectorAll(".recap-agent-row"),
+      harness.content.querySelector(".recap-grid"),
+      harness.content.querySelector(".switch"),
+      harness.content.querySelector(".soft-btn"),
+    ].map((element) => element.getAttribute("data-settings-focus-key"));
+    const before = focusKeys();
+    assert.ok(before.every(Boolean));
+    assert.strictEqual(new Set(before).size, before.length);
+
+    harness.core.tabs.recap.applyDataChanged();
+    await harness.settle();
+    assert.deepStrictEqual(focusKeys(), before);
+    assert.strictEqual(harness.renderRequests.at(-1).preserveScroll, true);
+  });
+
+  it("keeps month and year placeholder cells out of the accessibility grid", async () => {
+    const monthHarness = loadRecapTabForTest({ data: sampleRecapView() });
+    await monthHarness.settle();
+    monthHarness.content.querySelectorAll(".recap-period-button")[2].click();
+    await monthHarness.settle();
+    const monthGrid = monthHarness.content.querySelector(".recap-grid");
+    const monthBlanks = monthHarness.content.querySelectorAll(".recap-cell-blank");
+    assert.strictEqual(monthGrid.querySelector(".recap-month-weekdays").getAttribute("aria-hidden"), "true");
+    assert.strictEqual(monthGrid.querySelector(".recap-month-grid").getAttribute("role"), "rowgroup");
+    assert.strictEqual(monthGrid.querySelectorAll(".recap-month-row").length, 6);
+    assert.ok(monthGrid.querySelectorAll(".recap-month-row")
+      .every((row) => row.getAttribute("role") === "row"));
+    assert.strictEqual(monthBlanks.length, 5);
+    assert.ok(monthBlanks.every((cell) =>
+      cell.getAttribute("role") === "presentation"
+      && cell.getAttribute("aria-hidden") === "true"
+      && cell.getAttribute("aria-label") === undefined));
+    assert.strictEqual(monthHarness.content.querySelectorAll(".recap-cell")
+      .filter((cell) => cell.getAttribute("role") === "gridcell").length, 31);
+    const monthActive = monthHarness.content.querySelectorAll(".recap-cell")
+      .find((cell) => cell.id === monthGrid.getAttribute("aria-activedescendant"));
+    assert.ok(monthActive);
+    assert.notStrictEqual(monthActive.getAttribute("role"), "presentation");
+
+    const yearHarness = loadRecapTabForTest({ data: sampleRecapView() });
+    await yearHarness.settle();
+    yearHarness.content.querySelectorAll(".recap-period-button")[3].click();
+    await yearHarness.settle();
+    const yearBlanks = yearHarness.content.querySelectorAll(".recap-cell-blank");
+    assert.strictEqual(yearBlanks.length, 7);
+    assert.ok(yearBlanks.every((cell) =>
+      cell.getAttribute("role") === "presentation"
+      && cell.getAttribute("aria-hidden") === "true"
+      && cell.getAttribute("aria-label") === undefined));
+    assert.strictEqual(yearHarness.content.querySelectorAll(".recap-cell")
+      .filter((cell) => cell.getAttribute("role") === "gridcell").length, 365);
+  });
+
+  it("renders every Today bar on one linear scale and keeps longer periods as cells", async () => {
+    const data = sampleRecapView();
+    data.currentLocalHour = 23;
+    const codex = data.days[0].rows[0];
+    codex.hours[5] = 2;
+    codex.hours[13] = 7;
+    codex.hours[20] = 1;
+    codex.metrics.activityEvents += 10;
+    for (const hour of [5, 13, 20]) data.days[0].coverage.coverageMinutes[hour] = 60;
+    const harness = loadRecapTabForTest({ data });
+    await harness.settle();
+
+    const todayCells = harness.content.querySelectorAll(".recap-cell");
+    const ratios = todayCells.map((cell) => cell.style.getPropertyValue("--recap-bar-ratio"));
+    assert.strictEqual(todayCells.length, 24);
+    assert.strictEqual(todayCells[9].dataset.barMaximum, "12");
+    assert.strictEqual(ratios[5], String(2 / 12));
+    assert.strictEqual(ratios[9], "1");
+    assert.strictEqual(ratios[13], String(7 / 12));
+    assert.strictEqual(ratios[20], String(1 / 12));
+    assert.strictEqual(ratios[0], "0");
+
+    for (const periodIndex of [1, 2, 3]) {
+      harness.content.querySelectorAll(".recap-period-button")[periodIndex].click();
+      await harness.settle();
+      assert.strictEqual(harness.content.querySelector(".recap-bar-fill"), null);
+    }
+  });
+
+  it("supports hover plus click-lock highlighting and Escape unlock", async () => {
+    const harness = loadRecapTabForTest({
+      data: sampleRecapView(),
+      agentMetadata: [
+        { id: "codex", name: "Codex" },
+        { id: "claude-code", name: "Claude Code" },
+      ],
+    });
+    await harness.settle();
+    const rows = harness.content.querySelectorAll(".recap-agent-row");
+    const codexRow = rows.find((row) => collectText(row).includes("Codex"));
+    const grid = harness.content.querySelector(".recap-grid");
+    const activeCell = grid.querySelector(".recap-cell-activity");
+    assert.strictEqual(activeCell.style.getPropertyValue("--recap-bar-ratio"), "1");
+
+    codexRow.dispatchEvent({ type: "mouseenter", bubbles: false });
+    assert.strictEqual(grid.classList.contains("recap-grid-dim"), true);
+    assert.strictEqual(harness.content.querySelectorAll(".recap-cell-hit").length, 1);
+    assert.strictEqual(activeCell.style.getPropertyValue("--recap-bar-ratio"), "0.75");
+    codexRow.dispatchEvent({ type: "mouseleave", bubbles: false });
+    assert.strictEqual(grid.classList.contains("recap-grid-dim"), false);
+    assert.strictEqual(activeCell.style.getPropertyValue("--recap-bar-ratio"), "1");
+
+    codexRow.dispatchEvent({ type: "click", bubbles: false });
+    assert.strictEqual(codexRow.getAttribute("aria-pressed"), "true");
+    assert.strictEqual(grid.classList.contains("recap-grid-dim"), true);
+    codexRow.dispatchEvent({ type: "keydown", key: "Escape", bubbles: true });
+    assert.strictEqual(codexRow.getAttribute("aria-pressed"), "false");
+    assert.strictEqual(grid.classList.contains("recap-grid-dim"), false);
+  });
+
+  it("reveals proportional agent segments immediately and the sorted popover after 90ms", async () => {
+    const data = sampleRecapView();
+    const foldKinds = Array(24).fill("normal");
+    foldKinds[9] = "fold";
+    data.days[0].hourCapacities[9] = 120;
+    data.days[0].coverage.hourCapacities[9] = 120;
+    const harness = loadRecapTabForTest({
+      data,
+      agentMetadata: [
+        { id: "codex", name: "Codex" },
+        { id: "claude-code", name: "Claude Code" },
+      ],
+    });
+    await harness.settle();
+    const activeCell = harness.content.querySelector(".recap-cell-activity");
+    const codexRow = harness.content.querySelectorAll(".recap-agent-row")
+      .find((row) => collectText(row).includes("Codex"));
+    codexRow.dispatchEvent({ type: "click", bubbles: false });
+    assert.strictEqual(activeCell.style.getPropertyValue("--recap-bar-ratio"), "0.75");
+    activeCell.dispatchEvent({ type: "mouseenter", bubbles: false });
+    assert.strictEqual(harness.content.querySelector(".recap-grid").classList.contains("recap-grid-dim"), true);
+    assert.strictEqual(activeCell.classList.contains("recap-cell-hit"), true);
+    assert.strictEqual(activeCell.classList.contains("recap-cell-peek"), true);
+    assert.strictEqual(activeCell.style.getPropertyValue("--recap-bar-ratio"), "1");
+    const segments = activeCell.querySelectorAll(".recap-cell-segments i");
+    assert.strictEqual(segments.length, 2);
+    assert.strictEqual(segments[0].style.flex, "9 1 0%");
+    await new Promise((resolve) => setTimeout(resolve, 110));
+    const popover = harness.content.querySelector(".recap-cell-popover");
+    assert.ok(popover);
+    const text = collectText(popover);
+    assert.ok(text.indexOf("Codex") < text.indexOf("Claude Code"));
+    assert.ok(text.includes("This local hour occurred twice because the clock changed."));
+    activeCell.dispatchEvent({ type: "mouseleave", bubbles: false });
+    assert.strictEqual(harness.content.querySelector(".recap-cell-popover"), null);
+    assert.strictEqual(activeCell.style.getPropertyValue("--recap-bar-ratio"), "0.75");
+  });
+
   it("does not announce an invalid-email preflight for an untouched empty approver", async () => {
     const harness = createFeishuLookupPreflightHarness();
     await Promise.resolve();
@@ -2842,6 +3533,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(rendererSource.includes("settingsAPI.onRemoteApprovalStatusChanged"));
     assert.ok(rendererSource.includes("settingsAPI.getPetTintOptions"));
     assert.ok(rendererSource.includes("settingsAPI.getPetAccessoryOptions"));
+    assert.ok(rendererSource.includes("settingsAPI.getPetMouthAccessoryOptions"));
     assert.ok(fs.readFileSync(PRELOAD_SETTINGS, "utf8").includes(
       'getPetTintOptions: () => ipcRenderer.invoke("settings:get-pet-tint-options")'
     ));
@@ -2850,6 +3542,9 @@ describe("settings renderer browser environment", () => {
     ));
     assert.ok(fs.readFileSync(PRELOAD_SETTINGS, "utf8").includes(
       'getPetAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-accessory-options")'
+    ));
+    assert.ok(fs.readFileSync(PRELOAD_SETTINGS, "utf8").includes(
+      'getPetMouthAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-mouth-accessory-options")'
     ));
     assert.ok(rendererSource.includes("tab.refreshRuntimeStatus(payload)"));
     assert.ok(coreSource.includes("ClawdSettingsSizeSlider"));
@@ -3018,6 +3713,42 @@ describe("settings renderer browser environment", () => {
     second.ops.applyBootstrap({ language: "zh" });
     assert.strictEqual(secondContent.scrollTop, 720);
     assert.strictEqual(second.runtime.settingsTabScrollPositions.get("general"), 180);
+  });
+
+  it("does not let a one-shot recap deep-link replace the user's last ordinary Settings tab", () => {
+    const storageData = {};
+    const localStorage = {
+      getItem: (key) => Object.prototype.hasOwnProperty.call(storageData, key) ? storageData[key] : null,
+      setItem: (key, value) => { storageData[key] = String(value); },
+    };
+    const content = { scrollTop: 0 };
+    const first = loadSettingsCoreForTest({}, {
+      document: {
+        body: { contains: () => false },
+        getElementById: (id) => (id === "content" ? content : null),
+      },
+      localStorage,
+    });
+    first.tabs.general = {};
+    first.tabs.theme = {};
+    first.tabs.recap = {};
+    first.ops.installRenderHooks({ sidebar: () => {}, content: () => {}, modal: () => {} });
+    first.ops.selectTab("theme");
+    first.ops.selectTab("recap", { persist: false });
+    first.ops.persistNavigationState();
+
+    const second = loadSettingsCoreForTest({}, {
+      document: {
+        body: { contains: () => false },
+        getElementById: (id) => (id === "content" ? { scrollTop: 0 } : null),
+      },
+      localStorage,
+    });
+    second.tabs.general = {};
+    second.tabs.theme = {};
+    second.tabs.recap = {};
+    assert.equal(second.ops.restoreNavigationState(), true);
+    assert.equal(second.state.activeTab, "theme");
   });
 
   it("waits for remote cleanup before deleting a profile and warns on incomplete uninstall", () => {
@@ -3337,6 +4068,14 @@ describe("settings renderer browser environment", () => {
     assert.equal(card.getAttribute("role"), "alert");
     assert.match(collectText(card), /DNS_FAILED/);
     assert.match(collectText(card), /Check DNS and proxy settings/);
+    const detailsTrigger = card.querySelector(".about-update-error-details-trigger");
+    const detailsBody = card.querySelector(".about-update-error-details-body");
+    assert.equal(detailsTrigger.tagName, "BUTTON");
+    assert.equal(detailsTrigger.getAttribute("aria-expanded"), "false");
+    assert.equal(detailsBody.getAttribute("aria-hidden"), "true");
+    detailsTrigger.click();
+    assert.equal(detailsTrigger.getAttribute("aria-expanded"), "true");
+    assert.equal(detailsBody.getAttribute("aria-hidden"), "false");
 
     const copyButton = card.querySelector(".about-update-error-copy");
     copyButton.dispatchEvent({ type: "click" });
@@ -3345,6 +4084,12 @@ describe("settings renderer browser environment", () => {
     assert.equal(copyButton.textContent, "aboutUpdateErrorCopied");
 
     assert.equal(harness.core.tabs.about.applyUpdateCheckStatus({ state: "checking" }), true);
+    detailsTrigger.click();
+    assert.equal(
+      detailsTrigger.getAttribute("aria-expanded"),
+      "true",
+      "replacing the error card must dispose the detached disclosure trigger",
+    );
     assert.equal(harness.content.querySelector(".about-check-update-btn").disabled, true);
     harness.core.tabs.about.applyUpdateCheckStatus({ state: "error", error: report });
     harness.content.querySelector(".about-update-error-close").dispatchEvent({ type: "click" });
@@ -4848,7 +5593,8 @@ describe("settings renderer browser environment", () => {
         [{ message: expectedMessage, options: { error: true } }],
         code,
       );
-      assert.equal(harness.content.querySelectorAll("input").at(-1).value, "person@example.com");
+      const updatedCard = harness.content.querySelector(".feishu-approval-channel-card");
+      assert.equal(updatedCard.querySelectorAll("input").at(-1).value, "person@example.com");
       assert.equal(commandCalls.filter((call) => call.name === "feishuApproval.saveApproverByEmail").length, 1);
       assert.equal(collectText(harness.content).includes(rawMessage), false);
       assert.equal(collectText(harness.content).includes("ou_must_not_render"), false);
@@ -6748,6 +7494,379 @@ describe("settings renderer browser environment", () => {
     assert.equal(statusText, strings.feishuApprovalCardReadyToEnable);
   });
 
+  it("keeps Slack transport setup separate from the enabled and ready states", async () => {
+    const strings = loadSettingsI18nForTest().en;
+
+    async function renderSlack({ config, status, secretInfo }) {
+      const harness = loadTelegramApprovalTabForTest({
+        snapshot: {
+          tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+          feishuApproval: { enabled: false, platform: "feishu", idType: "open_id", approverId: "", connectionTimeoutSeconds: 15 },
+          slackNotify: {
+            enabled: false,
+            channelId: "",
+            notifyOnDone: true,
+            notifyOnError: true,
+            notifyOnPermission: true,
+            outputMode: "off",
+            ...config,
+          },
+        },
+        settingsAPI: {
+          command: (name) => {
+            if (name === "slackNotify.status") return Promise.resolve({ status: "ok", state: status });
+            if (name === "slackNotify.secretInfo") return Promise.resolve({ status: "ok", ...secretInfo });
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
+      return {
+        harness,
+        card: harness.content.querySelector(".slack-notify-channel-card"),
+      };
+    }
+
+    const configuredOff = await renderSlack({
+      config: { enabled: false },
+      status: {
+        enabled: false,
+        ready: false,
+        configured: false,
+        transportConfigured: true,
+        transport: "webhook",
+        credentialsPresent: true,
+        secretsStored: true,
+      },
+      secretInfo: { configured: true, webhookUrl: "https://hooks.slack.com/…", botToken: "" },
+    });
+    assert.equal(
+      configuredOff.card.querySelector(".tg-approval-channel-status-text").textContent,
+      strings.slackNotifyCardReadyToEnable,
+      "a usable disabled transport is ready to enable, not incomplete"
+    );
+    const configuredSwitch = configuredOff.card.querySelectorAll(".switch")[0];
+    assert.equal(configuredSwitch.classList.contains("disabled"), false);
+    configuredSwitch.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.equal(
+      configuredOff.harness.updates[configuredOff.harness.updates.length - 1].value.enabled,
+      true
+    );
+
+    const tokenWithoutChannel = await renderSlack({
+      config: { enabled: false, channelId: "" },
+      status: {
+        enabled: false,
+        ready: false,
+        configured: false,
+        transportConfigured: false,
+        transport: null,
+        credentialsPresent: true,
+        secretsStored: true,
+        botTokenConfigured: true,
+        reason: "invalid-config",
+      },
+      // A stored token is a credential, but without a channel it is not a
+      // transport. This used to pass through slackSecretsConfigured().
+      secretInfo: { configured: true, webhookUrl: "", botToken: "xoxb-…" },
+    });
+    assert.equal(
+      tokenWithoutChannel.card.querySelector(".tg-approval-channel-status-text").textContent,
+      strings.slackNotifyCardMissingSecret
+    );
+    const blockedSwitch = tokenWithoutChannel.card.querySelectorAll(".switch")[0];
+    assert.equal(blockedSwitch.classList.contains("disabled"), true);
+    assert.equal(blockedSwitch.getAttribute("aria-disabled"), "true");
+    const testButton = tokenWithoutChannel.card.querySelectorAll("button")
+      .find((button) => button.textContent === strings.slackNotifySendTest);
+    assert.equal(testButton.disabled, true, "bot-without-channel cannot send a test either");
+
+    const invalidButEnabled = await renderSlack({
+      config: { enabled: true, channelId: "" },
+      status: {
+        enabled: true,
+        ready: false,
+        configured: false,
+        transportConfigured: false,
+        transport: null,
+        credentialsPresent: true,
+        reason: "invalid-config",
+      },
+      secretInfo: { configured: true, webhookUrl: "", botToken: "xoxb-…" },
+    });
+    const recoverySwitch = invalidButEnabled.card.querySelectorAll(".switch")[0];
+    assert.equal(recoverySwitch.classList.contains("disabled"), false,
+      "a stale invalid enabled setting must remain switchable off");
+    recoverySwitch.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.equal(
+      invalidButEnabled.harness.updates[invalidButEnabled.harness.updates.length - 1].value.enabled,
+      false
+    );
+
+    const running = await renderSlack({
+      config: { enabled: true },
+      status: {
+        enabled: true,
+        ready: true,
+        configured: true,
+        transportConfigured: true,
+        transport: "webhook",
+        credentialsPresent: true,
+      },
+      secretInfo: { configured: true, webhookUrl: "https://hooks.slack.com/…", botToken: "" },
+    });
+    assert.equal(
+      running.card.querySelector(".tg-approval-channel-status-text").textContent,
+      strings.slackNotifyCardRunning
+    );
+  });
+
+  it("accepts a legacy Slack status payload without explicit readiness axes", async () => {
+    const strings = loadSettingsI18nForTest().en;
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+        feishuApproval: { enabled: false, platform: "feishu", idType: "open_id", approverId: "", connectionTimeoutSeconds: 15 },
+        slackNotify: { enabled: false, channelId: "", notifyOnDone: true, notifyOnError: true, notifyOnPermission: true, outputMode: "off" },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "slackNotify.status") {
+            return Promise.resolve({ status: "ok", state: { enabled: false, configured: false, transport: "webhook" } });
+          }
+          return Promise.resolve({ status: "ok", configured: false });
+        },
+      },
+    });
+    harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    assert.equal(
+      harness.content.querySelector(".slack-notify-channel-card")
+        .querySelector(".tg-approval-channel-status-text").textContent,
+      strings.slackNotifyCardReadyToEnable
+    );
+  });
+
+  it("localizes common bot channel and scope failures from Send Test", async () => {
+    const strings = loadSettingsI18nForTest().en;
+    let testCode = "slack-missing_scope";
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+        feishuApproval: { enabled: false, platform: "feishu", idType: "open_id", approverId: "", connectionTimeoutSeconds: 15 },
+        slackNotify: { enabled: false, channelId: "C123", notifyOnDone: true, notifyOnError: true, notifyOnPermission: true, outputMode: "off" },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "slackNotify.status") {
+            return Promise.resolve({ status: "ok", state: {
+              enabled: false, ready: false, configured: false, transportConfigured: true,
+              transport: "bot", credentialsPresent: true, secretsStored: true,
+            } });
+          }
+          if (name === "slackNotify.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, webhookUrl: "", botToken: "xoxb-…" });
+          }
+          if (name === "slackNotify.test") return Promise.resolve({ status: "error", code: testCode });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    for (const [code, expected] of [
+      ["slack-missing_scope", strings.slackNotifyErrMissingScope],
+      ["slack-channel_not_found", strings.slackNotifyErrChannelNotFound],
+      ["slack-not_in_channel", strings.slackNotifyErrNotInChannel],
+    ]) {
+      testCode = code;
+      harness.render();
+      const sendTest = harness.content.querySelector(".slack-notify-channel-card")
+        .querySelectorAll("button")
+        .find((button) => button.textContent === strings.slackNotifySendTest);
+      sendTest.dispatchEvent({ type: "click" });
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+      assert.equal(toasts[toasts.length - 1].message, expected);
+    }
+  });
+
+  it("preserves Slack form drafts across rerenders and only clears completed writes", async () => {
+    const strings = loadSettingsI18nForTest().en;
+    let secretWriteResult = { status: "error", code: "write-failed", message: "raw fs detail" };
+    let updateMode = "fail";
+    let resolveUpdate = null;
+    let deferClear = false;
+    let resolveClear = null;
+    const updateCalls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+        feishuApproval: { enabled: false, platform: "feishu", idType: "open_id", approverId: "", connectionTimeoutSeconds: 15 },
+        slackNotify: { enabled: false, channelId: "C-saved", notifyOnDone: true, notifyOnError: true, notifyOnPermission: true, outputMode: "off" },
+      },
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          if (updateMode === "defer") return new Promise((resolve) => { resolveUpdate = resolve; });
+          return Promise.resolve(updateMode === "ok" ? { status: "ok" } : { status: "error", message: "save failed" });
+        },
+        command: (name, payload) => {
+          if (name === "slackNotify.status") {
+            return Promise.resolve({ status: "ok", state: {
+              enabled: false, ready: false, configured: false, transportConfigured: true,
+              transport: "webhook", credentialsPresent: true, secretsStored: true,
+            } });
+          }
+          if (name === "slackNotify.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, webhookUrl: "https://hooks.slack.com/…", botToken: "" });
+          }
+          if (name === "slackNotify.setSecrets") {
+            if (deferClear && payload && payload.webhookUrl === "") {
+              return new Promise((resolve) => { resolveClear = resolve; });
+            }
+            return Promise.resolve(secretWriteResult);
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const controls = () => {
+      const card = harness.content.querySelector(".slack-notify-channel-card");
+      const secretGrid = card.querySelector(".slack-notify-secrets-grid");
+      return {
+        card,
+        secretInputs: secretGrid.querySelectorAll("input"),
+        secretSave: secretGrid.querySelectorAll("button").find((button) => button.textContent === strings.slackNotifySaveSecrets),
+        channelInput: card.querySelector(".slack-notify-channel-row").querySelector("input"),
+        channelSave: card.querySelector(".slack-notify-channel-row").querySelector("button"),
+      };
+    };
+
+    let current = controls();
+    harness.core.state.snapshot.slackNotify.channelId = "C-refreshed";
+    harness.render();
+    assert.equal(controls().channelInput.value, "C-refreshed",
+      "a pristine channel field follows the settings store");
+    harness.core.state.snapshot.slackNotify.channelId = "C-saved";
+    harness.render();
+    current = controls();
+    current.secretInputs[0].value = "https://hooks.slack.com/services/new";
+    current.secretInputs[0].dispatchEvent({ type: "input" });
+    current.secretInputs[1].value = "xoxb-new-token";
+    current.secretInputs[1].dispatchEvent({ type: "input" });
+    current.channelInput.value = " C-draft ";
+    current.channelInput.dispatchEvent({ type: "input" });
+    harness.render();
+
+    current = controls();
+    assert.equal(current.secretInputs[0].value, "https://hooks.slack.com/services/new");
+    assert.equal(current.secretInputs[1].value, "xoxb-new-token");
+    assert.equal(current.channelInput.value, " C-draft ");
+
+    updateMode = "ok";
+    const doneRow = current.card.querySelectorAll(".row")
+      .find((row) => collectText(row).includes(strings.slackNotifyEventDone));
+    doneRow.querySelector(".switch").dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    current = controls();
+    assert.equal(updateCalls[updateCalls.length - 1].value.channelId, "C-saved",
+      "an event toggle never silently commits an unsaved channel draft");
+    assert.equal(current.channelInput.value, " C-draft ",
+      "the unsaved channel draft remains visible after an unrelated save");
+    updateMode = "fail";
+
+    current.secretSave.dispatchEvent({ type: "click" });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    harness.render();
+    current = controls();
+    assert.equal(current.secretInputs[0].value, "https://hooks.slack.com/services/new", "failed secret writes retain the webhook draft");
+    assert.equal(current.secretInputs[1].value, "xoxb-new-token", "failed secret writes retain the token draft");
+    assert.equal(toasts[toasts.length - 1].message, strings.slackNotifySecretsSaveFailed,
+      "write-failed uses the localized credential-save copy, not a test-send error");
+    assert.ok(!toasts[toasts.length - 1].message.includes("raw fs detail"));
+
+    secretWriteResult = { status: "ok" };
+    current.secretSave.dispatchEvent({ type: "click" });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    harness.render();
+    current = controls();
+    assert.equal(current.secretInputs[0].value, "");
+    assert.equal(current.secretInputs[1].value, "");
+
+    current.secretInputs[0].value = "typed-before-clear";
+    current.secretInputs[0].dispatchEvent({ type: "input" });
+    harness.render();
+    const clearWebhook = controls().card.querySelectorAll("button")
+      .find((button) => button.textContent === strings.slackNotifyClear);
+    assert.ok(clearWebhook, "the refreshed masked webhook offers Remove");
+    clearWebhook.dispatchEvent({ type: "click" });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    harness.render();
+    assert.equal(controls().secretInputs[0].value, "typed-before-clear",
+      "clearing the stored webhook does not discard its unsaved replacement draft");
+
+    current = controls();
+    current.secretInputs[0].value = "typed-before-slow-clear";
+    current.secretInputs[0].dispatchEvent({ type: "input" });
+    harness.render();
+    deferClear = true;
+    const slowClear = controls().card.querySelectorAll("button")
+      .find((button) => button.textContent === strings.slackNotifyClear);
+    slowClear.dispatchEvent({ type: "click" });
+    harness.render();
+    current = controls();
+    current.secretInputs[0].value = "typed-after-slow-clear";
+    current.secretInputs[0].dispatchEvent({ type: "input" });
+    resolveClear({ status: "ok" });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    harness.render();
+    assert.equal(controls().secretInputs[0].value, "typed-after-slow-clear",
+      "an older clear callback cannot erase a newer replacement draft");
+    deferClear = false;
+
+    current = controls();
+    current.channelSave.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    assert.equal(controls().channelInput.value, " C-draft ", "failed config writes retain the exact channel draft");
+
+    current = controls();
+    current.channelInput.value = "C-earlier";
+    current.channelInput.dispatchEvent({ type: "input" });
+    updateMode = "defer";
+    current.channelSave.dispatchEvent({ type: "click" });
+    current.channelInput.value = "C-newer";
+    current.channelInput.dispatchEvent({ type: "input" });
+    resolveUpdate({ status: "ok" });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    assert.equal(controls().channelInput.value, "C-newer", "an older async save cannot overwrite newer typing");
+    assert.equal(updateCalls[updateCalls.length - 1].value.channelId, "C-earlier");
+  });
+
   it("translates a connection timeout and falls back to the raw SDK error otherwise", async () => {
     const strings = loadSettingsI18nForTest().en;
     // The brand comes from the saved config (what the user picked), so the
@@ -7119,12 +8238,12 @@ describe("settings renderer browser environment", () => {
     assert.ok(doctorModalSource.includes("doctor-agent-body"));
     assert.ok(doctorModalSource.includes("doctor-agent-body-inner"));
     assert.ok(doctorModalSource.includes('data-action="toggle-check"'));
-    assert.ok(doctorModalSource.includes('button.setAttribute("aria-expanded"'));
-    assert.ok(doctorModalSource.includes('row.classList.toggle("expanded"'));
-    assert.ok(doctorModalSource.includes('body.setAttribute("aria-hidden"'));
+    assert.ok(doctorModalSource.includes("core.helpers.attachSettingsDisclosure({"));
+    assert.ok(doctorModalSource.includes("disposeDoctorDisclosures"));
+    assert.ok(doctorModalSource.includes("state.disclosureControllers.push(controller)"));
+    assert.ok(!doctorModalSource.includes('button.setAttribute("aria-expanded"'));
+    assert.ok(!doctorModalSource.includes('row.classList.toggle("expanded"'));
     assert.ok(doctorModalSource.includes('" inert"'));
-    assert.ok(doctorModalSource.includes('body.setAttribute("inert", "")'));
-    assert.ok(doctorModalSource.includes("body.removeAttribute(\"inert\")"));
     assert.ok(doctorModalSource.includes("checkNeedsAttention"));
     assert.ok(doctorModalSource.includes("formatAgentIntegrationSummary"));
     assert.ok(doctorModalSource.includes("formatAgentAttentionNames"));
@@ -7215,8 +8334,10 @@ describe("settings renderer browser environment", () => {
     assert.ok(/\.doctor-check-row\.warning\s*\{[\s\S]*border-left-color:\s*rgba\(var\(--doctor-warning-rgb\),\s*0\.78\);/.test(css));
     assert.ok(/\.doctor-check-row\.critical\s*\{[\s\S]*border-left-color:\s*rgba\(var\(--doctor-critical-rgb\),\s*0\.78\);/.test(css));
     assert.ok(/\.doctor-agent-toggle\s*\{[\s\S]*grid-template-columns:\s*auto auto auto minmax\(0,\s*1fr\) auto;/.test(css));
-    assert.ok(/\.doctor-agent-body\s*\{[\s\S]*grid-template-rows:\s*0fr;[\s\S]*transition:[\s\S]*grid-template-rows 0\.24s cubic-bezier/.test(css));
-    assert.ok(/\.doctor-agent-collapsible\.expanded \.doctor-agent-body\s*\{[\s\S]*grid-template-rows:\s*1fr;/.test(css));
+    assert.ok(/\.settings-disclosure-body\s*\{[\s\S]*grid-template-rows:\s*1fr;[\s\S]*var\(--settings-disclosure-duration\)/.test(css));
+    assert.ok(/\.settings-disclosure\.collapsed\s*>\s*\.settings-disclosure-body\s*\{[\s\S]*grid-template-rows:\s*0fr;/.test(css));
+    assert.ok(/\.doctor-agent-body\s*\{[\s\S]*transition-duration:\s*var\(--settings-disclosure-duration\),\s*var\(--settings-disclosure-shift-duration\);/.test(css));
+    assert.ok(!css.includes("grid-template-rows 0.24s"));
     assert.ok(/\.doctor-check-row\s*\{[\s\S]*border-left-width:\s*3px;/.test(css));
     assert.ok(/\.doctor-check-status\s*\{[\s\S]*border-radius:\s*999px;/.test(css));
     assert.ok(/\.doctor-close:hover\s*\{[\s\S]*background:\s*rgba\(217,\s*119,\s*87,\s*0\.1\);[\s\S]*transform:\s*scale\(1\.04\);/.test(css));
@@ -7272,6 +8393,25 @@ describe("settings renderer browser environment", () => {
     assert.ok(!i18nSource.includes('doctorOpenLogOpened: "已打开调试日志。"'));
     assert.ok(!i18nSource.includes('doctorOpenLogOpened: "디버그 로그를 열었습니다."'));
     assert.ok(!i18nSource.includes('doctorOpenLogOpened: "デバッグログを開きました。"'));
+  });
+
+  it("keeps collapsible focus outlines aligned with the card's rounded corners", () => {
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    assert.match(
+      css,
+      /\.collapsible-group-header\s*\{[^}]*border-radius:\s*inherit;/,
+      "the full-card disclosure trigger must inherit the card radius so its inset focus outline is not clipped into white corners",
+    );
+    assert.match(
+      css,
+      /\.collapsible-group-disclosure\s*\{[^}]*border-radius:\s*inherit;/,
+      "a disclosure beside a header action must inherit the header radius for the same reason",
+    );
+    assert.match(
+      css,
+      /\.collapsible-group:not\(\.collapsed\)\s*>\s*\.collapsible-group-header\s*\{[^}]*border-bottom-left-radius:\s*0;[^}]*border-bottom-right-radius:\s*0;/,
+      "an expanded trigger must keep square bottom corners where its body continues",
+    );
   });
 
   it("unifies the size slider on the simple volume-style control (no floating bubble, no ticks)", () => {
@@ -7443,7 +8583,9 @@ describe("settings renderer browser environment", () => {
       SUPPORTED_LANGS.map((lang) => String.raw`"${lang}"`).join(String.raw`,\s*`) +
       String.raw`\];`
     ).test(generalSource));
-    assert.ok(generalSource.includes("createLanguagePicker"));
+    assert.ok(generalSource.includes("helpers.buildSettingsSelect"));
+    assert.ok(generalSource.includes('className: "settings-language-select"'));
+    assert.ok(!generalSource.includes("createLanguagePicker"));
     assert.ok(pickerSource.includes("picker.className = `language-picker"));
     assert.ok(pickerSource.includes(`role", "combobox"`));
     assert.ok(pickerSource.includes(`aria-haspopup", "listbox"`));
@@ -7455,6 +8597,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(settingsHtml.includes(`src="language-picker.js"`));
     assert.match(settingsHtml, /<main class="content" id="content" data-language-picker-boundary><\/main>/);
     assert.match(settingsCss, /\.content\s*\{[^}]*overflow-y:\s*auto;[^}]*scrollbar-gutter:\s*stable;/);
+    assert.match(settingsCss, /\.settings-language-select\s*\{[^}]*min-width:\s*128px;[^}]*width:\s*128px;/);
     assert.ok(!generalSource.includes("language-segmented"));
     assert.ok(!generalSource.includes("runtime.languageTransition"));
     assert.ok(!generalSource.includes("--language-active-index"));
@@ -7476,7 +8619,7 @@ describe("settings renderer browser environment", () => {
     const sectionRowsRule = css.match(/\.section-rows\s*\{([^}]*)\}/);
     const mountedSectionRule = css.match(/\.section:has\(\.language-picker\.menu-mounted\)\s*\{([^}]*)\}/);
     const mountedRowsRule = css.match(/\.section-rows:has\(\.language-picker\.menu-mounted\)\s*\{([^}]*)\}/);
-    const mountedCollapsibleRule = css.match(/\.collapsible-group:not\(\.collapsed\):has\(\.language-picker\.menu-mounted\)\s*>\s*\.collapsible-group-body\s*\{([^}]*)\}/);
+    const mountedCollapsibleRule = css.match(/\.collapsible-group:not\(\.collapsed\):has\(\.language-picker\.menu-mounted\)\s*>\s*\.collapsible-group-body,\s*\.collapsible-group:not\(\.collapsed\):has\(\.language-picker\.menu-mounted\)\s*>\s*\.collapsible-group-body\s*>\s*\.collapsible-group-body-inner\s*\{([^}]*)\}/);
 
     assert.ok(sectionRowsRule, "settings cards should retain their base clipping rule");
     assert.match(sectionRowsRule[1], /overflow:\s*hidden;/);
@@ -7500,6 +8643,9 @@ describe("settings renderer browser environment", () => {
     const trigger = harness.getLangTrigger();
     assert.ok(picker, "language picker should be rendered");
     assert.ok(trigger, "language picker trigger should be rendered");
+    assert.strictEqual(picker.classList.contains("settings-select"), true);
+    assert.strictEqual(picker.classList.contains("settings-language-select"), true);
+    assert.strictEqual(harness.core.state.mountedControls.settingsSelects.size, 1);
     assert.strictEqual(harness.getLangValue().textContent, "English");
     assert.strictEqual(trigger.attributes["aria-label"], "Language: English");
     assert.strictEqual(harness.getLangMenu().attributes["aria-hidden"], "true");
@@ -7528,25 +8674,18 @@ describe("settings renderer browser environment", () => {
     for (const option of options) assert.strictEqual(option.tabIndex, -1);
     assert.strictEqual(harness.getLangValue().textContent, "Chinese");
     assert.strictEqual(trigger.attributes["aria-label"], "Language: Chinese");
-
+    assert.strictEqual(trigger.getAttribute("aria-disabled"), "true");
     trigger.dispatchEvent({ type: "click" });
-    options[1].dispatchEvent({ type: "click" });
-    assert.deepStrictEqual(
-      harness.updateCalls,
-      [{ key: "lang", value: "zh" }],
-      "clicking the already displayed pending language should not submit a duplicate update"
-    );
-
-    trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(picker.classList.contains("open"), false);
     options[0].dispatchEvent({ type: "click" });
     assert.deepStrictEqual(
       harness.updateCalls,
       [{ key: "lang", value: "zh" }],
-      "clicking back to the committed language while pending should not submit a duplicate update"
+      "the shared Settings picker should block further changes while saving"
     );
-    assert.strictEqual(harness.getLangValue().textContent, "English");
-    assert.strictEqual(trigger.attributes["aria-label"], "Language: English");
-    assert.strictEqual(options[0].attributes["aria-selected"], "true");
+    assert.strictEqual(harness.getLangValue().textContent, "Chinese");
+    assert.strictEqual(trigger.attributes["aria-label"], "Language: Chinese");
+    assert.strictEqual(options[1].attributes["aria-selected"], "true");
 
     harness.core.ops.applyChanges({
       changes: { lang: "zh" },
@@ -7784,6 +8923,186 @@ describe("settings renderer browser environment", () => {
     assert.equal(first.isConnected, false);
     assert.strictEqual(document.activeElement, replacement);
     assert.equal(replacement.focused, true);
+  });
+
+  it("prefers an exact Settings focus key and falls back when that control disappears", () => {
+    const body = new FakeElement("body");
+    const content = new FakeElement("main");
+    content.id = "content";
+    body.appendChild(content);
+    const document = {
+      body,
+      activeElement: body,
+      createElement(tagName) {
+        const element = new FakeElement(tagName);
+        element.focus = () => {
+          element.focused = true;
+          document.activeElement = element;
+        };
+        return element;
+      },
+      getElementById: (id) => (id === "content" ? content : null),
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    let showRetry = true;
+    let period = null;
+    let retry = null;
+    const render = () => {
+      content.innerHTML = "";
+      period = document.createElement("button");
+      period.setAttribute("data-settings-focus-key", "recap-period-today");
+      content.appendChild(period);
+      retry = null;
+      if (showRetry) {
+        retry = document.createElement("button");
+        retry.setAttribute("data-settings-focus-key", "recap-retry-today");
+        retry.setAttribute("data-settings-focus-fallback-key", "recap-period-today");
+        content.appendChild(retry);
+      }
+    };
+    core.ops.installRenderHooks({ content: render });
+    render();
+    retry.focus();
+
+    core.ops.requestRender({ content: true });
+    assert.strictEqual(document.activeElement, retry);
+
+    showRetry = false;
+    core.ops.requestRender({ content: true });
+    assert.strictEqual(document.activeElement, period);
+    assert.equal(period.focused, true);
+  });
+
+  it("falls back when the exact Settings focus target becomes disabled", () => {
+    const body = new FakeElement("body");
+    const content = new FakeElement("main");
+    content.id = "content";
+    body.appendChild(content);
+    const document = {
+      body,
+      activeElement: body,
+      createElement(tagName) {
+        const element = new FakeElement(tagName);
+        element.focus = () => {
+          element.focused = true;
+          document.activeElement = element;
+        };
+        return element;
+      },
+      getElementById: (id) => (id === "content" ? content : null),
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    let disableExact = false;
+    let fallback = null;
+    let exact = null;
+    const render = () => {
+      content.innerHTML = "";
+      fallback = document.createElement("button");
+      fallback.setAttribute("data-settings-focus-key", "recap-recording-toggle");
+      content.appendChild(fallback);
+      exact = document.createElement("button");
+      exact.setAttribute("data-settings-focus-key", "recap-clear");
+      exact.setAttribute("data-settings-focus-fallback-key", "recap-recording-toggle");
+      exact.disabled = disableExact;
+      content.appendChild(exact);
+    };
+    core.ops.installRenderHooks({ content: render });
+    render();
+    exact.focus();
+
+    disableExact = true;
+    core.ops.requestRender({ content: true });
+
+    assert.equal(exact.disabled, true);
+    assert.strictEqual(document.activeElement, fallback);
+    assert.equal(fallback.focused, true);
+  });
+
+  it("does not steal focus acquired by another live control during a Settings render", () => {
+    const body = new FakeElement("body");
+    const content = new FakeElement("main");
+    content.id = "content";
+    body.appendChild(content);
+    const document = {
+      body,
+      activeElement: body,
+      createElement(tagName) {
+        const element = new FakeElement(tagName);
+        element.focus = () => {
+          element.focused = true;
+          document.activeElement = element;
+        };
+        return element;
+      },
+      getElementById: (id) => (id === "content" ? content : null),
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const original = document.createElement("button");
+    original.setAttribute("data-settings-focus-key", "recap-clear");
+    content.appendChild(original);
+    original.focus();
+
+    let replacement = null;
+    let newlyFocused = null;
+    core.ops.installRenderHooks({
+      content() {
+        content.innerHTML = "";
+        replacement = document.createElement("button");
+        replacement.setAttribute("data-settings-focus-key", "recap-clear");
+        content.appendChild(replacement);
+        newlyFocused = document.createElement("button");
+        content.appendChild(newlyFocused);
+        newlyFocused.focus();
+      },
+    });
+
+    core.ops.requestRender({ content: true });
+
+    assert.strictEqual(document.activeElement, newlyFocused);
+    assert.equal(newlyFocused.focused, true);
+    assert.equal(replacement.focused, false);
+  });
+
+  it("restores content scroll after a live full render temporarily clamps it", () => {
+    let rawScrollTop = 740;
+    let maxScrollTop = 2000;
+    const raf = createQueuedRaf();
+    const body = new FakeElement("body");
+    const content = new FakeElement("main");
+    content.id = "content";
+    Object.defineProperty(content, "scrollTop", {
+      configurable: true,
+      get: () => Math.min(rawScrollTop, maxScrollTop),
+      set: (value) => {
+        rawScrollTop = Math.max(0, Math.min(Number(value) || 0, maxScrollTop));
+      },
+    });
+    body.appendChild(content);
+    const document = {
+      body,
+      activeElement: body,
+      getElementById: (id) => (id === "content" ? content : null),
+    };
+    const core = loadSettingsCoreForTest({}, {
+      document,
+      requestAnimationFrame: raf.requestAnimationFrame,
+    });
+    core.state.activeTab = "recap";
+    core.tabs.recap = {};
+    core.ops.installRenderHooks({
+      content() {
+        maxScrollTop = 0;
+        content.scrollTop = content.scrollTop;
+        maxScrollTop = 2000;
+      },
+    });
+
+    core.ops.requestRender({ content: true, preserveScroll: true });
+    assert.equal(content.scrollTop, 740);
+
+    content.scrollTop = 0;
+    raf.flush();
+    assert.equal(content.scrollTop, 740);
   });
 
   it("builds Settings buttons from one tone, size, and pending-state contract", () => {
@@ -8025,20 +9344,21 @@ describe("settings renderer browser environment", () => {
     assert.match(css, /\.language-picker\.open-up \.language-picker-menu\s*\{[\s\S]*bottom:\s*calc\(100% \+ 6px\);/);
   });
 
-  it("opens the seven-language tutorial picker upward when it no longer fits below the default welcome layout", () => {
+  it("opens downward for the captured three-line pt-BR/es default-window geometry", () => {
     const harness = loadSharedLanguagePickerForTest({
       options: SUPPORTED_LANGS,
-      innerHeight: 700,
+      innerHeight: 668,
     });
-    harness.boundary.getBoundingClientRect = () => ({ top: 78, bottom: 635 });
-    harness.trigger.getBoundingClientRect = () => ({ top: 390, bottom: 426 });
+    // Captured from real macOS Electron layout; this guards picker placement, not CSS layout.
+    harness.boundary.getBoundingClientRect = () => ({ top: 47, bottom: 603 });
+    harness.trigger.getBoundingClientRect = () => ({ top: 325, bottom: 361 });
     Object.defineProperty(harness.menu, "scrollHeight", { value: 220 });
     Object.defineProperty(harness.menu, "offsetHeight", { value: 222 });
     Object.defineProperty(harness.menu, "clientHeight", { value: 220 });
 
     harness.trigger.dispatchEvent({ type: "click" });
 
-    assert.strictEqual(harness.picker.classList.contains("open-up"), true);
+    assert.strictEqual(harness.picker.classList.contains("open-up"), false);
     assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), false);
     assert.strictEqual(harness.menu.style.maxHeight, "222px");
   });
@@ -8340,6 +9660,7 @@ describe("settings renderer browser environment", () => {
     harness.core.ops.requestRender({ content: true });
     assert.strictEqual(harness.getDocumentListenerCount("click"), 1);
     assert.strictEqual(harness.getDocumentListenerCount("keydown"), 1);
+    assert.strictEqual(harness.core.state.mountedControls.settingsSelects.size, 1);
 
     staleOption.dispatchEvent({ type: "click" });
     assert.deepStrictEqual(harness.updateCalls, []);
@@ -8396,7 +9717,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes("state.mountedControls.bubblePolicyControls"));
     assert.ok(generalSource.includes("state.mountedControls.bubblePolicySummary"));
     assert.ok(generalSource.includes("confirmDisableUpdateBubbles"));
-    assert.ok(generalSource.indexOf("buildBubblePolicyRow()") < generalSource.indexOf('key: "bubbleFollowPet"'));
+    assert.ok(generalSource.indexOf("buildBubblePolicyRow(),") < generalSource.indexOf("buildBubblePlacementGroup(),"));
     assert.ok(generalSource.includes("category === \"update\" && next === 0"));
     assert.ok(generalSource.includes("notificationBubbleAutoCloseSeconds"));
     assert.ok(generalSource.includes("updateBubbleAutoCloseSeconds"));
@@ -8413,6 +9734,101 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("rowBubblePolicy"));
     assert.ok(i18nSource.includes("bubbleUpdateWarning"));
     assert.ok(i18nSource.includes("bubbleSecondsPrefix"));
+  });
+
+  it("renders bubble placement as independent conditional controls and patches it in place", async () => {
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    assert.match(css, /\.bubble-placement-group \.row\[hidden\]\s*\{\s*display:\s*none;/);
+    assert.match(css, /@media \(max-width:\s*760px\)[\s\S]*\.bubble-fixed-corner-segmented\s*\{[\s\S]*grid-template-columns:\s*repeat\(2,/);
+    assert.match(css, /\.bubble-placement-group \.settings-segmented-radio button\s*\{[\s\S]*white-space:\s*normal;/);
+    const updateCalls = [];
+    const initialSnapshot = makeGeneralSnapshot({
+      bubbleFollowPet: true,
+      bubbleFollowPreference: "left",
+      bubbleFixedCorner: "top-right",
+    });
+    const harness = loadGeneralTabForTest({
+      snapshot: initialSnapshot,
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+
+    const placement = harness.core.state.mountedControls.bubblePlacement;
+    assert.ok(placement);
+    assert.strictEqual(placement.followRow.hidden, false);
+    assert.strictEqual(placement.cornerRow.hidden, true);
+    assert.strictEqual(placement.followControl.getValue(), "left");
+    assert.strictEqual(placement.cornerControl.getValue(), "top-right");
+    assert.ok(placement.cornerControl.element.querySelectorAll("button").every((button) => button.disabled));
+
+    const fixedButton = placement.modeControl.element.querySelectorAll("button")
+      .find((button) => button.dataset.value === "fixed");
+    fixedButton.dispatchEvent({ type: "click" });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, [{ key: "bubbleFollowPet", value: false }]);
+    assert.strictEqual(placement.followRow.hidden, true);
+    assert.strictEqual(placement.cornerRow.hidden, false);
+
+    const originalElement = placement.element;
+    harness.core.ops.applyChanges({
+      changes: {
+        bubbleFollowPet: false,
+        bubbleFollowPreference: "right",
+        bubbleFixedCorner: "bottom-left",
+      },
+      snapshot: {
+        ...initialSnapshot,
+        bubbleFollowPet: false,
+        bubbleFollowPreference: "right",
+        bubbleFixedCorner: "bottom-left",
+      },
+    });
+    assert.strictEqual(harness.core.state.mountedControls.bubblePlacement.element, originalElement);
+    assert.strictEqual(placement.followControl.getValue(), "right");
+    assert.strictEqual(placement.cornerControl.getValue(), "bottom-left");
+    assert.strictEqual(placement.followRow.hidden, true);
+    assert.strictEqual(placement.cornerRow.hidden, false);
+
+    harness.core.ops.applyChanges({
+      changes: { hideBubbles: true },
+      snapshot: {
+        ...initialSnapshot,
+        bubbleFollowPet: false,
+        bubbleFollowPreference: "right",
+        bubbleFixedCorner: "bottom-left",
+        hideBubbles: true,
+      },
+    });
+    for (const control of [placement.modeControl, placement.followControl, placement.cornerControl]) {
+      assert.ok(control.element.querySelectorAll("button").every((button) => button.disabled));
+    }
+
+    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+    for (const key of [
+      "rowBubblePlacement",
+      "rowBubblePlacementDesc",
+      "bubblePlacementFollow",
+      "bubblePlacementFixed",
+      "rowBubbleFollowPreference",
+      "rowBubbleFollowPreferenceDesc",
+      "bubbleFollowAuto",
+      "bubbleFollowLeft",
+      "bubbleFollowRight",
+      "rowBubbleFixedCorner",
+      "rowBubbleFixedCornerDesc",
+      "bubbleCornerTopLeft",
+      "bubbleCornerTopRight",
+      "bubbleCornerBottomLeft",
+      "bubbleCornerBottomRight",
+    ]) {
+      const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
+      assert.strictEqual(matches ? matches.length : 0, SUPPORTED_LANGS.length);
+    }
   });
 
   it("renders the opt-in test-result reaction switch with all supported translations", () => {
@@ -8692,7 +10108,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(toasts[0].options.error, true);
   });
 
-  it("registers the Session cleanup group with three number rows, atomic reset, and i18n keys", () => {
+  it("registers the Session cleanup group with four number rows, atomic reset, and i18n keys", () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
     const uiCoreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
@@ -8702,9 +10118,10 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes("buildSessionCleanupGroup()"));
     assert.ok(generalSource.includes('id: "general:session-cleanup"'));
 
-    // All three numeric prefs map to their own number input row.
+    // All four numeric prefs map to their own number input row.
     assert.ok(generalSource.includes('key: "sessionStaleMs"'));
     assert.ok(generalSource.includes('key: "workingStaleMs"'));
+    assert.ok(generalSource.includes('key: "codexWorkingStaleMs"'));
     assert.ok(generalSource.includes('key: "detachedIdleStaleMs"'));
     assert.ok(generalSource.includes("buildNumberInputRow"));
     assert.ok(generalSource.includes("SESSION_CLEANUP_NUMBER_KEYS"));
@@ -8733,6 +10150,8 @@ describe("settings renderer browser environment", () => {
       "rowStaleSessionDesc",
       "rowStaleWorking",
       "rowStaleWorkingDesc",
+      "rowCodexStaleWorking",
+      "rowCodexStaleWorkingDesc",
       "rowStaleDetached",
       "rowStaleDetachedDesc",
       "unitMinutes",
@@ -8782,7 +10201,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(/@media \(max-width:\s*720px\)\s*\{[\s\S]*\.session-hud-collapsible \.collapsible-group-summary\s*\{[\s\S]*flex:\s*0 0 calc\(100% - 22px\);[\s\S]*margin-left:\s*22px;/.test(css));
     assert.ok(/@media \(max-width:\s*720px\)\s*\{[\s\S]*\.session-hud-summary-control\s*\{[\s\S]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);[\s\S]*width:\s*min\(238px,\s*100%\);/.test(css));
     assert.ok(/@media \(max-width:\s*720px\)\s*\{[\s\S]*\.session-hud-summary-control\s*\{[\s\S]*justify-self:\s*start;/.test(css));
-    assert.ok(/function buildFlashGroup\(\)[\s\S]*id:\s*"general:flash",[\s\S]*animateExpansion:\s*false,/.test(generalSource));
+    assert.ok(!generalSource.includes("animateExpansion: false"));
     assert.ok(/\.collapsible-group-text \.row-label\s*\{[\s\S]*text-overflow:\s*ellipsis;[\s\S]*white-space:\s*nowrap;/.test(css));
     assert.ok(/\.collapsible-group-text \.row-desc\s*\{[\s\S]*white-space:\s*normal;[\s\S]*-webkit-line-clamp:\s*2;/.test(css));
     assert.ok(/\.sound-summary-control\s*\{[\s\S]*display:\s*inline-flex;/.test(css));
@@ -8911,6 +10330,19 @@ describe("settings renderer browser environment", () => {
     assert.ok(coreSource.includes('checkboxInput.type = "checkbox"'));
     assert.ok(coreSource.includes("checkboxChecked: !!(checkboxInput && checkboxInput.checked)"));
     assert.ok(css.includes("grid-template-columns: repeat(3, minmax(0, 1fr))"));
+    assert.match(
+      css,
+      /\.permission-automation-segmented button\s*\{[^}]*min-height:\s*34px;[^}]*align-items:\s*center;[^}]*justify-content:\s*center;[^}]*text-align:\s*center;/s
+    );
+    assert.match(
+      css,
+      /\.permission-automation-segmented button\.active\s*\{[^}]*font-weight:\s*600;/s
+    );
+    assert.ok(css.includes(".permission-automation-segmented button:not(.active):not(:disabled):hover"));
+    assert.match(
+      css,
+      /\.permission-automation-segmented button:focus-visible\s*\{[^}]*outline-offset:\s*1px;/s
+    );
     assert.ok(generalSource.includes("helpers.buildSegmentedRadio({"));
     assert.ok(generalSource.includes('ariaLabel: t("rowPermissionAutomation")'));
     assert.ok(generalSource.includes('className: "permission-automation-segmented"'));
@@ -8980,7 +10412,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(coreSource.includes("state.transientUiState.agentSwitches.clear();"));
     const clearIndex = coreSource.indexOf("clearTransientStateForChanges(changes);");
     const patchIndex = coreSource.indexOf("activeTab.patchInPlace(changes");
-    const renderIndex = coreSource.indexOf("requestRender({ sidebar: true, content: true });", patchIndex);
+    const renderIndex = coreSource.indexOf("requestRender({", patchIndex);
     assert.notStrictEqual(clearIndex, -1);
     assert.notStrictEqual(patchIndex, -1);
     assert.notStrictEqual(renderIndex, -1);
@@ -9556,7 +10988,7 @@ describe("settings renderer browser environment", () => {
     assert.equal(toasts[0].options.error, true);
   });
 
-  it("reveals existing quota options immediately and absorbs async sources without a second expansion", async () => {
+  it("reveals quota options with the shared grid animation and absorbs async sources without measuring height", async () => {
     const sourceCount = createDeferred();
     const animationFrames = [];
     const flushAnimationFrame = () => {
@@ -9577,37 +11009,30 @@ describe("settings renderer browser environment", () => {
     const header = group.querySelector(".collapsible-group-header");
     const body = group.querySelector(".collapsible-group-body");
     const mergeRow = harness.getSwitchMeta("quotaMergeSources").row;
-    Object.defineProperty(body, "scrollHeight", {
-      configurable: true,
-      get: () => (mergeRow.style.display === "none" ? 80 : 120),
-    });
     header.dispatchEvent({ type: "click" });
-    assert.equal(group.classList.contains("expanding"), false);
+    assert.equal(group.classList.contains("expanding"), true);
     assert.equal(group.classList.contains("collapsed"), false);
-    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "none");
+    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "");
     assert.equal(body.attributes["aria-hidden"], "false");
-    flushAnimationFrame();
 
     sourceCount.resolve(2);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(group.classList.contains("expanding"), false);
-    assert.equal(group.classList.contains("resizing"), true);
-    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "80px");
+    assert.equal(group.classList.contains("collapsible-content-entering"), false);
+    assert.equal(body.querySelector(".collapsible-group-body-inner").classList.contains("collapsible-content-entering"), false);
+    assert.equal(mergeRow.classList.contains("collapsible-content-entering"), true);
     assert.equal(mergeRow.style.display, "");
-
-    flushAnimationFrame();
-    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "120px");
 
     body.dispatchEvent({
       type: "transitionend",
-      propertyName: "max-height",
+      propertyName: "grid-template-rows",
       bubbles: false,
     });
-    assert.equal(group.classList.contains("resizing"), false);
-    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "none");
+    assert.equal(group.classList.contains("expanding"), false);
+    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "");
+    flushAnimationFrame();
   });
 
-  it("reveals sound controls immediately without waiting for an expansion animation frame", () => {
+  it("keeps sound controls inert until the shared grid animation finishes", () => {
     const animationFrames = [];
     const harness = loadGeneralTabForTest({
       snapshot: makeGeneralSnapshot({ soundMuted: false, soundVolume: 0.5 }),
@@ -9625,10 +11050,19 @@ describe("settings renderer browser environment", () => {
 
     header.dispatchEvent({ type: "click" });
 
-    assert.equal(group.classList.contains("expanding"), false);
+    assert.equal(group.classList.contains("expanding"), true);
     assert.equal(group.classList.contains("collapsed"), false);
-    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "none");
+    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "");
     assert.equal(body.attributes["aria-hidden"], "false");
+    assert.equal(body.inert, true);
+
+    body.dispatchEvent({
+      type: "transitionend",
+      propertyName: "grid-template-rows",
+      bubbles: false,
+    });
+    assert.equal(group.classList.contains("expanding"), false);
+    assert.equal(body.inert, false);
   });
 
   it("groups sound and volume into one collapsible control with in-place summary updates", () => {
@@ -9886,6 +11320,69 @@ describe("settings renderer browser environment", () => {
     autoStart = harness.core.state.mountedControls.generalSwitches.get("autoStartWithClaude");
     assert.strictEqual(autoStart.element.classList.contains("disabled"), false);
     assert.strictEqual(autoStart.extraElement, null);
+  });
+
+  it("shows the TraeCode enable-in-Trae hint on the card when the integration is installed", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: { traecode: { integrationInstalled: true, enabled: true } },
+      },
+      agentMetadata: [
+        { id: "traecode", name: "TraeCode", eventSource: "hook", capabilities: {} },
+      ],
+    });
+
+    harness.core.ops.requestRender({ content: true });
+
+    const hint = harness.content.querySelector(".agent-traecode-hint");
+    assert.ok(hint, "TraeCode hint should render on the installed card");
+    assert.match(collectText(hint), /Enable hooks in Trae/);
+  });
+
+  it("omits the TraeCode enable-in-Trae hint until the integration is installed", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: { traecode: { integrationInstalled: false, enabled: false } },
+      },
+      agentMetadata: [
+        { id: "traecode", name: "TraeCode", eventSource: "hook", capabilities: {} },
+      ],
+    });
+
+    harness.core.ops.requestRender({ content: true });
+
+    assert.strictEqual(harness.content.querySelector(".agent-traecode-hint"), null);
+  });
+
+  it("keeps Start with Codex independent and commits through the preference API", async () => {
+    const updates = [];
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        autoStartWithCodex: false,
+        agents: { codex: { integrationInstalled: true, enabled: false, permissionMode: "intercept" } },
+      },
+      agentMetadata: [
+        { id: "codex", name: "Codex", eventSource: "hook", capabilities: {} },
+      ],
+      settingsAPI: {
+        update(key, value) {
+          updates.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+
+    harness.core.ops.requestRender({ content: true });
+
+    const autoStart = harness.core.state.mountedControls.generalSwitches.get("autoStartWithCodex");
+    assert.ok(autoStart, "Start with Codex should mount inside the Codex group");
+    assert.strictEqual(autoStart.element.classList.contains("on"), false);
+    assert.strictEqual(autoStart.element.classList.contains("disabled"), false);
+    assert.strictEqual(autoStart.row.querySelector(".row-label").textContent, "Start with Codex");
+
+    autoStart.element.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.deepStrictEqual(updates, [{ key: "autoStartWithCodex", value: true }]);
   });
 
   it("patches hide-bubbles aggregate changes without rebuilding General content", () => {
@@ -10178,7 +11675,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(coreSource.includes("localStorage.getItem(COLLAPSED_GROUPS_STORAGE_KEY)"));
     assert.ok(coreSource.includes("localStorage.setItem(COLLAPSED_GROUPS_STORAGE_KEY"));
     assert.ok(coreSource.includes("defaultCollapsed = false"));
-    assert.ok(coreSource.includes('disclosure.setAttribute("aria-expanded"'));
+    assert.ok(coreSource.includes('trigger.setAttribute("aria-expanded"'));
+    assert.ok(coreSource.includes("function attachSettingsDisclosure("));
     assert.ok(coreSource.includes("collapsibleSummary"));
     assert.ok(coreSource.includes("function createDisclosureChevron("));
     assert.ok(coreSource.includes('createDisclosureChevron("collapsible-group-chevron")'));
@@ -10188,7 +11686,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(!coreSource.includes("chevron.innerHTML"));
     assert.ok(/\.collapsible-group-header\s*\{[\s\S]*gap:\s*4px;/.test(css));
     assert.ok(/\.collapsible-group-chevron,\s*\.anim-override-chevron\s*\{[\s\S]*display:\s*inline-flex;[\s\S]*align-items:\s*center;[\s\S]*justify-content:\s*center;[\s\S]*width:\s*18px;[\s\S]*height:\s*18px;[\s\S]*opacity:\s*0\.72;/.test(css));
-    assert.ok(/\.collapsible-group-chevron,\s*\.anim-override-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(0deg\);[\s\S]*transition:[\s\S]*transform 0\.22s cubic-bezier\(0\.22,\s*1,\s*0\.36,\s*1\),[\s\S]*color 0\.16s ease,[\s\S]*opacity 0\.16s ease/.test(css));
+    assert.ok(/\.collapsible-group-chevron,\s*\.anim-override-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(0deg\);[\s\S]*transform var\(--settings-disclosure-duration\) var\(--settings-disclosure-easing\)/.test(css));
     assert.ok(/\.collapsible-group-chevron svg,\s*\.anim-override-chevron svg\s*\{[\s\S]*width:\s*16px;[\s\S]*height:\s*16px;[\s\S]*overflow:\s*visible;/.test(css));
     assert.ok(/\.collapsible-group-chevron path,\s*\.anim-override-chevron path\s*\{[\s\S]*fill:\s*none;[\s\S]*stroke:\s*currentColor;[\s\S]*stroke-width:\s*2\.2;[\s\S]*stroke-linecap:\s*round;[\s\S]*stroke-linejoin:\s*round;/.test(css));
     assert.ok(/\.collapsible-group-header:hover\s+\.collapsible-group-chevron\s*\{[\s\S]*color:\s*var\(--text-secondary\);[\s\S]*opacity:\s*0\.95;/.test(css));
@@ -10226,7 +11724,12 @@ describe("settings renderer browser environment", () => {
       createElement: (tagName) => new FakeElement(tagName),
       getElementById: (id) => id === "content" ? content : null,
     };
-    const core = loadSettingsCoreForTest({}, { document, localStorage });
+    const raf = createQueuedRaf();
+    const core = loadSettingsCoreForTest({}, {
+      document,
+      localStorage,
+      requestAnimationFrame: raf.requestAnimationFrame,
+    });
     const buildGroup = () => {
       const group = core.helpers.buildCollapsibleGroup({
         id: "remote-approval.feishu.api-explorer",
@@ -10247,14 +11750,16 @@ describe("settings renderer browser environment", () => {
     assert.equal(body.inert, true);
 
     const originalRaw = storedRaw;
-    group.expand({ persist: false });
+    group.expand({ persist: false, animate: false });
     assert.equal(group.classList.contains("collapsed"), false);
+    assert.equal(group.classList.contains("expanding"), false);
     assert.equal(header.getAttribute("aria-expanded"), "true");
     assert.equal(body.getAttribute("aria-hidden"), "false");
     assert.equal(body.inert, false);
     assert.equal(storedRaw, originalRaw);
     assert.deepStrictEqual(JSON.parse(storedRaw), originalStoredState);
     assert.equal(storageWrites.length, 0);
+    raf.flush();
 
     group.remove();
     const freshGroup = buildGroup();
@@ -10267,9 +11772,10 @@ describe("settings renderer browser environment", () => {
 
     freshHeader.click();
     assert.equal(freshGroup.classList.contains("collapsed"), false);
+    assert.equal(freshGroup.classList.contains("expanding"), true);
     assert.equal(freshHeader.getAttribute("aria-expanded"), "true");
     assert.equal(freshBody.getAttribute("aria-hidden"), "false");
-    assert.equal(freshBody.inert, false);
+    assert.equal(freshBody.inert, true);
     assert.equal(storageWrites.length, 1);
     assert.equal(storageWrites[0].key, collapsedGroupsKey);
     assert.deepStrictEqual(JSON.parse(storageWrites[0].value), {
@@ -10277,12 +11783,37 @@ describe("settings renderer browser environment", () => {
       "unrelated-group": false,
     });
 
+    freshHeader.click();
+    assert.equal(freshGroup.classList.contains("collapsed"), true);
+    assert.equal(freshGroup.classList.contains("collapsing"), true);
+    assert.equal(freshBody.getAttribute("aria-hidden"), "true");
+    assert.equal(freshBody.inert, true);
+    freshHeader.click();
+    assert.equal(freshGroup.classList.contains("collapsed"), false);
+    assert.equal(freshGroup.classList.contains("expanding"), true);
+    freshBody.dispatchEvent({
+      type: "transitioncancel",
+      propertyName: "grid-template-rows",
+      bubbles: false,
+    });
+    assert.equal(freshGroup.classList.contains("expanding"), true);
+    assert.equal(freshGroup.classList.contains("collapsing"), false);
+    assert.equal(freshBody.getAttribute("aria-hidden"), "false");
+    assert.equal(freshBody.inert, true);
+    freshBody.dispatchEvent({
+      type: "transitionend",
+      propertyName: "grid-template-rows",
+      bubbles: false,
+    });
+    assert.equal(freshGroup.classList.contains("expanding"), false);
+    assert.equal(freshBody.inert, false);
+
     freshHeader.dispatchEvent({ type: "keydown", key: "Enter" });
     assert.equal(freshHeader.getAttribute("aria-expanded"), "false");
     assert.equal(freshBody.getAttribute("aria-hidden"), "true");
     assert.equal(freshBody.inert, true);
-    assert.equal(storageWrites.length, 2);
-    assert.deepStrictEqual(JSON.parse(storageWrites[1].value), {
+    assert.equal(storageWrites.length, 4);
+    assert.deepStrictEqual(JSON.parse(storageWrites[3].value), {
       "remote-approval.feishu.api-explorer": true,
       "unrelated-group": false,
     });
@@ -10290,12 +11821,132 @@ describe("settings renderer browser environment", () => {
     freshHeader.dispatchEvent({ type: "keydown", key: " " });
     assert.equal(freshHeader.getAttribute("aria-expanded"), "true");
     assert.equal(freshBody.getAttribute("aria-hidden"), "false");
-    assert.equal(freshBody.inert, false);
-    assert.equal(storageWrites.length, 3);
-    assert.deepStrictEqual(JSON.parse(storageWrites[2].value), {
+    assert.equal(freshBody.inert, true);
+    assert.equal(storageWrites.length, 5);
+    assert.deepStrictEqual(JSON.parse(storageWrites[4].value), {
       "remote-approval.feishu.api-explorer": false,
       "unrelated-group": false,
     });
+    freshBody.dispatchEvent({
+      type: "transitionend",
+      propertyName: "grid-template-rows",
+      bubbles: false,
+    });
+    assert.equal(freshBody.inert, false);
+  });
+
+  it("uses one disclosure controller for specialized Settings surfaces", () => {
+    const documentBody = new FakeElement("body");
+    const document = {
+      body: documentBody,
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: () => null,
+    };
+    const raf = createQueuedRaf();
+    const core = loadSettingsCoreForTest({}, {
+      document,
+      requestAnimationFrame: raf.requestAnimationFrame,
+    });
+    const root = document.createElement("div");
+    const trigger = document.createElement("div");
+    const body = document.createElement("div");
+    const inner = document.createElement("div");
+    inner.className = "settings-disclosure-body-inner";
+    body.appendChild(inner);
+    root.appendChild(trigger);
+    root.appendChild(body);
+    documentBody.appendChild(root);
+    const changes = [];
+    const controller = core.helpers.attachSettingsDisclosure({
+      root,
+      trigger,
+      body,
+      expanded: false,
+      onExpandedChange(nextExpanded, options) {
+        changes.push({ nextExpanded, persist: options.persist });
+      },
+    });
+
+    assert.equal(trigger.getAttribute("role"), "button");
+    assert.equal(trigger.getAttribute("tabindex"), "0");
+    assert.equal(trigger.getAttribute("aria-expanded"), "false");
+    assert.equal(trigger.getAttribute("aria-controls"), body.getAttribute("id"));
+    assert.equal(body.getAttribute("aria-hidden"), "true");
+    assert.equal(body.inert, true);
+
+    trigger.dispatchEvent({ type: "keydown", key: "Enter" });
+    assert.equal(controller.expanded, true);
+    assert.equal(root.classList.contains("expanding"), true);
+    assert.equal(body.getAttribute("aria-hidden"), "false");
+    assert.equal(body.inert, true);
+    trigger.click();
+    trigger.click();
+    trigger.click();
+    trigger.click();
+    assert.equal(controller.expanded, true, "five total toggles must end expanded");
+    body.dispatchEvent({ type: "transitioncancel", propertyName: "grid-template-rows", bubbles: false });
+    assert.equal(root.classList.contains("expanding"), true);
+    assert.equal(root.classList.contains("collapsing"), false);
+    assert.equal(body.inert, true);
+    body.dispatchEvent({ type: "transitionend", propertyName: "grid-template-rows", bubbles: false });
+    assert.equal(root.classList.contains("expanding"), false);
+    assert.equal(root.classList.contains("collapsing"), false);
+    assert.equal(body.inert, false);
+
+    controller.collapse({ animate: false, persist: false });
+    assert.equal(root.classList.contains("settings-disclosure-no-motion"), true);
+    assert.deepStrictEqual(changes.at(-1), { nextExpanded: false, persist: false });
+    raf.flush();
+    assert.equal(root.classList.contains("settings-disclosure-no-motion"), false);
+    controller.dispose();
+    trigger.click();
+    assert.equal(controller.expanded, false, "disposed triggers must not keep toggling");
+
+    const reducedCore = loadSettingsCoreForTest({}, {
+      document,
+      matchMedia: () => ({ matches: true }),
+      requestAnimationFrame: raf.requestAnimationFrame,
+    });
+    const reducedRoot = document.createElement("div");
+    const reducedTrigger = document.createElement("div");
+    const reducedBody = document.createElement("div");
+    const reducedInner = document.createElement("div");
+    reducedInner.className = "settings-disclosure-body-inner";
+    reducedBody.appendChild(reducedInner);
+    reducedRoot.appendChild(reducedTrigger);
+    reducedRoot.appendChild(reducedBody);
+    const reducedController = reducedCore.helpers.attachSettingsDisclosure({
+      root: reducedRoot,
+      trigger: reducedTrigger,
+      body: reducedBody,
+      expanded: false,
+    });
+    reducedTrigger.click();
+    assert.equal(reducedController.expanded, true);
+    assert.equal(reducedRoot.classList.contains("expanding"), false);
+    assert.equal(reducedRoot.classList.contains("settings-disclosure-no-motion"), false);
+    reducedController.dispose();
+  });
+
+  it("routes every Settings disclosure implementation through the shared controller", () => {
+    const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
+    const doctorSource = fs.readFileSync(SETTINGS_DOCTOR_MODAL, "utf8");
+    const animSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-overrides.js"), "utf8");
+    const aboutSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-about.js"), "utf8");
+    assert.ok(coreSource.includes("const controller = attachSettingsDisclosure({"));
+    assert.ok(doctorSource.includes("core.helpers.attachSettingsDisclosure({"));
+    assert.ok(animSource.includes("helpers.attachSettingsDisclosure({"));
+    assert.ok(aboutSource.includes("helpers.attachSettingsDisclosure({"));
+    const rendererSources = fs.readdirSync(SRC_DIR)
+      .filter((name) => /^settings(?:-.+)?\.js$/.test(name) || name === "settings.html")
+      .map((name) => ({ name, source: fs.readFileSync(path.join(SRC_DIR, name), "utf8") }));
+    for (const { name, source } of rendererSources) {
+      assert.ok(!/createElement\(\s*["']details["']\s*\)/.test(source), `${name} must not create native details`);
+      assert.ok(!/<details(?:\s|>)/i.test(source), `${name} must not render native details markup`);
+      assert.ok(!/addEventListener\(\s*["']toggle["']/.test(source), `${name} must not own a disclosure toggle state machine`);
+    }
+    assert.ok(doctorSource.indexOf("disposeDoctorDisclosures();") < doctorSource.indexOf("rootEl.innerHTML = ("));
+    assert.ok(/function closeModal\(\) \{\s*disposeDoctorDisclosures\(\);/.test(doctorSource));
   });
 
   it("groups Theme cards and exposes theme import actions in Settings", () => {
@@ -10362,6 +12013,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("themeBackToPets"));
     assert.ok(i18nSource.includes("themeAppearanceTitle"));
     assert.ok(i18nSource.includes("rowPetAccessory"));
+    assert.ok(i18nSource.includes("rowPetMouthAccessory"));
     assert.ok(i18nSource.includes("rowHolidayAccessory"));
     assert.ok(i18nSource.includes("accessoryCowboyHat"));
 
@@ -10375,11 +12027,13 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(strings.en.themeRefreshThemes, "Refresh themes");
     assert.strictEqual(strings.en.themeCapabilityFineMotion, "Fine motion");
     assert.strictEqual(strings.en.themeCustomize, "Customize");
-    assert.strictEqual(strings.en.rowPetAccessory, "Accessory");
+    assert.strictEqual(strings.en.rowPetAccessory, "Head accessory");
+    assert.strictEqual(strings.en.rowPetMouthAccessory, "Mouth accessory");
     assert.strictEqual(strings.en.rowHolidayAccessory, "Holiday auto outfit");
     assert.strictEqual(strings.en.accessoryWizardHat, "Wizard hat");
     assert.strictEqual(strings.zh.themeCustomize, "装扮");
-    assert.strictEqual(strings.zh.rowPetAccessory, "配饰");
+    assert.strictEqual(strings.zh.rowPetAccessory, "头部配饰");
+    assert.strictEqual(strings.zh.rowPetMouthAccessory, "嘴部配饰");
     assert.strictEqual(strings.zh.rowHolidayAccessory, "节日自动换装");
     assert.strictEqual(strings.zh.accessoryWizardHat, "巫师帽");
     assert.strictEqual(strings.zh.themeImportPetZip, "导入 Codex Pet 包（.zip）");
@@ -10604,7 +12258,7 @@ describe("settings renderer browser environment", () => {
           name: "Clawd",
           builtin: true,
           active: true,
-          capabilities: { petTint: true, accessories: true },
+          capabilities: { petTint: true, accessories: true, mouthAccessories: true },
         },
         {
           id: "custom",
@@ -10654,7 +12308,7 @@ describe("settings renderer browser environment", () => {
           name: "Clawd",
           builtin: true,
           active: true,
-          capabilities: { petTint: true, accessories: true },
+          capabilities: { petTint: true, accessories: true, mouthAccessories: true },
         },
         {
           id: "custom",
@@ -10735,12 +12389,13 @@ describe("settings renderer browser environment", () => {
           builtin: true,
           active: true,
           previewFileUrl: "file:///clawd.svg",
-          capabilities: { petTint: true, accessories: true },
+          capabilities: { petTint: true, accessories: true, mouthAccessories: true },
         },
       ],
       snapshot: {
         petTint: { clawd: "matcha", cloudling: "vaporwave" },
         petAccessory: { clawd: "wizard-hat", cloudling: "halo" },
+        petMouthAccessory: { clawd: "cigarette" },
         holidayAccessoryEnabled: {},
       },
       petTintOptions: [
@@ -10757,12 +12412,16 @@ describe("settings renderer browser environment", () => {
         { id: "wizard-hat", labelKey: "accessoryWizardHat" },
         { id: "halo", labelKey: "accessoryHalo" },
       ],
+      petMouthAccessoryOptions: [
+        { id: "none", labelKey: "accessoryNone" },
+        { id: "cigarette", labelKey: "accessoryCigarette" },
+      ],
     });
 
     harness.content.querySelector(".theme-customize-btn").dispatchEvent({ type: "click" });
     assert.ok(harness.content.querySelector(".theme-detail-back"));
     assert.ok(harness.content.querySelector(".theme-detail-hero"));
-    assert.strictEqual(harness.content.querySelectorAll(".theme-customization-row").length, 3);
+    assert.strictEqual(harness.content.querySelectorAll(".theme-customization-row").length, 4);
     assert.strictEqual(harness.content.querySelector(".theme-grid"), null);
 
     const select = harness.content.querySelector(".pet-tint-select");
@@ -10812,13 +12471,28 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").disabled, false);
     assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").getAttribute("aria-disabled"), "false");
 
+    const mouthAccessorySelect = harness.content.querySelector(".pet-mouth-accessory-select");
+    assert.strictEqual(getSelectedPickerValue(mouthAccessorySelect), "cigarette");
+    assert.deepStrictEqual(
+      mouthAccessorySelect.querySelectorAll(".language-picker-option").map((option) => option.textContent),
+      ["None", "Cigarette"]
+    );
+    choosePickerOption(mouthAccessorySelect, "none");
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(harness.updates[2])),
+      { key: "petMouthAccessory", value: {} }
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+
     const holidaySwitch = harness.content.querySelector(".holiday-accessory-switch");
     assert.ok(holidaySwitch);
     assert.strictEqual(holidaySwitch.getAttribute("role"), "switch");
     assert.strictEqual(holidaySwitch.getAttribute("aria-checked"), "false");
     holidaySwitch.dispatchEvent({ type: "click" });
     assert.deepStrictEqual(
-      JSON.parse(JSON.stringify(harness.updates[2])),
+      JSON.parse(JSON.stringify(harness.updates[3])),
       {
         key: "holidayAccessoryEnabled",
         value: { clawd: true },
@@ -10833,7 +12507,7 @@ describe("settings renderer browser environment", () => {
 
     holidaySwitch.dispatchEvent({ type: "keydown", key: "Enter", preventDefault() {} });
     assert.deepStrictEqual(
-      JSON.parse(JSON.stringify(harness.updates[3])),
+      JSON.parse(JSON.stringify(harness.updates[4])),
       {
         key: "holidayAccessoryEnabled",
         value: {},
@@ -10855,12 +12529,13 @@ describe("settings renderer browser environment", () => {
           builtin: true,
           active: true,
           previewFileUrl: "file:///clawd.svg",
-          capabilities: { petTint: true, accessories: true },
+          capabilities: { petTint: true, accessories: true, mouthAccessories: true },
         },
       ],
       snapshot: {
         petTint: { clawd: "matcha" },
         petAccessory: { clawd: "wizard-hat" },
+        petMouthAccessory: { clawd: "cigarette" },
         holidayAccessoryEnabled: {},
       },
       petTintOptions: [
@@ -10873,12 +12548,17 @@ describe("settings renderer browser environment", () => {
         { id: "wizard-hat", labelKey: "accessoryWizardHat" },
         { id: "halo", labelKey: "accessoryHalo" },
       ],
+      petMouthAccessoryOptions: [
+        { id: "none", labelKey: "accessoryNone" },
+        { id: "cigarette", labelKey: "accessoryCigarette" },
+      ],
     });
 
     harness.content.querySelector(".theme-customize-btn").dispatchEvent({ type: "click" });
     const originalHero = harness.content.querySelector(".theme-detail-hero");
     const originalTint = harness.content.querySelector(".pet-tint-select");
     const originalAccessory = harness.content.querySelector(".pet-accessory-select");
+    const originalMouthAccessory = harness.content.querySelector(".pet-mouth-accessory-select");
     const originalHolidaySwitch = harness.content.querySelector(".holiday-accessory-switch");
     harness.content.scrollTop = 137;
 
@@ -10886,12 +12566,14 @@ describe("settings renderer browser environment", () => {
       ...harness.core.state.snapshot,
       petTint: { clawd: "gold" },
       petAccessory: { clawd: "halo" },
+      petMouthAccessory: {},
       holidayAccessoryEnabled: { clawd: true },
     };
     harness.core.ops.applyChanges({
       changes: {
         petTint: nextSnapshot.petTint,
         petAccessory: nextSnapshot.petAccessory,
+        petMouthAccessory: nextSnapshot.petMouthAccessory,
         holidayAccessoryEnabled: nextSnapshot.holidayAccessoryEnabled,
       },
       snapshot: nextSnapshot,
@@ -10900,30 +12582,40 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.content.querySelector(".theme-detail-hero"), originalHero);
     assert.strictEqual(harness.content.querySelector(".pet-tint-select"), originalTint);
     assert.strictEqual(harness.content.querySelector(".pet-accessory-select"), originalAccessory);
+    assert.strictEqual(harness.content.querySelector(".pet-mouth-accessory-select"), originalMouthAccessory);
     assert.strictEqual(harness.content.querySelector(".holiday-accessory-switch"), originalHolidaySwitch);
     assert.strictEqual(harness.content.scrollTop, 137);
     assert.strictEqual(getSelectedPickerValue(originalTint), "gold");
     assert.strictEqual(getSelectedPickerValue(originalAccessory), "halo");
+    assert.strictEqual(getSelectedPickerValue(originalMouthAccessory), "none");
     assert.strictEqual(originalHolidaySwitch.getAttribute("aria-checked"), "true");
   });
 
-  it("animates collapsible Settings groups with measured height instead of instant hidden jumps", () => {
+  it("animates collapsible Settings groups with natural-height grid rows", () => {
     const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
-    assert.ok(coreSource.includes("function measureCollapsibleBodyHeight("));
+    assert.ok(coreSource.includes('bodyInner.className = "collapsible-group-body-inner"'));
+    assert.ok(coreSource.includes("body.appendChild(bodyInner)"));
     assert.ok(coreSource.includes("function preserveScrollAnchor("));
-    assert.ok(coreSource.includes('body.style.setProperty("--collapsible-body-height"'));
-    assert.ok(coreSource.includes("requestAnimationFrame(() => {"));
+    assert.ok(!coreSource.includes("measureCollapsibleBodyHeight"));
+    assert.ok(!coreSource.includes("body.scrollHeight"));
+    assert.ok(!coreSource.includes("--collapsible-body-height"));
     assert.ok(coreSource.includes("collapsing"));
     assert.ok(coreSource.includes("expanding"));
-    assert.ok(coreSource.includes("function setBodyInteractivity(isCollapsed)"));
+    assert.ok(coreSource.includes('ev.propertyName !== "grid-template-rows"'));
+    assert.ok(!coreSource.includes('body.addEventListener("transitioncancel"'));
+    assert.ok(coreSource.includes("function setBodyInteractivity(nextExpanded, isTransitioning = false)"));
     assert.ok(coreSource.includes('body.setAttribute("aria-hidden"'));
-    assert.ok(coreSource.includes("body.inert = isCollapsed"));
+    assert.ok(coreSource.includes("const bodyInert = !nextExpanded || isTransitioning"));
     assert.ok(!coreSource.includes("body.hidden = collapsed;"));
-    assert.ok(/\.collapsible-group-body\s*\{[\s\S]*max-height:\s*var\(--collapsible-body-height,\s*0px\);/.test(css));
-    assert.ok(/\.collapsible-group-body\s*\{[\s\S]*transition:\s*max-height 0\.22s cubic-bezier\(0\.22,\s*1,\s*0\.36,\s*1\),\s*opacity 0\.16s ease,\s*transform 0\.18s ease,\s*padding 0\.18s ease,\s*border-color 0\.18s ease;/.test(css));
-    assert.ok(/\.collapsible-group\.collapsed\s*>\s*\.collapsible-group-body\s*\{[\s\S]*opacity:\s*0;[\s\S]*transform:\s*translateY\(-4px\);/.test(css));
-    assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.collapsible-group-body/.test(css));
+    assert.ok(/\.settings-disclosure-body\s*\{[\s\S]*display:\s*grid;[\s\S]*grid-template-rows:\s*1fr;[\s\S]*var\(--settings-disclosure-duration\)/.test(css));
+    assert.ok(/\.settings-disclosure-body-inner\s*\{[\s\S]*min-height:\s*0;[\s\S]*overflow:\s*hidden;/.test(css));
+    assert.ok(/\.settings-disclosure\.collapsed\s*>\s*\.settings-disclosure-body\s*\{[\s\S]*grid-template-rows:\s*0fr;/.test(css));
+    assert.ok(/\.settings-disclosure\.collapsed\s*>\s*\.settings-disclosure-body\s*>\s*\.settings-disclosure-body-inner\s*\{[\s\S]*opacity:\s*0;[\s\S]*transform:\s*translateY\(var\(--settings-disclosure-shift\)\);/.test(css));
+    assert.ok(/\.collapsible-group-body\s+\.collapsible-content-entering\s*\{[\s\S]*animation:\s*collapsibleContentEnter/.test(css));
+    assert.ok(!css.includes(".collapsible-group.collapsible-content-entering"));
+    assert.ok(!css.includes("max-height: var(--collapsible-body-height"));
+    assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.settings-disclosure-body/.test(css));
   });
 
   it("collapses only the detailed bubble policy controls while keeping primary bubble rows visible", () => {
@@ -10937,7 +12629,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes("const summaryControl = buildBubblePolicySummary();"));
     assert.ok(generalSource.includes("summary: summaryControl.element"));
     assert.ok(generalSource.includes("children: [buildBubblePolicyList()]"));
-    assert.ok(generalSource.includes('key: "bubbleFollowPet"'));
+    assert.ok(generalSource.includes("buildBubblePlacementGroup"));
     assert.ok(!generalSource.includes('key: "showSessionId"'));
     assert.ok(generalSource.includes('key: "hideBubbles"'));
     assert.ok(i18nSource.includes("bubblePolicySummaryPermission"));
@@ -11693,6 +13385,60 @@ describe("settings renderer browser environment", () => {
     await Promise.resolve();
     await Promise.resolve();
     assert.strictEqual(calls, 1);
+  });
+
+  it("preserves fetched null verdicts and keeps them out of every Settings action surface", async () => {
+    const commandCalls = [];
+    const detectionResult = {
+      checkedAt: 895,
+      agents: [
+        { agentId: "qoder", detectedInstalled: null, confidence: "low", reason: "insufficient-evidence" },
+        { agentId: "zcode", detectedInstalled: null, confidence: "low", reason: "insufficient-evidence" },
+      ],
+      skippedAgentIds: [],
+    };
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          qoder: { integrationInstalled: false, enabled: false },
+          zcode: { integrationInstalled: true, enabled: true },
+        },
+        dismissedAgentInstallHints: { qoder: true },
+        dismissedAgentCleanupHints: { zcode: true },
+      },
+      agentMetadata: [
+        { id: "qoder", name: "Qoder", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
+        { id: "zcode", name: "ZCode", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
+      ],
+      settingsAPI: {
+        detectAgentInstallations: () => Promise.resolve(detectionResult),
+        command: (action, payload) => {
+          commandCalls.push([action, payload]);
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+
+    await harness.core.ops.fetchAgentInstallationHints();
+    harness.raf.flush();
+
+    assert.deepStrictEqual(
+      harness.core.runtime.agentInstallationHints.agents.map((entry) => entry.detectedInstalled),
+      [null, null],
+      "normalization must preserve tri-state null"
+    );
+    assert.strictEqual(harness.content.querySelector(".agent-install-hint-banner"), null);
+    assert.strictEqual(harness.content.querySelector(".agent-cleanup-hint-banner"), null);
+    const connectedPills = harness.content.querySelectorAll(".agents-subtabs .segmented button");
+    assert.strictEqual(connectedPills[1].querySelector(".agents-subtab-count"), null);
+
+    harness.core.runtime.agentsSubtab = "discover";
+    harness.core.ops.requestRender({ content: true });
+    harness.raf.flush();
+    assert.strictEqual(harness.content.querySelector(".agent-section-recommended"), null);
+    assert.strictEqual(harness.content.querySelector(".agent-install-hint-banner"), null);
+    assert.strictEqual(harness.content.querySelector(".agent-cleanup-hint-banner"), null);
+    assert.deepStrictEqual(commandCalls, [], "null must not clear either dismissal bucket");
   });
 
   it("splits connected agents from detected and undetected ones across the subtabs", () => {
@@ -12998,16 +14744,43 @@ describe("settings renderer browser environment", () => {
     assert.ok(!overridesSource.includes('chevron.textContent = "\\u25B8";'));
     assert.ok(!overridesSource.includes("chevron.innerHTML"));
     assert.ok(overridesSource.includes('helpers.createDisclosureChevron("anim-override-chevron")'));
+    assert.ok(overridesSource.includes("helpers.attachSettingsDisclosure({"));
+    assert.ok(!overridesSource.includes('document.createElement("details")'));
     assert.ok(/\.collapsible-group-chevron,\s*\.anim-override-chevron\s*\{[\s\S]*display:\s*inline-flex;[\s\S]*align-items:\s*center;[\s\S]*justify-content:\s*center;[\s\S]*width:\s*18px;[\s\S]*height:\s*18px;[\s\S]*opacity:\s*0\.72;/.test(css));
-    assert.ok(/\.collapsible-group-chevron,\s*\.anim-override-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(0deg\);[\s\S]*transition:[\s\S]*transform 0\.22s cubic-bezier\(0\.22,\s*1,\s*0\.36,\s*1\),[\s\S]*color 0\.16s ease,[\s\S]*opacity 0\.16s ease/.test(css));
+    assert.ok(/\.collapsible-group-chevron,\s*\.anim-override-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(0deg\);[\s\S]*transform var\(--settings-disclosure-duration\) var\(--settings-disclosure-easing\)/.test(css));
     assert.ok(/\.collapsible-group-chevron svg,\s*\.anim-override-chevron svg\s*\{[\s\S]*width:\s*16px;[\s\S]*height:\s*16px;[\s\S]*overflow:\s*visible;/.test(css));
     assert.ok(/\.collapsible-group-chevron path,\s*\.anim-override-chevron path\s*\{[\s\S]*fill:\s*none;[\s\S]*stroke:\s*currentColor;[\s\S]*stroke-width:\s*2\.2;[\s\S]*stroke-linecap:\s*round;[\s\S]*stroke-linejoin:\s*round;/.test(css));
-    assert.ok(/\.anim-override-row > summary:hover \.anim-override-chevron\s*\{[\s\S]*color:\s*var\(--text-secondary\);[\s\S]*opacity:\s*0\.95;/.test(css));
-    assert.ok(/\.anim-override-row\[open\]\s*>\s*summary\s+\.anim-override-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(90deg\);[\s\S]*color:\s*var\(--accent\);[\s\S]*opacity:\s*1;/.test(css));
+    assert.ok(/\.anim-override-row > \.anim-override-summary:hover \.anim-override-chevron\s*\{[\s\S]*color:\s*var\(--text-secondary\);[\s\S]*opacity:\s*0\.95;/.test(css));
+    assert.ok(/\.anim-override-row\.expanded\s*>\s*\.anim-override-summary\s+\.anim-override-chevron\s*\{[\s\S]*transform:\s*translateX\(-6px\) rotate\(90deg\);[\s\S]*color:\s*var\(--accent\);[\s\S]*opacity:\s*1;/.test(css));
     assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.anim-override-chevron,[\s\S]*transition:\s*none;/.test(css));
     assert.ok(/\.anim-override-thumb\s*\{[\s\S]*transform:\s*translateX\(-3px\);/.test(css));
     assert.ok(/\.anim-override-summary-text\s*\{[\s\S]*transform:\s*translateX\(-3px\);/.test(css));
     assert.ok(!/\.anim-override-summary-change\s*\{[\s\S]*translateX\(-3px\)/.test(css));
+  });
+
+  it("keeps Animation Override expansion state on the shared disclosure controller", () => {
+    const card = createAnimOverrideCard();
+    const runtime = createAnimOverridesRuntime(card, { expandedOverrideRowIds: new Set() });
+    const modalRoot = new FakeElement("div");
+    const { core } = loadAnimOverridesTabForTest({ runtime, modalRoot });
+    const parent = new FakeElement("main");
+    core.tabs.animOverrides.render(parent, core);
+    const row = parent.querySelector(".anim-override-row");
+    const summary = row.querySelector(".anim-override-summary");
+    const body = row.querySelector(".anim-override-body");
+    const thumb = row.querySelector(".anim-override-thumb");
+
+    assert.equal(row.tagName, "DIV");
+    assert.equal(summary.getAttribute("aria-expanded"), "false");
+    assert.equal(body.getAttribute("aria-hidden"), "true");
+    summary.click();
+    assert.equal(summary.getAttribute("aria-expanded"), "true");
+    assert.equal(body.getAttribute("aria-hidden"), "false");
+    assert.equal(runtime.expandedOverrideRowIds.has(card.id), true);
+    thumb.click();
+    assert.equal(runtime.expandedOverrideRowIds.has(card.id), true, "preview clicks must not toggle the row");
+    summary.click();
+    assert.equal(runtime.expandedOverrideRowIds.has(card.id), false);
   });
 
   it("uses captured poster previews for trusted scripted animation override SVGs", () => {
@@ -13479,6 +15252,33 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(valueEl.textContent, "Idle Reading", "optimistic display should show the pick immediately");
   });
 
+  it("mounts the idle visual menu while open and removes it from layout after close", () => {
+    const runtime = createIdleVisualRuntime();
+    const modalRoot = new FakeElement("div");
+    const { core, document } = loadAnimOverridesTabForTest({ runtime, modalRoot });
+    const parent = new FakeElement("main");
+    document.body.appendChild(parent);
+    core.tabs.animOverrides.render(parent, core);
+
+    const picker = parent.querySelector(".anim-idle-visual-row .language-picker");
+    const trigger = picker.querySelector(".language-picker-trigger");
+    const menu = picker.querySelector(".language-picker-menu");
+
+    trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(trigger.getAttribute("aria-expanded"), "true");
+    assert.strictEqual(menu.getAttribute("aria-hidden"), "false");
+    assert.strictEqual(
+      picker.classList.contains("menu-mounted"),
+      true,
+      "the shared CSS only displays mounted picker menus",
+    );
+
+    trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(trigger.getAttribute("aria-expanded"), "false");
+    assert.strictEqual(menu.getAttribute("aria-hidden"), "true");
+    assert.strictEqual(picker.classList.contains("menu-mounted"), false);
+  });
+
   it("patches idleVisual-only broadcasts in place and re-syncs the mounted picker", () => {
     const runtime = createIdleVisualRuntime();
     const modalRoot = new FakeElement("div");
@@ -13521,6 +15321,28 @@ describe("settings renderer browser environment", () => {
     assert.ok(uiCoreSource.includes("state.mountedControls.idleVisualPicker.dispose()"));
     assert.ok(uiCoreSource.includes("state.mountedControls.idleVisualPicker = null;"));
     assert.ok(uiCoreSource.includes("idleVisualPicker: null,"));
+  });
+
+  it("disposes Animation Override disclosures before rerendering their rows", () => {
+    const runtime = createAnimOverridesRuntime(createAnimOverrideCard(), { expandedOverrideRowIds: new Set() });
+    const modalRoot = new FakeElement("div");
+    const { core, document } = loadAnimOverridesTabForTest({ runtime, modalRoot });
+    const parent = new FakeElement("main");
+    document.body.appendChild(parent);
+
+    core.tabs.animOverrides.render(parent, core);
+    const oldTrigger = parent.querySelector(".anim-override-row").querySelector(".anim-override-summary");
+    oldTrigger.click();
+    assert.equal(oldTrigger.getAttribute("aria-expanded"), "true");
+
+    core.ops.clearMountedControls();
+    core.tabs.animOverrides.render(parent, core);
+    oldTrigger.click();
+    assert.equal(
+      oldTrigger.getAttribute("aria-expanded"),
+      "true",
+      "the detached row must not retain its disclosure listener",
+    );
   });
 
   it("renders visible loading text for the initial Animation Overrides fetch", () => {

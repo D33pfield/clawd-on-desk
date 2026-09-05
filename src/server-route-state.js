@@ -53,6 +53,11 @@ const { sanitizeShadowRecord } = require("./windows-process-chain-shadow-log");
 // not an Internet DoS concern.
 const MAX_STATE_BODY_BYTES = 16 * 1024;
 const ASSISTANT_LAST_OUTPUT_MAX = 2400;
+const RECAP_PERMISSION_BOUNDARY_AGENT_IDS = new Set([
+  "qoder",
+  "qoderwork",
+  "qwenwork",
+]);
 // Transport recognition and metadata acceptance are distinct wire facts.
 // A recognized 204 may still mean "unknown session" or another designed
 // metadata drop; only this header allows a metadata sender to advance its
@@ -318,6 +323,20 @@ function handleStatePost(req, res, options) {
         || data.session_start_source === "clear"
         || data.session_start_source === "compact"
       ) ? data.session_start_source : null;
+      // Closed provenance used only by recap metric mapping. Never forward a
+      // free-form upstream event name into state, snapshots or future storage.
+      const recapBoundary = data.recap_boundary === "permission"
+        && RECAP_PERMISSION_BOUNDARY_AGENT_IDS.has(agentId)
+        ? "permission"
+        : (data.recap_boundary === "tool-call"
+            && agentId === "kimi-cli"
+            && event === "PermissionRequest"
+            && data.permission_gate_open === true
+          ? "tool-call"
+          : null);
+      const recapIsSubagent = data.recap_is_subagent === true
+        && agentId === "deepseek-harness"
+        && data.hook_source === "dsh-plugin";
       // #583: hook-reported stdin diagnostics, attached only when the hook's
       // stdin payload carried no session_id. Normalized here so state.js can
       // log it without trusting hook-side shapes.
@@ -390,6 +409,10 @@ function handleStatePost(req, res, options) {
       // only — the hook never forwards task command or description text.
       const backgroundTasksCount = Number.isFinite(data.background_tasks_count)
         ? data.background_tasks_count : 0;
+      const backgroundSubagentsCount = Number.isSafeInteger(data.background_subagents_count)
+        && data.background_subagents_count >= 0
+        ? data.background_subagents_count
+        : null;
       const sessionCronsCount = Number.isFinite(data.session_crons_count)
         ? data.session_crons_count : 0;
       const stopHookActive = data.stop_hook_active === true;
@@ -745,7 +768,17 @@ function handleStatePost(req, res, options) {
         const pendingForSource = () => pendingForSessionAgent().filter(
           (perm) => (perm.subagentId || null) === subagentId
         );
-        const resolveOnlyUnambiguous = (candidates, behavior, message) => {
+        // Native-fallback adapters (qwen-code, zcode, deepseek-harness) answer
+        // their hook with "{}"/no-decision when Clawd has no real user
+        // decision, and the agent falls back to its own permission UI. For
+        // them, a /state lifecycle sweep must NEVER fabricate a deny — the
+        // user merely answered in the agent's native terminal. CC/CodeBuddy
+        // keep the explicit deny: their hook transport treats the missing
+        // answer as a denial of that tool call.
+        const stateSweepBehaviorFor = (perm) => (
+          perm.isQwenCode || perm.isZcode || perm.isDsh ? "no-decision" : "deny"
+        );
+        const resolveOnlyUnambiguous = (candidates, behaviorFor, message) => {
           if (candidates.length !== 1) {
             if (candidates.length > 1 && typeof ctx.permLog === "function") {
               ctx.permLog(
@@ -755,6 +788,9 @@ function handleStatePost(req, res, options) {
             }
             return;
           }
+          const behavior = typeof behaviorFor === "function"
+            ? behaviorFor(candidates[0])
+            : behaviorFor;
           ctx.resolvePermissionEntry(candidates[0], behavior, message);
         };
         if (event === "PostToolUse" || event === "PostToolUseFailure" || event === "Stop") {
@@ -768,8 +804,7 @@ function handleStatePost(req, res, options) {
             allowSingletonFallback: event === "Stop",
           });
           if (perm) {
-            const behavior = perm.isQwenCode ? "no-decision" : "deny";
-            ctx.resolvePermissionEntry(perm, behavior, "User answered in terminal");
+            ctx.resolvePermissionEntry(perm, stateSweepBehaviorFor(perm), "User answered in terminal");
           }
           // A later hook event may be the only evidence that the user answered
           // a decision in the agent's native terminal UI. Never sweep across
@@ -784,7 +819,7 @@ function handleStatePost(req, res, options) {
             ));
             resolveOnlyUnambiguous(
               staleDecisions,
-              "deny",
+              stateSweepBehaviorFor,
               "User answered in terminal"
             );
           }
@@ -820,7 +855,7 @@ function handleStatePost(req, res, options) {
           ));
           resolveOnlyUnambiguous(
             stalePlans,
-            "deny",
+            stateSweepBehaviorFor,
             "Plan dialog dismissed in terminal"
           );
         }
@@ -844,6 +879,8 @@ function handleStatePost(req, res, options) {
             ...(subagentType ? { subagentType } : {}),
             ...(subagentLifecycleSource ? { subagentLifecycleSource } : {}),
             ...(sessionStartSource ? { sessionStartSource } : {}),
+            ...(recapBoundary ? { recapBoundary } : {}),
+            ...((recapIsSubagent || codexHookState.headless === true) ? { recapIsSubagent: true } : {}),
             profileId: sessionIdentity.profileId,
             rawSessionId: sessionIdentity.rawSessionId,
             host,
@@ -862,6 +899,7 @@ function handleStatePost(req, res, options) {
             assistantLastOutput,
             assistantLastOutputTruncated,
             toolName,
+            ...(toolUseId ? { toolUseId } : {}),
             transcriptPath,
             permissionSuspect,
             permissionAction,
@@ -873,7 +911,9 @@ function handleStatePost(req, res, options) {
             preserveState,
             hookSource,
             ...(codexHookState.turnId ? { turnId: codexHookState.turnId } : {}),
+            ...(codexHookState.turnId ? { recapDedupeId: codexHookState.turnId } : {}),
             backgroundTasksCount,
+            ...(backgroundSubagentsCount !== null ? { backgroundSubagentsCount } : {}),
             sessionCronsCount,
             stopHookActive,
             stdinDiag,

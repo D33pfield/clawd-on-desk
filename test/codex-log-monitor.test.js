@@ -162,7 +162,7 @@ describe("CodexLogMonitor", () => {
       payload: { type: "function_call_output", call_id: "call_question", output: "{}" },
     }) + "\n");
     monitor._pollFile(testFile, path.basename(testFile));
-    assert.deepStrictEqual(resolved, [[EXPECTED_SID, "call_question"]]);
+    assert.deepStrictEqual(resolved, [[EXPECTED_SID, "call_question", { source: "function-call-output", turnId: null, recapOccurredAt: null, userInputReplay: true }]]);
   });
 
   it("does not flash a request_user_input already resolved before initial attach", () => {
@@ -812,7 +812,7 @@ describe("CodexLogMonitor", () => {
     const resolved = [];
     monitor._onUserInputResolved = (...args) => resolved.push(args);
     monitor._pollFile(testFile, path.basename(testFile));
-    assert.deepStrictEqual(resolved, [[recovered.sessionId, "call_partial_tail"]]);
+    assert.deepStrictEqual(resolved, [[recovered.sessionId, "call_partial_tail", { source: "function-call-output", turnId: null, recapOccurredAt: null, userInputReplay: true }]]);
   });
 
   it("seeds fileIdentity on the recovered tracker and mirrors it into the read-position ledger", () => {
@@ -868,7 +868,7 @@ describe("CodexLogMonitor", () => {
     const resolved = [];
     monitor._onUserInputResolved = (...args) => resolved.push(args);
     monitor._pollFile(testFile, path.basename(testFile));
-    assert.deepStrictEqual(resolved, [[tracked.sessionId, "call_identity_check"]]);
+    assert.deepStrictEqual(resolved, [[tracked.sessionId, "call_identity_check", { source: "function-call-output", turnId: null, recapOccurredAt: null, userInputReplay: true }]]);
   });
 
   it("resets the recovery sweep on every real start(), not just the first one this instance ever saw", (_, done) => {
@@ -1179,7 +1179,7 @@ describe("CodexLogMonitor", () => {
     const resolved = [];
     monitor._onUserInputResolved = (...args) => resolved.push(args);
     monitor._pollFile(testFile, path.basename(testFile));
-    assert.deepStrictEqual(resolved, [[recovered.sessionId, "call_utf8_boundary"]]);
+    assert.deepStrictEqual(resolved, [[recovered.sessionId, "call_utf8_boundary", { source: "function-call-output", turnId: null, recapOccurredAt: null, userInputReplay: true }]]);
   });
 
   it("caps the recovery sweep to RECOVERY_SWEEP_MAX_FILES, prioritizing the most recently modified candidates", (_, done) => {
@@ -1741,7 +1741,10 @@ describe("CodexLogMonitor", () => {
     fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"task_complete"}}\n');
     monitor._pollFile(testFile, path.basename(testFile));
 
-    assert.deepStrictEqual(resolved, [[EXPECTED_SID, "call_abandoned"]]);
+    assert.deepStrictEqual(resolved, [[EXPECTED_SID, "call_abandoned", {
+      source: "turn-terminal",
+      reason: "turn-complete",
+    }]]);
   });
 
   it("clears a pending question's card on turn_aborted even without a matching function_call_output", () => {
@@ -1770,7 +1773,10 @@ describe("CodexLogMonitor", () => {
     fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"turn_aborted"}}\n');
     monitor._pollFile(testFile, path.basename(testFile));
 
-    assert.deepStrictEqual(resolved, [[EXPECTED_SID, "call_aborted"]]);
+    assert.deepStrictEqual(resolved, [[EXPECTED_SID, "call_aborted", {
+      source: "turn-terminal",
+      reason: "turn-aborted",
+    }]]);
   });
 
   it("uses stale Codex Desktop session_meta for later live events without replaying it", () => {
@@ -1891,7 +1897,7 @@ describe("CodexLogMonitor", () => {
       JSON.stringify({ type: "session_meta", timestamp: oldTimestamp, payload: { cwd: "/tmp" } }),
       JSON.stringify({ type: "event_msg", timestamp: oldTimestamp, payload: { type: "task_started", turn_id: "old-turn" } }),
       JSON.stringify({ type: "event_msg", timestamp: oldTimestamp, payload: { type: "task_complete", turn_id: "old-turn" } }),
-      JSON.stringify({ type: "response_item", timestamp: liveTimestamp, payload: { type: "function_call", name: "shell_command" } }),
+      JSON.stringify({ type: "response_item", timestamp: liveTimestamp, payload: { type: "function_call", name: "shell_command", call_id: "live-call" } }),
     ].join("\n") + "\n");
 
     const events = [];
@@ -1902,6 +1908,8 @@ describe("CodexLogMonitor", () => {
 
     assert.deepStrictEqual(events.map((entry) => entry.event), ["response_item:function_call"]);
     assert.strictEqual(events[0].extra.turnId, undefined);
+    assert.strictEqual(events[0].extra.recapOccurredAt, Date.parse(liveTimestamp));
+    assert.strictEqual(events[0].extra.toolUseId, "live-call");
     assert.strictEqual(monitor._tracked.get(testFile).activeTurnId, null);
     assert.strictEqual(monitor._tracked.get(testFile).turnBoundaryOpen, false);
   });
@@ -1928,19 +1936,26 @@ describe("CodexLogMonitor", () => {
     assert.strictEqual(events[0].extra.turnId, "turn-backfill");
   });
 
-  it("should map function_call to working", (_, done) => {
+  it("emits every JSONL tool boundary even while the visual state stays working", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [
       '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
-      '{"type":"response_item","payload":{"type":"function_call","name":"shell_command"}}',
+      '{"type":"response_item","payload":{"type":"function_call","name":"shell_command","call_id":"call-1"}}',
+      '{"type":"response_item","payload":{"type":"custom_tool_call","name":"custom","call_id":"call-2"}}',
+      '{"type":"response_item","payload":{"type":"web_search_call","id":"call-3"}}',
     ].join("\n") + "\n");
 
     const config = makeConfig(tmpDir);
-    const states = [];
-    monitor = new CodexLogMonitor(config, (sid, state) => {
-      states.push(state);
-      if (states.length === 2) {
-        assert.strictEqual(states[1], "working");
+    const events = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      events.push({ state, event, toolUseId: extra && extra.toolUseId });
+      if (events.length === 4) {
+        assert.deepStrictEqual(events, [
+          { state: "idle", event: "session_meta", toolUseId: undefined },
+          { state: "working", event: "response_item:function_call", toolUseId: "call-1" },
+          { state: "working", event: "response_item:custom_tool_call", toolUseId: "call-2" },
+          { state: "working", event: "response_item:web_search_call", toolUseId: "call-3" },
+        ]);
         done();
       }
     });
@@ -2119,14 +2134,14 @@ describe("CodexLogMonitor", () => {
     monitor.start();
   });
 
-  it("should dedup repeated working states", (_, done) => {
+  it("dedups repeated non-boundary working states without dropping the tool boundary", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [
       '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
       '{"type":"event_msg","payload":{"type":"task_started"}}',
       '{"type":"response_item","payload":{"type":"function_call","name":"shell_command"}}',
-      '{"type":"response_item","payload":{"type":"function_call","name":"shell_command"}}',
-      '{"type":"response_item","payload":{"type":"function_call","name":"shell_command"}}',
+      '{"type":"event_msg","payload":{"type":"exec_command_end"}}',
+      '{"type":"event_msg","payload":{"type":"patch_apply_end"}}',
       '{"type":"event_msg","payload":{"type":"task_complete"}}',
     ].join("\n") + "\n");
 
@@ -2135,7 +2150,8 @@ describe("CodexLogMonitor", () => {
     monitor = new CodexLogMonitor(config, (sid, state) => {
       states.push(state);
       if (state === "attention") {
-        // idle, thinking, working (deduped), attention — should be 4 not 6
+        // The tool start survives; repeated working-like completion signals
+        // remain visually deduped.
         assert.deepStrictEqual(states, ["idle", "thinking", "working", "attention"]);
         done();
       }
@@ -4217,15 +4233,19 @@ describe("CodexLogMonitor", () => {
     ].join("\n") + "\n");
 
     const config = makeConfig(tmpDir);
-    const states = [];
+    const observed = [];
     monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
-      states.push(state);
+      observed.push({ state, event, extra });
       assert.strictEqual(extra.permissionDetail, undefined);
     });
     monitor.start();
 
     setTimeout(() => {
-      assert.deepStrictEqual(states, ["idle", "working"]);
+      assert.deepStrictEqual(observed.map((entry) => entry.state), ["idle", "working"]);
+      assert.strictEqual(observed[1].event, "response_item:function_call");
+      assert.strictEqual(observed[1].extra.recapIsWebSearch, true);
+      assert.strictEqual(JSON.stringify(observed[1].extra).includes("test"), false);
+      assert.strictEqual(JSON.stringify(observed[1].extra).includes("web_search"), false);
       done();
     }, 100);
   });

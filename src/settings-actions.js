@@ -68,6 +68,7 @@ const {
 const {
   isPetTintId,
   isPetAccessoryId,
+  isPetMouthAccessoryId,
 } = require("./pet-customization-catalog");
 const { isValidDisplaySnapshot } = require("./work-area");
 const {
@@ -127,6 +128,7 @@ const {
 } = require("./settings-actions-theme-overrides");
 const {
   autoStartWithClaude,
+  autoStartWithCodex,
   createRepairDoctorIssue,
   installHooks,
   manageClaudeHooksAutomatically,
@@ -173,6 +175,9 @@ const {
   evaluateFeishuApprovalConfiguration,
   planFeishuCredentialWrite,
 } = require("./feishu-approval-settings");
+const {
+  validateSlackNotify,
+} = require("./slack-notify-settings");
 const { classifyFeishuApprovalRecipient } = require("./feishu-approval-recipient");
 const { EVENTS: TELEGRAM_MIGRATION_EVENTS } = require("./telegram-migration-state");
 
@@ -208,6 +213,7 @@ const MANAGED_CLEANUP_AGENT_IDS = Object.freeze([
   "qoder",
   "reasonix",
   "qoderwork",
+  "traecode",
   "qwenwork",
 ]);
 
@@ -296,6 +302,7 @@ const updateRegistry = {
 
   // ── Pure data prefs (function-form: validator only) ──
   lang: requireEnum("lang", ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"]),
+  recapEnabled: requireBoolean("recapEnabled"),
   tutorialSeen: requireBoolean("tutorialSeen"),
   soundMuted: requireBoolean("soundMuted"),
   soundVolume: requireNumberInRange("soundVolume", 0, 1),
@@ -324,6 +331,7 @@ const updateRegistry = {
   codexHookHealthNotifyEnabled: requireBoolean("codexHookHealthNotifyEnabled"),
   codexHookHealthLastNotified: requireString("codexHookHealthLastNotified", { allowEmpty: true }),
   telegramMigrationLastNotified: requireString("telegramMigrationLastNotified", { allowEmpty: true }),
+  feishuApprovalMigrationLastNotified: requireString("feishuApprovalMigrationLastNotified", { allowEmpty: true }),
   lowPowerIdleMode: requireBoolean("lowPowerIdleMode"),
   keepAwakeWhileWorking: requireBoolean("keepAwakeWhileWorking"),
   petTint(value) {
@@ -362,6 +370,24 @@ const updateRegistry = {
     }
     return { status: "ok" };
   },
+  petMouthAccessory(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "petMouthAccessory must be a theme-to-accessory object" };
+    }
+    for (const [themeId, accessoryId] of Object.entries(value)) {
+      if (
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)
+        || !isPetMouthAccessoryId(accessoryId)
+        || accessoryId === "none"
+      ) {
+        return {
+          status: "error",
+          message: `petMouthAccessory entry "${themeId}" must map a safe theme id to a non-default catalog accessory id`,
+        };
+      }
+    }
+    return { status: "ok" };
+  },
   holidayAccessoryEnabled(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       return { status: "error", message: "holidayAccessoryEnabled must be a theme-to-boolean object" };
@@ -380,6 +406,13 @@ const updateRegistry = {
     return { status: "ok" };
   },
   bubbleFollowPet: requireBoolean("bubbleFollowPet"),
+  bubbleFollowPreference: requireEnum("bubbleFollowPreference", ["auto", "left", "right"]),
+  bubbleFixedCorner: requireEnum("bubbleFixedCorner", [
+    "top-left",
+    "top-right",
+    "bottom-left",
+    "bottom-right",
+  ]),
   sessionHudEnabled: requireBoolean("sessionHudEnabled"),
   sessionHudShowStateLabels: requireBoolean("sessionHudShowStateLabels"),
   sessionHudShowElapsed: requireBoolean("sessionHudShowElapsed"),
@@ -500,6 +533,10 @@ const updateRegistry = {
     }
     return { status: "ok" };
   },
+  codexWorkingStaleMs(value) {
+    if (value === 0) return { status: "ok" };
+    return requireIntegerInRange("codexWorkingStaleMs", 30_000, 86_400_000)(value);
+  },
   detachedIdleStaleMs: requireIntegerInRange("detachedIdleStaleMs", 5_000, 300_000),
   allowEdgePinning: requireBoolean("allowEdgePinning"),
   disableMiniMode: requireBoolean("disableMiniMode"),
@@ -507,10 +544,12 @@ const updateRegistry = {
   roamConstrainAxis: requireBoolean("roamConstrainAxis"),
   keepSizeAcrossDisplays: requireBoolean("keepSizeAcrossDisplays"),
   fullscreenOverlay: requireBoolean("fullscreenOverlay"),
+  fullscreenAutoHide: requireBoolean("fullscreenAutoHide"),
   mobilePreviewEnabled: requireBoolean("mobilePreviewEnabled"),
 
   // ── System-backed prefs (object-form: validate + effect pre-commit gate) ──
   autoStartWithClaude,
+  autoStartWithCodex,
   manageClaudeHooksAutomatically,
   openAtLogin,
 
@@ -716,6 +755,9 @@ const updateRegistry = {
     validate: validateFeishuApprovalUpdate,
     commandOnly: true,
   },
+  slackNotify(value) {
+    return validateSlackNotify(value);
+  },
 
   // v0.9.0 spike: persisted migration state across restarts. Shape:
   //   { transport?: "legacy"|"native"|"off", nativeVerifiedAt?: number|null,
@@ -865,7 +907,9 @@ function setBubbleCategoryEnabled(payload, deps) {
   return { status: "ok", commit: result.commit };
 }
 
-// Atomic three-key writer for the session-cleanup intervals. Lives as a
+// Atomic writer for the session-cleanup intervals. The historical command name
+// is retained for renderer/backward compatibility even though the policy now
+// includes a fourth, Codex-specific value. Lives as a
 // command (not as `applyBulk`) because applyBulk runs each single-key
 // validator against the PRE-bulk snapshot, which would reject a Reset that
 // lowers both knobs simultaneously. The controller's command path re-runs
@@ -880,7 +924,7 @@ function setSessionCleanupTriple(payload, deps) {
 
   // Strict presence check: a present-but-wrong-type value is a programmer
   // error and must surface, not silently fall back to the snapshot.
-  function pick(key) {
+  function pick(key, fallbackDefault = null) {
     if (key in payload) {
       const v = payload[key];
       if (!Number.isInteger(v)) {
@@ -889,21 +933,26 @@ function setSessionCleanupTriple(payload, deps) {
       return { value: v };
     }
     const fallback = Number(snapshot[key]);
-    if (!Number.isFinite(fallback)) {
-      return { error: `${key} missing from payload and not present in snapshot` };
-    }
-    return { value: fallback };
+    if (Number.isFinite(fallback)) return { value: fallback };
+    if (Number.isFinite(fallbackDefault)) return { value: fallbackDefault };
+    return { error: `${key} missing from payload and not present in snapshot` };
   }
 
   const s = pick("sessionStaleMs");
   if (s.error) return { status: "error", message: s.error };
   const w = pick("workingStaleMs");
   if (w.error) return { status: "error", message: w.error };
+  // Older controller snapshots predate the fourth value. An absent key
+  // receives the shipped default; a present malformed value still fails
+  // closed through the strict branch above.
+  const c = pick("codexWorkingStaleMs", 1_200_000);
+  if (c.error) return { status: "error", message: c.error };
   const d = pick("detachedIdleStaleMs");
   if (d.error) return { status: "error", message: d.error };
 
   const sessionStaleMs = s.value;
   const workingStaleMs = w.value;
+  const codexWorkingStaleMs = c.value;
   const detachedIdleStaleMs = d.value;
 
   if (!(sessionStaleMs === 0 || (sessionStaleMs >= 60_000 && sessionStaleMs <= 86_400_000))) {
@@ -911,6 +960,9 @@ function setSessionCleanupTriple(payload, deps) {
   }
   if (!(workingStaleMs >= 30_000 && workingStaleMs <= 86_400_000)) {
     return { status: "error", message: `workingStaleMs out of range: ${workingStaleMs}` };
+  }
+  if (!(codexWorkingStaleMs === 0 || (codexWorkingStaleMs >= 30_000 && codexWorkingStaleMs <= 86_400_000))) {
+    return { status: "error", message: `codexWorkingStaleMs out of range: ${codexWorkingStaleMs}` };
   }
   if (!(detachedIdleStaleMs >= 5_000 && detachedIdleStaleMs <= 300_000)) {
     return { status: "error", message: `detachedIdleStaleMs out of range: ${detachedIdleStaleMs}` };
@@ -925,7 +977,7 @@ function setSessionCleanupTriple(payload, deps) {
 
   return {
     status: "ok",
-    commit: { sessionStaleMs, workingStaleMs, detachedIdleStaleMs },
+    commit: { sessionStaleMs, workingStaleMs, codexWorkingStaleMs, detachedIdleStaleMs },
   };
 }
 
@@ -1050,6 +1102,7 @@ async function removeTheme(payload, deps) {
   const currentIdleVisual = snapshot.idleVisual || {};
   const currentPetTint = snapshot.petTint || {};
   const currentPetAccessory = snapshot.petAccessory || {};
+  const currentPetMouthAccessory = snapshot.petMouthAccessory || {};
   const currentHolidayAccessoryEnabled = snapshot.holidayAccessoryEnabled || {};
   const nextCommit = {};
   if (currentOverrides[themeId]) {
@@ -1076,6 +1129,11 @@ async function removeTheme(payload, deps) {
     const nextPetAccessory = { ...currentPetAccessory };
     delete nextPetAccessory[themeId];
     nextCommit.petAccessory = nextPetAccessory;
+  }
+  if (currentPetMouthAccessory[themeId] !== undefined) {
+    const nextPetMouthAccessory = { ...currentPetMouthAccessory };
+    delete nextPetMouthAccessory[themeId];
+    nextCommit.petMouthAccessory = nextPetMouthAccessory;
   }
   if (currentHolidayAccessoryEnabled[themeId] !== undefined) {
     const nextHolidayAccessoryEnabled = { ...currentHolidayAccessoryEnabled };
@@ -1139,6 +1197,7 @@ function setThemeSelection(payload, deps) {
     ? {
         petTint: activeTheme._capabilities.petTint === true,
         accessories: activeTheme._capabilities.accessories === true,
+        mouthAccessories: activeTheme._capabilities.mouthAccessories === true,
       }
     : null;
 
@@ -2200,6 +2259,44 @@ async function feishuApprovalSendTest(_payload, deps = {}) {
   return result || { status: "error", message: "Remote approval test returned no result" };
 }
 
+async function slackNotifySetSecrets(payload, deps = {}) {
+  const secrets = payload && typeof payload === "object" ? payload : {};
+  if (!deps || typeof deps.writeSlackNotifySecrets !== "function") {
+    return { status: "error", message: "slackNotify.setSecrets requires writeSlackNotifySecrets dep" };
+  }
+  // Pass the writer's result through untouched: it carries the `code` the
+  // settings page localizes and the English detail naming the real cause.
+  const result = await deps.writeSlackNotifySecrets(secrets);
+  if (!result || result.status !== "ok") {
+    return result || { status: "error", code: "write-failed", message: "Secrets write returned no result" };
+  }
+  return { status: "ok", secretsStored: true };
+}
+
+function slackNotifyStatus(_payload, deps = {}) {
+  if (!deps || typeof deps.getSlackNotifyStatus !== "function") {
+    return { status: "error", message: "slackNotify.status requires getSlackNotifyStatus dep" };
+  }
+  const status = deps.getSlackNotifyStatus();
+  return { status: "ok", state: status || { enabled: false, configured: false } };
+}
+
+function slackNotifySecretInfo(_payload, deps = {}) {
+  if (!deps || typeof deps.getSlackNotifySecretInfo !== "function") {
+    return { status: "error", message: "slackNotify.secretInfo requires getSlackNotifySecretInfo dep" };
+  }
+  const info = deps.getSlackNotifySecretInfo() || { configured: false };
+  return { status: "ok", ...info };
+}
+
+async function slackNotifySendTest(_payload, deps = {}) {
+  if (!deps || typeof deps.sendSlackNotifyTest !== "function") {
+    return { status: "error", message: "slackNotify.test requires sendSlackNotifyTest dep" };
+  }
+  const result = await deps.sendSlackNotifyTest();
+  return result || { status: "error", message: "Slack notification test returned no result" };
+}
+
 function cleanupMessage(result) {
   const summary = result && result.summary;
   if (!summary) return "Integration cleanup finished";
@@ -2327,6 +2424,8 @@ feishuApprovalSaveManualApprover.lockKey = "feishuApproval";
 feishuApprovalCommitResolvedApprover.lockKey = "feishuApproval";
 feishuApprovalUpdateConfig.lockKey = "feishuApproval";
 feishuApprovalSendTest.lockKey = "feishuApproval";
+slackNotifySetSecrets.lockKey = "slackNotify";
+slackNotifySendTest.lockKey = "slackNotify";
 cleanupIntegrationsCommand.lockKey = "agentIntegration";
 
 const repairDoctorIssue = createRepairDoctorIssue({
@@ -2428,6 +2527,10 @@ const commandRegistry = {
   "feishuApproval.status": feishuApprovalStatus,
   "feishuApproval.secretInfo": feishuApprovalSecretInfo,
   "feishuApproval.test": feishuApprovalSendTest,
+  "slackNotify.setSecrets": slackNotifySetSecrets,
+  "slackNotify.status": slackNotifyStatus,
+  "slackNotify.secretInfo": slackNotifySecretInfo,
+  "slackNotify.test": slackNotifySendTest,
   "telegramMigration.snapshot": telegramMigrationSnapshot,
   "telegramMigration.dispatch": telegramMigrationDispatch,
 };

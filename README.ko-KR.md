@@ -30,7 +30,7 @@ Clawd는 당신의 데스크톱 위에서 살며, AI 코딩 에이전트가 지�
 
 프롬프트를 입력하면 생각하고, 도구가 실행되면 타이핑하고, 서브에이전트가 생기면 헤드폰 그루브나 세 개 공 저글링으로 반응하고, 권한 요청이 오면 카드로 알려 주고, 작업이 끝나면 기뻐하고, 자리를 비우면 잠이 듭니다. 기본 테마로 **Clawd**(픽셀 크랩), **Calico**(삼색 고양이), **Cloudling**(云宝)이 포함되어 있으며, 커스텀 테마와 가져온 Codex Pet 애니메이션 팩도 지원합니다.
 
-> Windows 11, macOS, Ubuntu/Linux를 지원합니다. Windows 릴리스는 x64와 ARM64 설치 파일을 별도로 제공합니다. 소스에서 실행하려면 Node.js가 필요합니다. **Claude Code**, **Codex CLI**, **Copilot CLI**, **Gemini CLI**, **Antigravity CLI (agy)**, **Cursor Agent**, **CodeBuddy**, **WorkBuddy**, **Kiro CLI**, **Kimi Code CLI (Kimi-CLI)**, **Qwen Code**, **CodeWhale**, **opencode**, **MiMo Code**, **Pi**, **OpenClaw**, **Hermes Agent**, **Qoder**, **QoderWork**, **QwenWork (千问办公)**, **Reasonix CLI**와 함께 동작합니다.
+> Windows 11, macOS, Ubuntu/Linux를 지원합니다. Windows 릴리스는 x64와 ARM64 설치 파일을 별도로 제공합니다. 소스에서 실행하려면 Node.js가 필요합니다. **Claude Code**, **Codex CLI**, **Copilot CLI**, **Gemini CLI**, **Antigravity CLI (agy)**, **Cursor Agent**, **CodeBuddy**, **WorkBuddy**, **Kiro CLI**, **Kimi Code CLI (Kimi-CLI)**, **Qwen Code**, **ZCode**, **CodeWhale**, **opencode**, **MiMo Code**, **Pi**, **OpenClaw**, **Hermes Agent**, **Qoder**, **QoderWork**, **QwenWork (千问办公)**, **Reasonix CLI**, **DeepSeek Harness**와 함께 동작합니다.
 
 ## 기능
 
@@ -47,6 +47,7 @@ Clawd는 당신의 데스크톱 위에서 살며, AI 코딩 에이전트가 지�
 - **Kiro CLI** — `~/.kiro/agents/` 아래 커스텀 agent 설정에 command hook을 주입하고, 추가로 `clawd` agent를 자동 생성합니다. Clawd가 시작될 때마다 Kiro 기본 `kiro_default`에서 다시 동기화되므로 `kiro-cli --agent clawd` 또는 `/agent swap clawd`로 비교적 원본 동작을 유지한 채 hook을 켤 수 있습니다. 상태 hook은 macOS와 Windows에서 검증되었습니다.
 - **Kimi Code CLI (Kimi-CLI)** — `~/.kimi/config.toml`의 command hook(`[[hooks]]` 항목)을 사용합니다. Clawd 시작 시 자동 등록되며, `npm run install:kimi-hooks`로 수동 설치할 수도 있습니다.
 - **Qwen Code** — `~/.qwen/settings.json`의 command hook을 사용합니다 (Clawd 시작 시 자동 등록되며, `npm run install:qwen-hooks`로 수동 설치 가능). 상태 추적과 Qwen `PermissionRequest` 데스크톱 권한 말풍선을 지원합니다.
+- **ZCode** — `~/.zcode/cli/config.json`의 `hooks.events.*`에 선택적 상태 hook과 blocking `PermissionRequest` hook을 등록합니다 (Settings → Agents에서 설치하거나 `npm run install:zcode-hooks`). Clawd는 수동 Allow / Deny 말풍선을 표시하고 global 및 per-session permission automation은 defer 상태를 유지합니다. 명시적인 global 또는 hook별 `enabled:false`를 보존하며, 외부 `PermissionRequest` hook이 있으면 덮어쓰지 않습니다.
 - **opencode** — `~/.config/opencode/` 아래 실제로 적용되는 파일(`config.json` → `opencode.json` → `opencode.jsonc`, 뒤쪽이 우선)의 선택적 [플러그인 연동](https://opencode.ai/docs/plugins)입니다 (Settings → Agents에서 설치). 지연 없는 이벤트 스트리밍과 허용/항상 허용/거부 권한 말풍선을 지원합니다. `task` 하위 세션은 headless이므로 표시되는 다중 세션 애니메이션 집계에 참여하지 않습니다.
 - **MiMo Code** — `~/.config/mimocode/mimocode.jsonc`의 선택적 [플러그인 연동](https://opencode.ai/docs/plugins)입니다 (Settings → Agents에서 설치하거나 `node hooks/mimocode-install.js` 실행). opencode와 동일한 `@mimo-ai/plugin` SDK 및 권한 동작을 공유하며 `task` 하위 세션도 headless입니다.
 - **Pi** — `~/.pi/agent/extensions/clawd-on-desk`의 전역 extension으로 연동됩니다 (Clawd 시작 시 자동 등록되며, `npm run install:pi-extension`으로 수동 설치 가능). 인터랙티브 Pi 세션의 라이프사이클과 도구 활동 상태만 보고하며, Pi의 기본 YOLO 동작을 유지합니다.
@@ -54,6 +55,7 @@ Clawd는 당신의 데스크톱 위에서 살며, AI 코딩 에이전트가 지�
 - **Hermes Agent** — Hermes의 관리형 plugin 디렉터리를 통한 [plugin 연동](https://hermes-agent.org/) (Hermes가 설치되어 있으면 Clawd 시작 시 자동 등록되며, `npm run install:hermes-plugin`으로 수동 설치 가능). 상태, 세션, SessionEnd, 터미널 포커스를 지원합니다.
 - **Qoder** — `~/.qoder/settings.json`의 command hook으로 상태만 연동합니다 (`~/.qoder/` 디렉터리가 있으면 Clawd 시작 시 자동 등록되며, `npm run install:qoder-hooks`로 수동 설치 가능). Phase 1은 애니메이션만 구동하고 권한 요청은 알림으로만 표시하며, Clawd는 권한 말풍선을 띄우거나 대신 응답하지 않습니다. Allow / Deny 선택은 Qoder 자체 권한 흐름에서 처리합니다.
 - **QwenWork (千问办公)** — `~/.QwenWorkCN/settings.json`의 command hook으로 hook-only / state-only 연동합니다 (Settings → Agents에서 설치하거나 `npm run install:qwenwork-hooks`, 제거는 `npm run uninstall:qwenwork-hooks`). macOS / Windows 데스크톱만 지원하며, [qwenwork.cn/download](https://qwenwork.cn/download)에 Linux 클라이언트가 없으므로 WSL 페어링도 제공하지 않습니다. Phase 1은 애니메이션과 Session HUD를 구동합니다. `PermissionRequest` / `PermissionDenied`는 관찰만 하여 `working`으로 매핑되고 hook stdout은 항상 `{}`이며, Clawd는 allow/deny를 만들지 않습니다. 권한 결정은 QwenWork 자체 흐름이 전담합니다. startup recovery는 없습니다 — 데스크톱 상주 프로세스는 작업 진행 중을 의미하지 않기 때문입니다.
+- **DeepSeek Harness** — Clawd가 관리하는 DSH in-process plugin을 사용하는 실험적 web-profile-only 연동입니다. 공개 session event가 session별 순서에 따라 Clawd 상태를 구동하며, 공개 blocking `approval/request`는 Allow Once / Deny 말풍선을 표시할 수 있습니다. 결정이 없으면 항상 DSH 기본 web answerer로 돌아갑니다. `ask_user_question`은 전적으로 DSH 기본 provider에 남고 Clawd는 DSH projection storage를 읽지 않습니다. 자세한 내용은 [DeepSeek Harness 가이드](docs/guides/dsh-setup.md)를 참고하세요.
 - **멀티 에이전트 공존** — 여러 에이전트를 동시에 실행할 수 있으며, Clawd는 각 세션을 독립적으로 추적합니다.
 
 ### 애니메이션과 상호작용
@@ -73,6 +75,10 @@ Clawd는 당신의 데스크톱 위에서 살며, AI 코딩 에이전트가 지�
 - **스택 레이아웃** — 여러 권한 요청이 화면 오른쪽 아래에서 위로 차곡차곡 쌓입니다.
 - **자동 닫힘** — 터미널에서 먼저 응답하면 말풍선은 자동으로 사라집니다.
 - **에이전트별 끄기** — `Settings…` → `Agents`에서 해당 에이전트를 선택한 뒤 `Show pop-up bubbles`를 끄면, 권한 프롬프트가 그 에이전트 자체 터미널/TUI로 돌아갑니다.
+
+### 원격 알림
+- **Telegram / Feishu (Lark)** — 대화형 원격 승인: 권한 요청을 휴대폰으로 전달하고 데스크톱으로 돌아가지 않고 Allow / Deny 할 수 있습니다.
+- **Slack** — **알림 전용**: Slack Incoming Webhook(또는 선택적 `xoxb-` Bot Token + channel id)을 통해 작업 **완료**, **오류**, **권한 요청**을 Block Kit 카드로 보냅니다. 이 버전에서는 Slack에서 Allow / Deny 할 수 없습니다. 권한 메시지는 알림일 뿐이며 결정은 데스크톱 앱에서 합니다. Telegram / Feishu와 같은 원격 승인 설정에서 구성하며 secret은 prefs 밖의 로컬 env 파일에 저장됩니다(macOS / Linux는 `0600`, Windows는 AppData ACL 사용). 미설정 또는 오프라인 상태에서는 안전하게 fallback합니다. 메시지에 session title, folder, host name이 포함될 수 있으므로 private channel을 권장합니다. 자세한 내용은 [Slack 알림 가이드](docs/guides/slack-notifications.md)를 참고하세요.
 
 ### 세션 인텔리전스
 - **멀티 세션 추적** — 모든 에이전트 세션 상태를 모아 가장 우선순위가 높은 상태를 반영합니다.
@@ -346,8 +352,18 @@ Clawd를 더 좋게 만드는 데 도움을 준 모든 분들께 감사합니다
     <td align="center" valign="top" width="110"><a href="https://github.com/anthonyonazure"><img src="https://github.com/anthonyonazure.png" width="50" style="border-radius:50%" /><br /><sub>anthonyonazure</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/weed33834"><img src="https://github.com/weed33834.png" width="50" style="border-radius:50%" /><br /><sub>weed33834</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/arismarioneves"><img src="https://github.com/arismarioneves.png" width="50" style="border-radius:50%" /><br /><sub>arismarioneves</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/wang4433"><img src="https://github.com/wang4433.png" width="50" style="border-radius:50%" /><br /><sub>wang4433</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/shengmai-justin"><img src="https://github.com/shengmai-justin.png" width="50" style="border-radius:50%" /><br /><sub>shengmai-justin</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/aaronWool"><img src="https://github.com/aaronWool.png" width="50" style="border-radius:50%" /><br /><sub>aaronWool</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/Zamaniego"><img src="https://github.com/Zamaniego.png" width="50" style="border-radius:50%" /><br /><sub>Zamaniego</sub></a></td>
+  </tr>
+  <tr>
+    <td align="center" valign="top" width="110"><a href="https://github.com/CheeseAgent"><img src="https://github.com/CheeseAgent.png" width="50" style="border-radius:50%" /><br /><sub>CheeseAgent</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/RS-Nocsi"><img src="https://github.com/RS-Nocsi.png" width="50" style="border-radius:50%" /><br /><sub>RS-Nocsi</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/Cobb04"><img src="https://github.com/Cobb04.png" width="50" style="border-radius:50%" /><br /><sub>Cobb04</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/eugenewang5425"><img src="https://github.com/eugenewang5425.png" width="50" style="border-radius:50%" /><br /><sub>eugenewang5425</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/draintovmasyan783-creator"><img src="https://github.com/draintovmasyan783-creator.png" width="50" style="border-radius:50%" /><br /><sub>draintovmasyan783-creator</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/Yueh-H"><img src="https://github.com/Yueh-H.png" width="50" style="border-radius:50%" /><br /><sub>Yueh-H</sub></a></td>
   </tr>
 </table>
 

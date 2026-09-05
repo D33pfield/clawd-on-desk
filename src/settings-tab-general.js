@@ -34,14 +34,18 @@
     "freeRoam",
     "roamConstrainAxis",
     "keepSizeAcrossDisplays",
+    "fullscreenAutoHide",
     "openAtLogin",
     "hideBubbles",
     "bubbleFollowPet",
+    "bubbleFollowPreference",
+    "bubbleFixedCorner",
     "permissionBubblesEnabled",
     "notificationBubbleAutoCloseSeconds",
     "updateBubbleAutoCloseSeconds",
     "sessionStaleMs",
     "workingStaleMs",
+    "codexWorkingStaleMs",
     "detachedIdleStaleMs",
   ]);
   const BUBBLE_POLICY_KEYS = new Set([
@@ -50,9 +54,15 @@
     "notificationBubbleAutoCloseSeconds",
     "updateBubbleAutoCloseSeconds",
   ]);
+  const BUBBLE_PLACEMENT_KEYS = new Set([
+    "bubbleFollowPet",
+    "bubbleFollowPreference",
+    "bubbleFixedCorner",
+  ]);
   const SESSION_CLEANUP_NUMBER_KEYS = new Set([
     "sessionStaleMs",
     "workingStaleMs",
+    "codexWorkingStaleMs",
     "detachedIdleStaleMs",
   ]);
   const FLASH_NUMBER_KEYS = new Set([
@@ -62,6 +72,7 @@
   const SESSION_CLEANUP_DEFAULTS = {
     sessionStaleMs: 600_000,
     workingStaleMs: 300_000,
+    codexWorkingStaleMs: 1_200_000,
     detachedIdleStaleMs: 30_000,
   };
   const SESSION_HUD_CHILD_SWITCH_KEYS = [
@@ -89,7 +100,6 @@
   let helpers = null;
   let ops = null;
   let i18n = null;
-  const languagePickerApi = root.ClawdLanguagePicker || {};
 
   const LANGUAGE_OPTIONS = ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"];
   const ROAM_MOVEMENT_NATURAL = "natural";
@@ -179,6 +189,136 @@
     row.appendChild(controlHost);
     state.mountedControls.roamMovementStyle = control;
     return row;
+  }
+
+  function saveBubblePlacementValue(key, value) {
+    return window.settingsAPI.update(key, value).then((result) => {
+      if (result && result.status === "ok") return true;
+      const message = (result && result.message) || "unknown error";
+      ops.showToast(t("toastSaveFailed") + message, { error: true });
+      return false;
+    }).catch((err) => {
+      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+      return false;
+    });
+  }
+
+  function buildBubblePlacementRow({ labelKey, descKey, className, control }) {
+    const row = document.createElement("div");
+    row.className = `row ${className}`;
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t(labelKey);
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t(descKey);
+    text.appendChild(label);
+    text.appendChild(desc);
+    const host = document.createElement("div");
+    host.className = "row-control";
+    host.appendChild(control.element);
+    row.appendChild(text);
+    row.appendChild(host);
+    return row;
+  }
+
+  function buildBubblePlacementGroup() {
+    const group = document.createElement("div");
+    group.className = "bubble-placement-group";
+    let syncConditionalVisibility = () => {};
+
+    const modeControl = helpers.buildSegmentedRadio({
+      value: state.snapshot && state.snapshot.bubbleFollowPet === true ? "follow" : "fixed",
+      ariaLabel: t("rowBubblePlacement"),
+      className: "bubble-placement-mode-segmented",
+      options: [
+        { value: "follow", label: t("bubblePlacementFollow") },
+        { value: "fixed", label: t("bubblePlacementFixed") },
+      ],
+      onChange(nextMode) {
+        return saveBubblePlacementValue("bubbleFollowPet", nextMode === "follow").then((accepted) => {
+          if (accepted) syncConditionalVisibility(nextMode === "follow");
+          return accepted;
+        });
+      },
+    });
+    const followControl = helpers.buildSegmentedRadio({
+      value: state.snapshot && state.snapshot.bubbleFollowPreference || "auto",
+      ariaLabel: t("rowBubbleFollowPreference"),
+      className: "bubble-follow-preference-segmented",
+      options: [
+        { value: "auto", label: t("bubbleFollowAuto") },
+        { value: "left", label: t("bubbleFollowLeft") },
+        { value: "right", label: t("bubbleFollowRight") },
+      ],
+      onChange: (value) => saveBubblePlacementValue("bubbleFollowPreference", value),
+    });
+    const cornerControl = helpers.buildSegmentedRadio({
+      value: state.snapshot && state.snapshot.bubbleFixedCorner || "bottom-right",
+      ariaLabel: t("rowBubbleFixedCorner"),
+      className: "bubble-fixed-corner-segmented",
+      options: [
+        { value: "top-left", label: t("bubbleCornerTopLeft") },
+        { value: "top-right", label: t("bubbleCornerTopRight") },
+        { value: "bottom-left", label: t("bubbleCornerBottomLeft") },
+        { value: "bottom-right", label: t("bubbleCornerBottomRight") },
+      ],
+      onChange: (value) => saveBubblePlacementValue("bubbleFixedCorner", value),
+    });
+
+    const modeRow = buildBubblePlacementRow({
+      labelKey: "rowBubblePlacement",
+      descKey: "rowBubblePlacementDesc",
+      className: "bubble-placement-mode-row",
+      control: modeControl,
+    });
+    const followRow = buildBubblePlacementRow({
+      labelKey: "rowBubbleFollowPreference",
+      descKey: "rowBubbleFollowPreferenceDesc",
+      className: "bubble-follow-preference-row",
+      control: followControl,
+    });
+    const cornerRow = buildBubblePlacementRow({
+      labelKey: "rowBubbleFixedCorner",
+      descKey: "rowBubbleFixedCornerDesc",
+      className: "bubble-fixed-corner-row",
+      control: cornerControl,
+    });
+    group.appendChild(modeRow);
+    group.appendChild(followRow);
+    group.appendChild(cornerRow);
+
+    syncConditionalVisibility = (followPet) => {
+      const globallyDisabled = !!(state.snapshot && state.snapshot.hideBubbles === true);
+      followRow.hidden = !followPet;
+      cornerRow.hidden = followPet;
+      followRow.setAttribute("aria-hidden", followPet ? "false" : "true");
+      cornerRow.setAttribute("aria-hidden", followPet ? "true" : "false");
+      modeControl.setDisabled(globallyDisabled);
+      followControl.setDisabled(globallyDisabled || !followPet);
+      cornerControl.setDisabled(globallyDisabled || followPet);
+    };
+
+    state.mountedControls.bubblePlacement = {
+      element: group,
+      modeRow,
+      followRow,
+      cornerRow,
+      modeControl,
+      followControl,
+      cornerControl,
+      syncFromSnapshot() {
+        const followPet = !!(state.snapshot && state.snapshot.bubbleFollowPet === true);
+        modeControl.setValue(followPet ? "follow" : "fixed");
+        followControl.setValue(state.snapshot && state.snapshot.bubbleFollowPreference || "auto");
+        cornerControl.setValue(state.snapshot && state.snapshot.bubbleFixedCorner || "bottom-right");
+        syncConditionalVisibility(followPet);
+      },
+    };
+    state.mountedControls.bubblePlacement.syncFromSnapshot();
+    return group;
   }
 
   function buildRoamAreaRow() {
@@ -369,11 +509,7 @@
         onToggle: ({ nextRaw }) => window.settingsAPI.command("setAllBubblesHidden", { hidden: nextRaw }),
       }),
       buildBubblePolicyRow(),
-      helpers.buildSwitchRow({
-        key: "bubbleFollowPet",
-        labelKey: "rowBubbleFollow",
-        descKey: "rowBubbleFollowDesc",
-      }),
+      buildBubblePlacementGroup(),
     ]));
 
     // Behavior & position: how the pet moves and sits on screen. Rarely changed
@@ -404,6 +540,15 @@
       // "fullscreenOverlay" here AND add its key back into GENERAL_IN_PLACE_KEYS
       // (dropped so patchInPlace doesn't force a full re-render for a pref that
       // has no mounted control). The rowFullscreenOverlay[Desc] i18n keys remain.
+      // #935: unlike that overlay toggle, auto-hide CAN always deliver what it
+      // promises (hiding our own windows needs no z-order fight), so it gets a
+      // real switch. Windows-only: the fullscreen probe is constant false
+      // elsewhere, so rendering it off-Windows would be a dead toggle.
+      ...(i18n && i18n.IS_WIN ? [helpers.buildSwitchRow({
+        key: "fullscreenAutoHide",
+        labelKey: "rowFullscreenAutoHide",
+        descKey: "rowFullscreenAutoHideDesc",
+      })] : []),
     ]));
 
     // System & startup: machine-level toggles (low-power idle throttling and
@@ -643,13 +788,11 @@
     row.querySelector(".row-desc").textContent = t("rowLanguageDesc");
     const currentLang = readers.getLang();
     const getLabel = (lang) => t(LANGUAGE_LABEL_KEYS[lang] || "langEnglish");
-    if (typeof languagePickerApi.createLanguagePicker !== "function") {
-      throw new Error("language-picker.js failed to load before settings-tab-general.js");
-    }
-    const pickerControl = languagePickerApi.createLanguagePicker({
+    const pickerControl = helpers.buildSettingsSelect({
       value: currentLang,
       options: LANGUAGE_OPTIONS.map((lang) => ({ value: lang, label: getLabel(lang) })),
       ariaLabel: t("rowLanguage"),
+      className: "settings-language-select",
       onChange: (next) => {
         // Selecting the already committed language only closes the menu. This
         // also avoids sending a duplicate update while an earlier save settles.
@@ -675,7 +818,6 @@
       },
     });
     row.querySelector(".row-control").appendChild(pickerControl.element);
-    state.mountedControls.languagePicker = pickerControl;
     return row;
   }
 
@@ -736,7 +878,6 @@
       desc: t("rowQuotaRingGroupDesc"),
       defaultCollapsed: true,
       className: "quota-ring-collapsible",
-      animateExpansion: false,
       children: [optionList],
     });
     if (window.settingsAPI && typeof window.settingsAPI.getQuotaSourceCount === "function") {
@@ -745,6 +886,7 @@
           if (Number(count) <= 1) return;
           const revealMergeRow = () => {
             mergeRow.style.display = "";
+            return mergeRow;
           };
           if (typeof group.mutateCollapsibleBody === "function") {
             group.mutateCollapsibleBody(revealMergeRow);
@@ -850,6 +992,7 @@
               element.appendChild(buildProviderRow(provider));
             }
             element.style.display = "";
+            return element;
           };
           if (group && typeof group.mutateCollapsibleBody === "function") {
             group.mutateCollapsibleBody(reveal);
@@ -1041,6 +1184,19 @@
         max: 86_400,
       }).row,
       helpers.buildNumberInputRow({
+        key: "codexWorkingStaleMs",
+        labelKey: "rowCodexStaleWorking",
+        descKey: "rowCodexStaleWorkingDesc",
+        unitKey: "unitMinutes",
+        toDisplay: (ms) => Math.round(ms / 60_000),
+        fromDisplay: (min) => min === 0
+          ? 0
+          : Math.max(30_000, Math.min(86_400_000, Math.round(min * 60_000))),
+        min: 0,
+        max: 1440,
+        zeroLabelKey: "valueDisabled",
+      }).row,
+      helpers.buildNumberInputRow({
         key: "detachedIdleStaleMs",
         labelKey: "rowStaleDetached",
         descKey: "rowStaleDetachedDesc",
@@ -1099,7 +1255,6 @@
       summary: summaryControl.element,
       defaultCollapsed: true,
       className: "sound-collapsible",
-      animateExpansion: false,
       children: [buildOptionList("sound-option-list", [
         buildSoundEnabledRow(summaryControl),
         buildVolumeSliderRow(),
@@ -1114,7 +1269,6 @@
       desc: t("rowFlashDesc"),
       defaultCollapsed: true,
       className: "flash-collapsible",
-      animateExpansion: false,
       children: [buildOptionList("flash-option-list", [
         helpers.buildSwitchRow({
           key: "flashTaskbarOnComplete",
@@ -2177,6 +2331,19 @@
     return true;
   }
 
+  function getMountedBubblePlacement() {
+    const meta = state.mountedControls.bubblePlacement;
+    if (!meta || !document.body.contains(meta.element)) return null;
+    return meta;
+  }
+
+  function syncBubblePlacementFromSnapshot() {
+    const meta = getMountedBubblePlacement();
+    if (!meta) return false;
+    meta.syncFromSnapshot();
+    return true;
+  }
+
   function patchInPlace(changes) {
     const keys = changes ? Object.keys(changes) : [];
     if (keys.length === 0) return false;
@@ -2218,6 +2385,10 @@
       && !hasMountedBubblePolicyControls()) {
       return false;
     }
+    if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_PLACEMENT_KEYS.has(key)))
+      && !getMountedBubblePlacement()) {
+      return false;
+    }
     if (keys.some((key) => SESSION_CLEANUP_NUMBER_KEYS.has(key))) {
       for (const key of keys) {
         if (!SESSION_CLEANUP_NUMBER_KEYS.has(key)) continue;
@@ -2243,6 +2414,7 @@
         if (!meta || !document.body.contains(meta.row)) return false;
         continue;
       }
+      if (BUBBLE_PLACEMENT_KEYS.has(key)) continue;
       if (SESSION_CLEANUP_NUMBER_KEYS.has(key)) continue;
       if (FLASH_NUMBER_KEYS.has(key)) continue;
       if (key === "roamConstrainAxis") continue;
@@ -2275,6 +2447,7 @@
         state.mountedControls.bubblePolicyControls.get(key).syncFromSnapshot();
         continue;
       }
+      if (BUBBLE_PLACEMENT_KEYS.has(key)) continue;
       if (SESSION_CLEANUP_NUMBER_KEYS.has(key)) {
         state.mountedControls.sessionCleanupControls.get(key).syncFromSnapshot();
         continue;
@@ -2302,6 +2475,8 @@
     }
     if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_POLICY_KEYS.has(key)))
       && !syncBubblePolicyControlsFromSnapshot()) return false;
+    if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_PLACEMENT_KEYS.has(key)))
+      && !syncBubblePlacementFromSnapshot()) return false;
     if ((keys.includes("soundVolume") || keys.includes("soundMuted"))
       && state.mountedControls.soundSummary
       && document.body.contains(state.mountedControls.soundSummary.element)) {

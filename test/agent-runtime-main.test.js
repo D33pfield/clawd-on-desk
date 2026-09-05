@@ -236,6 +236,12 @@ describe("agent-runtime-main", () => {
       loadCodexAgent: () => ({ id: "codex" }),
       isAgentEnabled: () => true,
       codexSubagentClassifier: {},
+      getStateRuntime: () => ({
+        touchSessionActivity: (...args) => {
+          calls.push(["touch", ...args]);
+          return true;
+        },
+      }),
       updateSession: (...args) => calls.push(["update", ...args]),
       showCodexUserInputBubble: (input) => { calls.push(["show", input]); return true; },
       clearCodexUserInputBubbles: (...args) => calls.push(["clear", ...args]),
@@ -250,30 +256,60 @@ describe("agent-runtime-main", () => {
       cwd: "/repo",
       sourcePid: 42,
       agentPid: 42,
+      turnId: "live-question-turn",
+      recapOccurredAt: Date.now(),
       headless: false,
       contextUsage: { used: 10, limit: 100, percent: 10, source: "codex" },
     };
 
     monitor.options.onUserInputRequest("codex:s1", request, extra);
-    monitor.options.onUserInputResolved("codex:s1", "call_1");
+    monitor.options.onUserInputResolved("codex:s1", "call_1", {
+      source: "function-call-output", turnId: extra.turnId, recapOccurredAt: extra.recapOccurredAt,
+    });
 
-    assert.deepStrictEqual(calls[0], ["show", {
+    const expectedTouch = [
+      "touch",
+      localSessionKey("codex:s1"),
+      {
+        agentId: "codex",
+        profileId: "local",
+        localOnly: true,
+        reviveIdle: true,
+      },
+    ];
+    assert.deepStrictEqual(calls[0], expectedTouch);
+    assert.deepStrictEqual(calls[1], ["show", {
       sessionId: localSessionKey("codex:s1"),
       callId: "call_1",
       questions: request.questions,
       autoResolutionMs: null,
       ...extra,
     }]);
-    assert.strictEqual(calls[1][0], "update");
-    assert.strictEqual(calls[1][2], "notification");
-    assert.strictEqual(calls[1][3], "CodexUserInputRequest");
-    assert.strictEqual(calls[1][4].profileId, "local");
-    assert.strictEqual(calls[1][4].rawSessionId, "codex:s1");
-    assert.strictEqual(calls[1][4].transientPermissionEvent, true);
-    assert.deepStrictEqual(calls[2], [
+    assert.strictEqual(calls[2][0], "update");
+    assert.strictEqual(calls[2][2], "notification");
+    assert.strictEqual(calls[2][3], "CodexUserInputRequest");
+    assert.strictEqual(calls[2][4].profileId, "local");
+    assert.strictEqual(calls[2][4].rawSessionId, "codex:s1");
+    assert.strictEqual(calls[2][4].transientPermissionEvent, true);
+    assert.strictEqual(calls[2][4].recapSuppressed, true);
+    assert.deepStrictEqual(calls[3], expectedTouch);
+    assert.deepStrictEqual(calls[4], [
       "clear",
       localSessionKey("codex:s1"),
       "call_1",
+      "codex-user-input-resolved",
+    ]);
+
+    // turn_aborted/task_complete use the same card callback for passive
+    // cleanup, but must not refresh or revive lifecycle activity.
+    monitor.options.onUserInputResolved("codex:s1", "call_2", {
+      source: "turn-terminal",
+      reason: "turn-aborted",
+    });
+    assert.deepStrictEqual(calls[5], [
+      "clear",
+      localSessionKey("codex:s1"),
+      "call_2",
       "codex-user-input-resolved",
     ]);
   });
@@ -448,11 +484,102 @@ describe("agent-runtime-main", () => {
         cwd: "D:\\repo",
         agentId: "codex",
         sessionTitle: "Run tests",
+        recapIsSubagent: true,
+        recapSuppressed: true,
         headless: true,
         profileId: "local",
         rawSessionId: "sid",
       }],
     ]);
+  });
+
+  it("records late WebSearch boundaries without reviving an officially completed turn", () => {
+    const instances = [];
+    const updates = [];
+    const recapOnly = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: (agentId) => agentId === "codex",
+      getStateRuntime: () => ({
+        recordRecapEventOnly: (input) => { recapOnly.push(input); return true; },
+      }),
+      updateSession: (...args) => updates.push(args),
+    });
+    const monitor = runtime.startCodexLogMonitor();
+    const sessionId = localSessionKey("sid");
+    const officialOptions = {
+      agentId: "codex",
+      hookSource: "codex-official",
+      profileId: "local",
+      rawSessionId: "sid",
+      turnId: "turn-web",
+    };
+    runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", officialOptions);
+    runtime.updateSessionFromServer(sessionId, "attention", "Stop", officialOptions);
+
+    monitor.emit("sid", "working", "response_item:function_call", {
+      turnId: "turn-web",
+      recapOccurredAt: 1234,
+      recapIsWebSearch: true,
+      toolUseId: "search-1",
+    });
+    monitor.emit("sid", "working", "response_item:web_search_call", {
+      turnId: "turn-web",
+      recapOccurredAt: 1235,
+      toolUseId: "search-1",
+    });
+    monitor.emit("sid", "working", "response_item:function_call", {
+      turnId: "turn-web",
+      recapOccurredAt: 1236,
+      toolUseId: "shell-1",
+    });
+
+    const idlessSessionId = localSessionKey("sid-idless");
+    const idlessOfficialOptions = {
+      agentId: "codex",
+      hookSource: "codex-official",
+      profileId: "local",
+      rawSessionId: "sid-idless",
+      turnId: null,
+    };
+    runtime.updateSessionFromServer(
+      idlessSessionId,
+      "thinking",
+      "UserPromptSubmit",
+      idlessOfficialOptions
+    );
+    runtime.updateSessionFromServer(
+      idlessSessionId,
+      "attention",
+      "Stop",
+      idlessOfficialOptions
+    );
+    monitor.emit("sid-idless", "working", "response_item:function_call", {
+      recapOccurredAt: 2234,
+      recapIsWebSearch: true,
+      toolUseId: "search-idless",
+    });
+    monitor.emit("sid-idless", "working", "response_item:web_search_call", {
+      recapOccurredAt: 2235,
+      toolUseId: "search-idless",
+    });
+
+    assert.deepStrictEqual(updates.map((call) => call[2]), [
+      "UserPromptSubmit",
+      "Stop",
+      "UserPromptSubmit",
+      "Stop",
+    ]);
+    assert.deepStrictEqual(recapOnly.map((input) => [input.event, input.toolUseId]), [
+      ["response_item:function_call", "search-1"],
+      ["response_item:web_search_call", "search-1"],
+      ["response_item:function_call", "search-idless"],
+      ["response_item:web_search_call", "search-idless"],
+    ]);
+    assert.ok(recapOnly.every((input) => !Object.hasOwn(input, "recapIsWebSearch")));
   });
 
   it("shares canonical classifier identity from local JSONL to official hooks without leaking to remote profiles", () => {
@@ -753,6 +880,7 @@ describe("agent-runtime-main", () => {
         cwd: "D:\\repo",
         agentId: "codex",
         sessionTitle: "Codex turn",
+        recapSuppressed: true,
         headless: false,
         profileId: "local",
         rawSessionId: "codex:s1",
@@ -998,7 +1126,7 @@ describe("agent-runtime-main", () => {
       harness.state.cleanStaleSessions();
       const afterStaleSweep = harness.state.sessions.get(sessionId);
       assert.strictEqual(afterStaleSweep.state, "idle");
-      assert.strictEqual(afterStaleSweep.updatedAt, staleUpdatedAt);
+      assert.ok(afterStaleSweep.updatedAt > staleUpdatedAt);
 
       runtime.updateSessionFromServer(sessionId, "working", "UserPromptSubmit", {
         ...lifecycleOpts,

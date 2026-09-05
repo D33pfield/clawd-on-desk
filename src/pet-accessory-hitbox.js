@@ -1,6 +1,9 @@
 "use strict";
 
 const { resolveViewBox } = require("./hit-geometry");
+const {
+  resolveAccessoryDescriptor: resolveSharedAccessoryDescriptor,
+} = require("./pet-accessory-descriptor");
 
 function basenameOnly(value) {
   return typeof value === "string" ? value.replace(/^.*[\/\\]/, "") : value;
@@ -12,9 +15,14 @@ function basenameOnly(value) {
 // Unknown/external themes never inherit these built-in measurements.
 const BUILTIN_ACCESSORY_MOTION_PADDING = Object.freeze({
   clawd: Object.freeze({
+    "clawd-about-hero.svg": Object.freeze({ left: 0.4, right: 0.4 }),
+    "clawd-aegyo-shy.svg": Object.freeze({ left: 1.2, right: 0.5, bottom: 1.4 }),
+    "clawd-coffee-hand.svg": Object.freeze({ left: 0.5, top: 0.4, right: 0.5, bottom: 0.4 }),
     "clawd-idle-follow.svg": Object.freeze({ left: 0.2, right: 0.2, bottom: 0.7 }),
     "clawd-dizzy.svg": Object.freeze({ left: 2, top: 0.5, right: 2, bottom: 0.6 }),
     "clawd-happy.svg": Object.freeze({ top: 12, bottom: 1.5 }),
+    "clawd-idle-living.svg": Object.freeze({ left: 1.2, top: 4, right: 1.2, bottom: 2 }),
+    "clawd-idle-low-battery.svg": Object.freeze({ left: 0.7, right: 0.7, bottom: 2.3 }),
     "clawd-idle-look.svg": Object.freeze({ left: 1.2, right: 1.2, bottom: 0.7 }),
     "clawd-idle-yawn.svg": Object.freeze({ left: 0.8, top: 4.5, right: 0.8, bottom: 2 }),
     "clawd-mini-idle.svg": Object.freeze({ left: 3.2, top: 1.6, right: 0.2, bottom: 2.4 }),
@@ -26,10 +34,11 @@ const BUILTIN_ACCESSORY_MOTION_PADDING = Object.freeze({
     "clawd-mini-enter.svg": Object.freeze({ left: 6.2, top: 2.4, right: 25, bottom: 2.1 }),
     "clawd-working-thinking.svg": Object.freeze({ left: 1.6, top: 0.2, right: 1.6, bottom: 0.8 }),
     "clawd-working-typing.svg": Object.freeze({ bottom: 1.5 }),
-    "clawd-notification.svg": Object.freeze({ left: 1.7, top: 0.5, bottom: 0.6 }),
+    "clawd-working-typing-boss.svg": Object.freeze({ left: 0.5, top: 0.3, right: 0.5, bottom: 0.8 }),
+    "clawd-working-ultrathink.svg": Object.freeze({ left: 0.5, top: 0.1, right: 0.6, bottom: 0.1 }),
+    "clawd-notification.svg": Object.freeze({ left: 1.7, top: 0.6, bottom: 0.6 }),
     "clawd-working-building.svg": Object.freeze({ bottom: 5 }),
-    "clawd-headphones-groove.svg": Object.freeze({ left: 2.3, top: 1.5, right: 2.3, bottom: 1.5 }),
-    "clawd-working-juggling.svg": Object.freeze({ left: 1.4, top: 0.1, right: 1.4, bottom: 1.4 }),
+    "clawd-working-juggling.svg": Object.freeze({ left: 1.4, top: 0.2, right: 1.4, bottom: 1.4 }),
     "clawd-idle-bubble.svg": Object.freeze({ top: 1.2, bottom: 0.7 }),
     "clawd-idle-reading.svg": Object.freeze({ left: 0.2, right: 0.2, bottom: 1.1 }),
     "clawd-idle-doze.svg": Object.freeze({ left: 0.7, right: 0.7, bottom: 2.3 }),
@@ -38,8 +47,8 @@ const BUILTIN_ACCESSORY_MOTION_PADDING = Object.freeze({
     "clawd-react-right.svg": Object.freeze({ top: 0.3, right: 2.9, bottom: 0.3 }),
     "clawd-react-annoyed.svg": Object.freeze({ top: 0.8, right: 2, bottom: 1.5 }),
     "clawd-react-double.svg": Object.freeze({ left: 1, top: 1, right: 1 }),
-    "clawd-react-double-jump.svg": Object.freeze({ left: 0.8, top: 3.5, right: 0.8, bottom: 1.8 }),
-    "clawd-working-sweeping.svg": Object.freeze({ left: 3.6, top: 0.8, right: 0.1, bottom: 1.6 }),
+    "clawd-react-double-jump.svg": Object.freeze({ left: 0.9, top: 3.6, right: 0.9, bottom: 1.8 }),
+    "clawd-working-sweeping.svg": Object.freeze({ left: 3.6, top: 0.9, right: 0.1, bottom: 1.6 }),
     "clawd-working-carrying.svg": Object.freeze({ left: 0.9, top: 0.3, bottom: 1.3 }),
     "clawd-working-debugger.svg": Object.freeze({ left: 1.8, right: 4, bottom: 2 }),
     "clawd-sleeping.svg": Object.freeze({ left: 0.2, top: 5.3, right: 0.2 }),
@@ -74,16 +83,51 @@ const BUILTIN_ACCESSORY_MOTION_PADDING = Object.freeze({
   }),
 });
 
-function resolveAccessoryDescriptor(theme, state, file) {
-  const attachments = theme && theme.customization && theme.customization.accessories;
-  if (!attachments || !file) return null;
+// The mouth slot has a much taller, narrower aspect than headwear, so the same
+// anchor transform produces a different swept envelope. Keep its measured
+// values separate: wearing only a hat should not create cigarette-shaped input
+// space, while wearing both slots still unions both contributions below.
+const BUILTIN_MOUTH_ACCESSORY_MOTION_PADDING = Object.freeze({
+  clawd: Object.freeze({
+    "clawd-about-hero.svg": Object.freeze({ left: 0.2, top: 0.2, right: 0.2, bottom: 0.2 }),
+    "clawd-coffee-hand.svg": Object.freeze({ left: 0.5, top: 0.4, right: 0.5, bottom: 0.4 }),
+    "clawd-coffee-head-flip.svg": Object.freeze({ top: 1.6, right: 0.4, bottom: 0.4 }),
+    "clawd-idle-follow.svg": Object.freeze({ right: 0.2, bottom: 0.5 }),
+    "clawd-idle-yawn.svg": Object.freeze({ left: 0.4, top: 3.1, right: 0.7, bottom: 1.5 }),
+    "clawd-idle-doze.svg": Object.freeze({ right: 0.8, bottom: 1.7 }),
+    "clawd-idle-living.svg": Object.freeze({ left: 1, top: 2.8, right: 1.2, bottom: 1.4 }),
+    "clawd-idle-low-battery.svg": Object.freeze({ right: 0.8, bottom: 1.7 }),
+    "clawd-working-thinking.svg": Object.freeze({ left: 0.9, top: 0.2, right: 1, bottom: 0.7 }),
+    "clawd-working-typing.svg": Object.freeze({ right: 0.2, bottom: 1.3 }),
+    "clawd-working-ultrathink.svg": Object.freeze({ left: 0.5, top: 0.1, right: 0.6, bottom: 0.1 }),
+    "clawd-working-wizard.svg": Object.freeze({ left: 3, right: 3.4, bottom: 1.4 }),
+    "clawd-headphones-groove.svg": Object.freeze({ left: 1, top: 0.6, right: 0.9, bottom: 1.3 }),
+    "clawd-notification.svg": Object.freeze({ left: 0.5, top: 0.2, right: 0.5, bottom: 0.3 }),
+    "clawd-working-carrying.svg": Object.freeze({ left: 0.4, top: 0.4, bottom: 0.9 }),
+    "clawd-wake.svg": Object.freeze({ left: 1.5, top: 6.4, right: 0.4, bottom: 4.1 }),
+    "clawd-dizzy.svg": Object.freeze({ left: 1.2, top: 0.6, right: 1.2, bottom: 0.6 }),
+    "clawd-working-juggling.svg": Object.freeze({ left: 0.6, top: 0.2, right: 0.7, bottom: 1.3 }),
+    "clawd-idle-look.svg": Object.freeze({ left: 1, right: 1.2, bottom: 0.5 }),
+    "clawd-idle-reading.svg": Object.freeze({ right: 0.2, bottom: 0.9 }),
+    "clawd-react-left.svg": Object.freeze({ left: 2.4, top: 0.4 }),
+    "clawd-react-right.svg": Object.freeze({ right: 2.4, bottom: 0.4 }),
+    "clawd-react-annoyed.svg": Object.freeze({ top: 0.6, right: 2, bottom: 1.5 }),
+    "clawd-react-double.svg": Object.freeze({ left: 1, top: 1, right: 1 }),
+    "clawd-react-double-jump.svg": Object.freeze({ left: 0.5, top: 4, right: 0.9, bottom: 1 }),
+  }),
+});
 
-  const safeFile = basenameOnly(file);
-  if (attachments.files && Object.prototype.hasOwnProperty.call(attachments.files, safeFile)) {
-    return attachments.files[safeFile];
-  }
-  if (state && state.startsWith("mini-") && attachments.mini) return attachments.mini;
-  return attachments.default || null;
+function resolveAccessoryDescriptor(theme, state, file, slot = "head", itemId = "none") {
+  const field = slot === "mouth" ? "mouthAccessories" : "accessories";
+  const attachments = theme && theme.customization && theme.customization[field];
+  if (!attachments || !file) return null;
+  return resolveSharedAccessoryDescriptor({
+    attachments,
+    slot,
+    itemId,
+    file: basenameOnly(file),
+    state,
+  });
 }
 
 function isFiniteHitBox(value) {
@@ -105,13 +149,16 @@ function normalizedPadding(value) {
   };
 }
 
-function getPadding(theme, file, descriptor) {
+function getPadding(theme, file, descriptor, slot) {
   const authored = normalizedPadding(descriptor && descriptor.hitBoxPadding);
   const themeId = theme && theme._builtin === true && typeof theme._id === "string" ? theme._id : null;
+  const measuredByTheme = slot === "mouth"
+    ? BUILTIN_MOUTH_ACCESSORY_MOTION_PADDING
+    : BUILTIN_ACCESSORY_MOTION_PADDING;
   const measured = normalizedPadding(
     themeId
-    && BUILTIN_ACCESSORY_MOTION_PADDING[themeId]
-    && BUILTIN_ACCESSORY_MOTION_PADDING[themeId][basenameOnly(file)]
+    && measuredByTheme[themeId]
+    && measuredByTheme[themeId][basenameOnly(file)]
   );
   return {
     left: Math.max(authored.left, measured.left),
@@ -137,7 +184,7 @@ function mirrorHorizontal(left, right, viewBox) {
  * staticFrame/padding declaration into a giant transparent native input window.
  * The base hitbox is deliberately never clamped or rewritten.
  */
-function resolveAccessoryAwareHitBox(theme, state, file, baseHitBox, accessory, options = {}) {
+function resolveSlotAccessoryHitBox(theme, state, file, baseHitBox, accessory, slot, options = {}) {
   if (!isFiniteHitBox(baseHitBox)) return baseHitBox;
   if (
     !accessory
@@ -150,7 +197,7 @@ function resolveAccessoryAwareHitBox(theme, state, file, baseHitBox, accessory, 
     || !Number.isFinite(accessory.offsetY)
   ) return baseHitBox;
 
-  const descriptor = resolveAccessoryDescriptor(theme, state, file);
+  const descriptor = resolveAccessoryDescriptor(theme, state, file, slot, accessory.id);
   const frame = descriptor && descriptor.staticFrame;
   if (
     !descriptor
@@ -164,7 +211,7 @@ function resolveAccessoryAwareHitBox(theme, state, file, baseHitBox, accessory, 
   const height = width / accessory.aspect;
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return baseHitBox;
 
-  const padding = getPadding(theme, file, descriptor);
+  const padding = getPadding(theme, file, descriptor, slot);
   let accessoryLeft = frame.cx - width / 2 - padding.left;
   let accessoryTop = frame.baseY + accessory.offsetY - height - padding.top;
   let accessoryRight = frame.cx + width / 2 + padding.right;
@@ -197,8 +244,29 @@ function resolveAccessoryAwareHitBox(theme, state, file, baseHitBox, accessory, 
   return { x: left, y: top, w: right - left, h: bottom - top };
 }
 
+function resolveAccessoryAwareHitBox(theme, state, file, baseHitBox, payloads, options = {}) {
+  if (!isFiniteHitBox(baseHitBox)) return baseHitBox;
+  const slots = payloads && payloads.id
+    ? { head: payloads, mouth: null }
+    : (payloads || {});
+  let hitBox = baseHitBox;
+  for (const slot of ["head", "mouth"]) {
+    hitBox = resolveSlotAccessoryHitBox(
+      theme,
+      state,
+      file,
+      hitBox,
+      slots[slot],
+      slot,
+      options
+    );
+  }
+  return hitBox;
+}
+
 module.exports = {
   BUILTIN_ACCESSORY_MOTION_PADDING,
+  BUILTIN_MOUTH_ACCESSORY_MOTION_PADDING,
   resolveAccessoryDescriptor,
   resolveAccessoryAwareHitBox,
 };

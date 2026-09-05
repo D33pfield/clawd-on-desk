@@ -12,17 +12,20 @@ name: Prepare WinGet manifest
 # install reported success and the app then failed to launch.
 #
 # Current upstream state: microsoft/winget-pkgs#416019 repaired v0.14.0 to the
-# four x64/arm64 x user/machine entries and `License: AGPL-3.0-only`, and its
-# publish pipeline succeeded on 2026-08-17. SpecterShell/Dumplings#130 removed
-# the competing tracker.
+# four x64/arm64 x user/machine entries and `License: AGPL-3.0-only`. PR #419082
+# published v0.15.0 with the same installer matrix and license on 2026-08-18,
+# but its locale still points LicenseUrl and ReleaseNotesUrl at v0.14.0.
+# SpecterShell/Dumplings#130 removed the competing tracker.
 #
 # Why this still cannot submit automatically: `komac update` inherits one output
 # entry per PREVIOUS installer (Komac src/commands/update_version.rs ->
 # src/match_installers.rs). The corrected upstream shape should now preserve both
-# architectures, but the v0.15.0 prepare run happened before that repair and
-# reproduced the old two-x64 output. More importantly, this workflow does not yet
-# parse, normalize and reject an unsafe GENERATED manifest. Until that output gate
-# lands and passes, it only uploads the manifest komac WOULD submit for inspection.
+# architectures, but the first v0.15.0 prepare run happened before that repair and
+# reproduced the old two-x64 output. The later published v0.15.0 files were
+# generated with winmatsch, so they do not validate this workflow's komac output.
+# More importantly, this workflow does not yet parse, normalize and reject an
+# unsafe GENERATED manifest. Until that output gate lands and passes, it only
+# uploads the manifest komac WOULD submit for inspection.
 #
 # See docs/project/release-process.md for the staged plan.
 

@@ -8,6 +8,8 @@ Subagent events still map to the logical `juggling` state, but Clawd now chooses
 
 The idle rows below describe the theme's stock behavior. Settings → Animation & Sound → Animations can instead choose any idle visual declared by the active theme as its persistent resting look. This changes only the visual shown while the logical state is `idle`: task, permission, completion, sleep, reaction, and roam states still take precedence and return to the selected look afterward. The choice is stored per theme and falls back to the theme default if the file disappears. Non-default idle visuals intentionally do not use cursor eye tracking or spin-to-dizzy.
 
+Clawd also has a conditional Outlaw idle easter egg: while both the Western cowboy hat and cigarette are selected, an eligible ordinary idle roll has a 50% chance to play `clawd-outlaw-bender.svg`, with a 30-minute cooldown. Hidden, low-power, mini, roaming, dragging, menu-open, and non-idle periods do not consume the roll or cooldown. The animation embeds its own hat and cigarette, so the two external accessory layers are hidden only for that file.
+
 | Agent Event | State | Animation | Clawd | Calico | Cloudling |
 |---|---|---|---|---|---|
 | Idle (no activity) | idle | Eye-tracking follow | <img src="../../assets/gif/clawd-idle.gif" width="160"> | <img src="../../assets/gif/calico-idle.gif" width="130"> | <img src="../../assets/gif/cloudling-idle.gif" width="140"> |
@@ -58,7 +60,7 @@ Gemini CLI stays on hook-only integration, but two Gemini-native events are inte
 
 ## ZCode Hook Events
 
-ZCode uses state-only config-file hooks under `~/.zcode/cli/config.json`:
+ZCode uses config-file hooks under `~/.zcode/cli/config.json`:
 
 | ZCode Hook Event | State |
 |---|---|
@@ -68,8 +70,9 @@ ZCode uses state-only config-file hooks under `~/.zcode/cli/config.json`:
 | PostToolUse | working |
 | PostToolUseFailure | error |
 | Stop | attention |
+| PermissionRequest | notification (fail-closed path only) |
 
-ZCode does not provide a `SessionEnd` hook in this integration, so completion relies on `Stop` plus Clawd's normal process-liveness and stale-session cleanup. `PermissionRequest` is intentionally not registered; ZCode remains the only permission decision surface.
+`PermissionRequest` is a blocking permission approval since Phase 2: the hook waits on Clawd's local bubble or remote approval and answers a manual allow/deny via `hookSpecificOutput` on stdout. Permission automation deliberately defers for ZCode until its tool surface and session identity are audited. The `notification` mapping above only fires on the fail-closed path (missing/unknown tool name) or when Clawd is not running; a real decision never posts `/state`. ZCode does not provide a `SessionEnd` hook in this integration, so completion relies on `Stop` plus Clawd's normal process-liveness and stale-session cleanup. When Clawd yields no decision (timeout, disconnect, DND, bubbles off), the hook prints `{}` and ZCode's own permission flow takes over.
 
 ## Pi Extension Events
 

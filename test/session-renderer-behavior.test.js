@@ -312,6 +312,37 @@ test("Dashboard renders no Kimi quota section or refresh for a disconnected key"
   assert.strictEqual(byClass(dashboard.quotaSummary, "quota-section").length, 0);
 });
 
+test("Dashboard quota bars apply the same warn and hot boundaries as Orbit", async () => {
+  const dashboard = await loadDashboard([], { status: "ok" }, {
+    accountQuota: [{
+      host: null,
+      claudeQuota: {
+        lastSeenAt: Date.now(),
+        group: {
+          claudeFiveHour: { usedPercent: 59 },
+          claudeWeekly: { usedPercent: 60 },
+        },
+      },
+      codexQuota: {
+        lastSeenAt: Date.now(),
+        group: {
+          codexFiveHour: { usedPercent: 85 },
+          codexWeekly: { usedPercent: 86 },
+        },
+      },
+    }],
+  });
+
+  const classesByWidth = new Map(
+    byClass(dashboard.quotaSummary, "quota-bar-fill")
+      .map((fill) => [fill.style.width, fill.className])
+  );
+  assert.match(classesByWidth.get("59%"), /\bsev-ok\b/);
+  assert.match(classesByWidth.get("60%"), /\bsev-warn\b/);
+  assert.match(classesByWidth.get("85%"), /\bsev-warn\b/);
+  assert.match(classesByWidth.get("86%"), /\bsev-hot\b/);
+});
+
 test("Dashboard renders the resolved custom agent name instead of its raw id", async () => {
   const { root } = await loadDashboard([
     session("custom", {

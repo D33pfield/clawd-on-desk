@@ -15,9 +15,19 @@ const { pathToFileURL } = require("node:url");
 const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-family-node-bridge-"));
 process.env.HOME = TMP_HOME;
 process.env.USERPROFILE = TMP_HOME;
+const runtimeDir = path.join(TMP_HOME, ".clawd");
+fs.mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+const runtimePath = path.join(runtimeDir, "runtime.json");
+fs.writeFileSync(runtimePath, JSON.stringify({
+  app: "clawd-on-desk",
+  port: 23333,
+  ownerPid: process.pid,
+}), { mode: 0o600 });
+if (process.platform !== "win32") fs.chmodSync(runtimePath, 0o600);
 
 let createOpencodeFamilyPlugin;
 const fetchCalls = [];
+let clawdResponseRecognized = false;
 
 before(async () => {
   delete globalThis.Bun;
@@ -26,7 +36,15 @@ before(async () => {
       url: String(url),
       body: opts && opts.body ? JSON.parse(opts.body) : null,
     });
-    return { status: 200, headers: { get: () => null }, text: async () => "" };
+    return {
+      status: 200,
+      headers: {
+        get: (name) => clawdResponseRecognized && String(name).toLowerCase() === "x-clawd-server"
+          ? "clawd-on-desk"
+          : null,
+      },
+      text: async () => "",
+    };
   };
   const modulePath = path.join(__dirname, "..", "hooks", "opencode-family-plugin", "core.mjs");
   ({ createOpencodeFamilyPlugin } = await import(pathToFileURL(modulePath).href));
@@ -77,6 +95,17 @@ async function emitPermission(instance, requestId, sessionID = "ses_node") {
       },
     },
   });
+}
+
+async function emitPermissionReplied(instance, requestId, sessionID = "ses_node") {
+  await instance.hooks.event({
+    event: {
+      type: "permission.replied",
+      properties: { requestID: requestId, sessionID, reply: "once" },
+    },
+  });
+  const tail = instance.plugin.__test._permissionPostTailByRequestId.get(requestId);
+  if (tail) await tail;
 }
 
 function requestBridge(url, { token, body, rawBody, chunked = false } = {}) {
@@ -207,5 +236,31 @@ describe("opencode-family Node reverse bridge", () => {
     assert.strictEqual(callsA.length, 1);
     assert.strictEqual(callsB.length, 0);
     assert.deepStrictEqual(callsA[0].query, { directory: "/tmp/project-a" });
+  });
+
+  it("forwards the same strict completion lifecycle from the Node Desktop host path", async (t) => {
+    clawdResponseRecognized = true;
+    const instance = await initNodeInstance();
+    t.after(() => instance.plugin.__test.closeBridgeForTest());
+    try {
+      await emitPermission(instance, "per_node_lifecycle", "ses_node_lifecycle");
+      const askedTail = instance.plugin.__test._permissionPostTailByRequestId.get("per_node_lifecycle");
+      if (askedTail) await askedTail;
+      fetchCalls.length = 0;
+
+      await emitPermissionReplied(instance, "per_node_lifecycle", "ses_node_lifecycle");
+
+      assert.strictEqual(fetchCalls.length, 1);
+      const body = fetchCalls[0].body;
+      assert.strictEqual(body.permission_event, "replied");
+      assert.strictEqual(body.request_id, "per_node_lifecycle");
+      assert.strictEqual(body.session_id, "opencode:ses_node_lifecycle");
+      assert.strictEqual(body.lifecycle_bridge_url, instance.plugin.__test._bridgeUrl);
+      assert.strictEqual(body.lifecycle_bridge_token, instance.plugin.__test._bridgeTokenHex);
+      assert.strictEqual(Object.hasOwn(body, "bridge_url"), false);
+      assert.strictEqual(Object.hasOwn(body, "bridge_token"), false);
+    } finally {
+      clawdResponseRecognized = false;
+    }
   });
 });

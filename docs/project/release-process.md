@@ -16,6 +16,11 @@ npm run audit:assets
 
 4. Run the `Build & Release` workflow manually on `main`.
 
+For macOS Developer ID certificate creation, App Store Connect Team API key
+setup, local verification, and the exact GitHub Actions secret names, follow
+[`docs/guides/release-signing.md`](../guides/release-signing.md). Never commit a
+`.p12`, `.p8`, certificate password, or decoded secret file.
+
 Manual workflow dispatch builds Windows, macOS, and Linux artifacts, checks
 each unpacked resources tree for retired Telegram sidecar binaries/source, and
 gates every package on its target-native Koffi payload, a packaged positive-call
@@ -23,6 +28,14 @@ smoke, and updater metadata matching both the generated artifacts and the exact
 `package.json` release version. It then uploads
 the installers plus JSON evidence manifests. It does not publish a GitHub
 Release.
+
+When all five macOS signing secrets are configured, the manual workflow produces
+Developer ID signed and notarized apps, then mounts both generated DMGs and
+verifies the exact app bundle each DMG contains. With none of the secrets
+configured, a manual run explicitly retains the ad-hoc validation path. A
+partial secret set always fails. A `v*` tag build fails closed unless the full
+secret set is available, so an official draft cannot silently contain an ad-hoc
+macOS build.
 
 Each staged application must contain exactly one physical Koffi native addon at
 `app.asar.unpacked/node_modules/koffi/build/koffi/<target-triplet>/koffi.node`.
@@ -49,7 +62,7 @@ Download and smoke-test the draft release assets before publishing the draft.
 If the draft is wrong, fix the issue before publishing; do not publish a known
 bad draft release.
 
-### v0.15.0 Draft Smoke Checklist
+### v1.0.0 Draft Smoke Checklist
 
 Use the draft release installer or package artifact, not `npm start`. Windows
 required items are the primary publish gate. If macOS or Linux hardware is not
@@ -59,7 +72,10 @@ notes.
 Before launching:
 
 - Download the draft release asset for the platform being tested.
-- Confirm the packaged app shows `0.15.0` metadata.
+- On macOS, download each DMG through a browser so it carries quarantine
+  metadata. Confirm it opens without a Privacy & Security override, then verify
+  the copied app with `spctl` and `stapler` as documented in the signing guide.
+- Confirm the packaged app shows `1.0.0` metadata.
 - Confirm packaged resources include `app.asar.unpacked/hooks`,
   `app.asar.unpacked/agents`, `app.asar.unpacked/extensions`,
   and `app.asar.unpacked/themes`.
@@ -70,9 +86,12 @@ Before launching:
 - Download the native-package, Koffi prune/smoke, and updater metadata manifests.
   Confirm the target has one matching `koffi.node`, no foreign native payload,
   and no unreviewed exception. Confirm each updater metadata `version` and every
-  listed artifact filename identify `0.15.0`.
-- For migration smoke, install v0.14.0 first and save a copy of the old
+  listed artifact filename identify `1.0.0`.
+- For migration smoke, install v0.16.0 first and save a copy of the old
   `clawd-prefs.json` before upgrading.
+- For legacy Feishu/Lark migration smoke, enable remote approval in v0.15.0 with saved
+  App credentials and an approver before upgrading. Keep the old
+  `feishu-approval.env` alongside the prefs copy.
 - For Reasonix smoke, prepare a machine with Reasonix initialized so
   `<Reasonix home>/` exists (`%APPDATA%\reasonix` on Windows,
   `~/.reasonix` on macOS/Linux). A skipped install because Reasonix is missing
@@ -83,9 +102,25 @@ Before launching:
 Required all-platform checks:
 
 - Fresh install, launch, pet appears, no error dialog.
-- Upgrade install over v0.14.0, launch, pet appears, no error dialog. Existing
+- Footprints is enabled by default. Confirm Today/Week/Month/Year show local
+  accepted activity and coverage, preserve unsupported metrics as a dash, and
+  add no content or raw identifiers to storage. Turn recording off/on and clear
+  during a pending completion: old counts must not reappear, while the normal
+  completion animation still works. Recovered/locked preferences must visibly
+  report recording paused until an explicit, permitted Settings action resumes it.
+- Move the system timezone west after recording, then inspect Today/Week.
+  Recorded activity and coverage at the frozen local hour remain visible.
+- With enough permission requests to overflow a small display, exercise queue
+  loading/ACK failure and native window clamping. Allow/Deny shortcuts must not
+  decide a partly clipped or hidden target; normal safe cards remain usable.
+- End Codex turn A, then let its delayed question/output reach the JSONL monitor.
+  It must not revive A or extend turn B. Real current-turn questions still keep
+  an active task alive. Upgrade a profile with a long generic working timeout
+  and no Codex-specific value: preserve its previous effective Codex duration.
+
+- Upgrade install over v0.16.0, launch, pet appears, no error dialog. Existing
   agent installation/enabled flags and user theme/animation choices remain intact.
-- Settings -> About shows `v0.15.0`, sourced from `app.getVersion()`.
+- Settings -> About shows `v1.0.0`, sourced from `app.getVersion()`.
 - First-run tutorial opens once for a fresh profile; Finish, Skip, and OS close
   each persist `tutorialSeen=true` and do not reopen on restart.
 - Upgrade profile with no `tutorialSeen` sees the tutorial once; an already-seen
@@ -94,8 +129,21 @@ Required all-platform checks:
   macOS installs default to pet + menu-bar accessory with no Dock tile.
 - Settings -> General / Agents / Animation & Sound render correctly in all supported
   languages, including sidebar SVG icons and the folded Animation Map subtab.
-- Settings -> About contributors include the two v0.15.0 first-time
-  contributors: `weed33834` and `arismarioneves`.
+- Settings -> About contributors include the three v1.0.0 first-time
+  contributors: `eugenewang5425`, `draintovmasyan783-creator`, and `Yueh-H`,
+  while preserving all previous contributors.
+- Make `clawd-prefs.json` temporarily unreadable and launch once. Confirm the
+  startup warning and Doctor critical item both explain that agent events and
+  approvals are paused; restore access and restart before continuing.
+- Replace `clawd-prefs.json` with truncated JSON and launch once. Confirm the
+  original bytes are retained in `clawd-prefs.json.bak`, startup and Doctor say
+  the recovered defaults are non-authoritative for this launch, and every agent
+  event/permission/sync gate stays closed until Settings are reviewed and Clawd
+  is restarted.
+- Repeat with a path collision that prevents `clawd-prefs.json.bak` from being
+  created. Confirm the primary file remains byte-for-byte unchanged, Settings
+  writes stay locked, and startup/Doctor report backup failure without claiming
+  that a backup exists.
 - Reinstall one existing hook-based agent, such as Codex, and confirm the
   packaged hook script can `require()` its dependencies.
 - Run one real Claude Code or Codex session and confirm the pet reacts to state
@@ -105,6 +153,9 @@ Required all-platform checks:
 - Run one real OpenCode session through a title rename, tool activity, and
   SessionEnd. HUD/Dashboard must show the bounded title, retain causal ordering,
   and remove the session without replaying a stale state after a slow endpoint.
+- Stop Clawd while OpenCode is running, trigger a permission request, and confirm
+  the plugin leaves the decision in OpenCode's native UI without POSTing its
+  reverse-bridge credentials to another listener in the Clawd port range.
 - Restart Clawd during an active Claude session, then let the real hook resume
   and end it. Dashboard/HUD must keep one canonical session throughout and
   remove it cleanly on SessionEnd, with no duplicate or ghost recovery row.
@@ -137,12 +188,16 @@ Required all-platform checks:
   Allow/Always/Deny and DND fallback, then uninstall and confirm user config is preserved.
 - Settings -> Agents -> Install Reasonix succeeds on Windows when paths contain
   spaces, and the written command uses the EncodedCommand path when needed.
+- Install TraeCode on Windows with Node under `C:\Program Files`, enable the
+  hooks in Trae CN using Sandbox mode, and confirm all six event types exit 0;
+  then uninstall and confirm all six encoded managed entries are removed.
 - Set `REASONIX_HOME` to an unresolved variable and confirm install/sync fails
   closed without writing `settings.json` into the launch directory.
-- Install ZCode and confirm its state-only events reach Clawd without replacing
-  ZCode's native permission flow. From an Orca pane, jump back to the session
-  and confirm the validated pane key focuses the correct pane locally and over
-  managed Remote SSH.
+- Install ZCode and confirm lifecycle events plus a real `PermissionRequest`
+  reach Clawd. Exercise manual Allow and Deny, then confirm no-decision falls
+  back to ZCode's native permission flow and permission automation stays
+  unavailable. From an Orca pane, jump back to the session and confirm the
+  validated pane key focuses the correct pane locally and over managed Remote SSH.
 - Install QwenWork on Windows or macOS and confirm lifecycle state reaches Clawd,
   `PermissionRequest` / `PermissionDenied` remain observation-only, and uninstall
   removes only Clawd-managed hook entries.
@@ -158,6 +213,14 @@ Required all-platform checks:
   values remain, and approval plus completion notifications stay disabled until
   a real native verification callback succeeds. Failure/timeout must not restart
   the retired sidecar.
+- Upgrade the prepared legacy v0.15.0 Feishu/Lark profile. Confirm the legacy setup
+  remains fail-closed, a one-time startup warning points to Remote Approval,
+  and Doctor reports the binding problem. Re-save the selected platform and
+  App ID/App Secret, then re-save the approver; restart and confirm the client
+  becomes ready without another warning.
+- Install the DeepSeek Harness bridge with its managed root reached through a
+  filesystem symlink. Confirm install and Doctor both report the verified
+  generation as healthy; foreign same-name packages must still fail closed.
 - Enable Discord Rich Presence without animation mirroring, then opt into the
   animation mirror. Confirm coarse status text remains stable, supported Clawd
   animations use the repository-hosted GIFs, and disabling the option returns
@@ -178,7 +241,7 @@ Recommended all-platform checks:
 - Right-click Hide pet / Show pet still works; while hidden, a newly arriving
   permission request still shows a bubble, by design.
 - Settings -> About -> Check for updates completes without an error.
-- Update labels never show a duplicated prefix such as `vv0.15.0`.
+- Update labels never show a duplicated prefix such as `vv1.0.0`.
 - Telegram approval cards show the final outcome for decisions made on Telegram
   and for approvals resolved elsewhere.
 - Scan the mobile PWA pairing URL on a phone and confirm session cards appear.
@@ -187,6 +250,10 @@ Recommended all-platform checks:
 
 Windows checks:
 
+- Required: enable fullscreen auto-hide, enter a fullscreen application, and
+  send a new permission request. Local surfaces stay hidden; leaving fullscreen
+  restores only requests still pending. Manual Hide pet keeps its separate
+  behavior for new requests; remote approval and configured auto-close still work.
 - Required: cold-start the packaged app twice with a saved upgrade position;
   the first rendered pet visual must appear at that position without using
   "Bring Pet to Primary Display" / "将桌宠拉回主屏".
@@ -207,6 +274,11 @@ Windows checks:
 
 macOS checks:
 
+- Required when macOS hardware is available: manually install the signed v1.0.0
+  DMG over v0.16.0 once, preserving app data. Validate a signed A→B updater pair
+  from an update-capable build on each available architecture, including
+  Restart Now and Later/quit/reopen; record exact versions and asset hashes.
+  A source run or a mocked updater does not complete this gate.
 - Required when macOS hardware is available: toggle menu-bar and Dock visibility,
   restart, and confirm both preferences persist and Settings can still regain focus.
 - Required when macOS hardware is available: test Dock left/right/bottom plus
@@ -254,24 +326,25 @@ an artifact. It holds no long-lived PAT or repository secret; the ambient job
 to winget-pkgs. Automatic submission is deliberately not enabled yet; see the
 staged plan below.
 
-As of 2026-08-17, the upstream 0.14.0 manifest has been repaired and published by
-[`microsoft/winget-pkgs#416019`](https://github.com/microsoft/winget-pkgs/pull/416019).
-It now carries the four expected architecture/scope entries and
-`License: AGPL-3.0-only`. The former Dumplings tracker was also removed in
+As of 2026-08-23, the upstream 0.14.0 manifest has been repaired and published by
+[`microsoft/winget-pkgs#416019`](https://github.com/microsoft/winget-pkgs/pull/416019),
+and v0.15.0 was subsequently published by
+[`microsoft/winget-pkgs#419082`](https://github.com/microsoft/winget-pkgs/pull/419082)
+on 2026-08-18. The v0.15.0 installer manifest carries the four expected
+architecture/scope entries and its locale declares `License: AGPL-3.0-only`.
+The former Dumplings tracker was also removed in
 [`SpecterShell/Dumplings#130`](https://github.com/SpecterShell/Dumplings/issues/130),
-so it is not currently competing with the maintainer-owned release path. The
-workflow stays prepare-only until its **generated output** is validated
-automatically; fixing the upstream shape alone is not sufficient reason to expose
-a submission token.
+so it is not currently competing with the maintainer-owned release path.
 
-The current release gap is **v0.15.0**. Its first prepare run
+The catalog gap is closed, but the published v0.15.0 locale still points both
+`LicenseUrl` and `ReleaseNotesUrl` at v0.14.0. Its files were generated with
+winmatsch, so their publication does not validate this repository's komac output.
+The first v0.15.0 prepare run
 [`31654717731`](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/31654717731)
-ran before the upstream repair and inherited the old two-x64 shape; komac also
-emitted `License: AGPL-3.0` with a `HEAD` license URL. Microsoft currently lists
-0.14.0 as the newest catalog version. Run prepare once against the corrected
-upstream manifest to capture the new raw output, implement the stage 3 gate and
-normalization, then re-run v0.15.0 and require the gated workflow to pass before
-submitting that version manually while stage 4 remains disabled.
+also predates the upstream repair and reproduced the old two-x64 shape. The
+workflow therefore stays prepare-only until its **generated output** is validated
+automatically; a correct upstream installer matrix alone is not sufficient reason
+to expose a submission token.
 
 **The workflow must already be on `main` before the tag is created.** For
 `release` events GitHub reads the workflow definition from the tagged ref, so a
@@ -327,7 +400,7 @@ installer supports (`build.nsis` sets `oneClick: false` and no `perMachine`).
    to the four entries above, changed the license to `AGPL-3.0-only`, passed the
    full validation pipeline and was published on 2026-08-17. The competing
    Dumplings tracker has also been removed.
-3. **Validate komac's output — next.** First run prepare against the corrected
+3. **Validate komac's output — next.** Run prepare against the current four-entry
    upstream shape to retain an unmodified sample. Then extend the gate to parse
    the generated YAML and assert the package identifier/version; exact
    `{x64, arm64} x {user, machine}` set; each entry's URL, SHA256 and `Custom`
@@ -335,11 +408,13 @@ installer supports (`build.nsis` sets `oneClick: false` and no `perMachine`).
    `InstallerSwitches.Upgrade: --updated`; and ProductCode
    `3e932233-a8b2-5530-b285-e0ceb08488f2` at both the installer and
    `AppsAndFeaturesEntries` levels. The locale manifest must carry
-   `License: AGPL-3.0-only` and a version-pinned `LicenseUrl`. Komac overwrites
-   `License` from the repository's current `licenseInfo.spdxId`, which GitHub
-   reports as `AGPL-3.0`, not the `AGPL-3.0-only` in `package.json`, so the gate
-   must rewrite and then assert these fields rather than accepting the raw output.
-   After that change lands, re-run v0.15.0 and require the gated workflow to pass.
+   `License: AGPL-3.0-only` plus version-pinned `LicenseUrl` and `ReleaseNotesUrl`.
+   Komac overwrites `License` from the repository's current `licenseInfo.spdxId`,
+   which GitHub reports as `AGPL-3.0`, not the `AGPL-3.0-only` in `package.json`,
+   so the gate must rewrite and then assert these fields rather than accepting the
+   raw output. Until this gate lands, the per-release manual review must enforce
+   the same contract; the published v0.15.0 manifest is not evidence that komac's
+   generated output is safe.
 4. **Enable submission — optional and not started.** Split into `prepare` and
    `submit` jobs so the PAT exists only in the final step, and pin every `uses:`
    to a commit SHA at that point. Prefer a dedicated account for the token:
@@ -408,13 +483,14 @@ token.
 - Download the `winget-generated-manifest` artifact and confirm it carries
   **four** installer entries — `x64` and `arm64`, each in `user` and `machine`
   scope — with the right filename and `Custom` switch in each.
-- Confirm `License` reads `AGPL-3.0-only`. The live v0.14.0 manifest is corrected;
-  versions v0.6.2 through v0.13.0 still carry the stale `MIT` value from before
-  `3b6277ff` relicensed the project on 2026-04-25.
+- Confirm `License` reads `AGPL-3.0-only`, and that `LicenseUrl` and
+  `ReleaseNotesUrl` are pinned to the release being submitted. The live v0.14.0
+  manifest is corrected; versions v0.6.2 through v0.13.0 still carry the stale
+  `MIT` value from before `3b6277ff` relicensed the project on 2026-04-25.
 - Until stage 4 is enabled, open a one-version PR in `microsoft/winget-pkgs` from
   the validated artifact, then track validation, merge and the publish-pipeline
   result. A successful prepare run alone does **not** publish the release.
-- v0.15.0 is the immediate outstanding submission; do not wait for the next
-  application release to close this gap.
+- v0.15.0 is present upstream, but its locale still points `LicenseUrl` and
+  `ReleaseNotesUrl` at v0.14.0. Do not copy those stale values into v1.0.0.
 - After the catalog refreshes, run an independent Windows `winget install` or
   `winget upgrade` smoke test before documenting the command in the READMEs.

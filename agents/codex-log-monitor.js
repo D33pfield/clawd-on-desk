@@ -1617,7 +1617,20 @@ class CodexLogMonitor {
       tracked.activeTurnId = null;
       tracked.turnBoundaryOpen = false;
     };
-    const turnExtra = effectiveTurnId ? { turnId: effectiveTurnId } : null;
+    const parsedOccurredAt = obj && typeof obj.timestamp === "string"
+      ? Date.parse(obj.timestamp)
+      : NaN;
+    const rawToolUseId = payload && typeof payload === "object"
+      ? (payload.call_id || payload.tool_use_id || payload.id)
+      : null;
+    const turnExtra = {
+      ...(effectiveTurnId ? { turnId: effectiveTurnId, recapDedupeId: effectiveTurnId } : {}),
+      ...(Number.isFinite(parsedOccurredAt) ? { recapOccurredAt: parsedOccurredAt } : {}),
+      ...(typeof rawToolUseId === "string" && rawToolUseId ? { toolUseId: rawToolUseId } : {}),
+      ...(key === "response_item:function_call" && payload && payload.name === "web_search"
+        ? { recapIsWebSearch: true }
+        : {}),
+    };
 
     // Metadata is needed for future live writes even when the session_meta
     // record itself predates monitor start.
@@ -1635,7 +1648,7 @@ class CodexLogMonitor {
     // mtime into the "live" window even though the actual question line is
     // old. A still-open question must not be dropped just because the guard
     // saw a stale timestamp on the line that carries it.
-    if (this._processCodexUserInputRecord(obj, tracked)) return;
+    if (this._processCodexUserInputRecord(obj, tracked, turnExtra)) return;
 
     // Skip historical events that predate monitor start — prevents replay
     // storms on app restart from driving stale state transitions.
@@ -1723,7 +1736,10 @@ class CodexLogMonitor {
       tracked.assistantLastOutput = null;
       tracked.assistantLastOutputTruncated = false;
     }
-    if (key === "response_item:function_call") {
+    const isToolBoundary = key === "response_item:function_call"
+      || key === "response_item:custom_tool_call"
+      || key === "response_item:web_search_call";
+    if (isToolBoundary) {
       tracked.hadToolUse = true;
     }
 
@@ -1737,7 +1753,7 @@ class CodexLogMonitor {
       tracked.lastState = resolved;
       // task_complete means the turn that asked is over — any question still
       // open for it is moot; Codex will not act on an answer after this.
-      this._clearPendingUserInputsForTrackedSession(tracked);
+      this._clearPendingUserInputsForTrackedSession(tracked, "turn-complete");
       if (tracked.backfilling) {
         finishTurnTerminal();
         return;
@@ -1753,7 +1769,7 @@ class CodexLogMonitor {
     // turn_aborted: same reasoning as task_complete above, just a different
     // terminal signal (the turn didn't finish, it was cut short).
     if (key === "event_msg:turn_aborted") {
-      this._clearPendingUserInputsForTrackedSession(tracked);
+      this._clearPendingUserInputsForTrackedSession(tracked, "turn-aborted");
     }
 
     // Backfill gate: first-pass replay of a file's historical content skips
@@ -1767,8 +1783,11 @@ class CodexLogMonitor {
       return;
     }
 
-    // Avoid spamming same state
-    if (state === tracked.lastState && state === "working") return;
+    // Avoid spamming repeated working state, except for one-shot tool
+    // boundaries. The official hook emits every PreToolUse; JSONL fallback
+    // must preserve the same counting boundary even when the pet is already
+    // visually working.
+    if (state === tracked.lastState && state === "working" && !isToolBoundary) return;
     tracked.lastState = state;
     this._emitStateChange(tracked, state, key, turnExtra);
     finishTurnTerminal();
@@ -1963,11 +1982,16 @@ class CodexLogMonitor {
     );
   }
 
-  _processCodexUserInputRecord(obj, tracked) {
+  _processCodexUserInputRecord(obj, tracked, turnExtra = {}) {
     const record = parseCodexUserInputRecord(obj);
     if (!record) return false;
     if (!(tracked.pendingUserInputs instanceof Map)) tracked.pendingUserInputs = new Map();
     if (record.phase === "request") {
+      record.activity = {
+        turnId: turnExtra.turnId || null,
+        recapOccurredAt: turnExtra.recapOccurredAt ?? null,
+        userInputReplay: this._isUserInputReplay(tracked, turnExtra),
+      };
       // #707 follow-up review round 4: the recovery sweep's own age cap only
       // protects files it actually opens (mtime outside the active window).
       // A file Codex Desktop refreshed back into the active window attaches
@@ -1990,11 +2014,25 @@ class CodexLogMonitor {
       return true;
     }
     if (!tracked.pendingUserInputs.has(record.callId)) return true;
+    const request = tracked.pendingUserInputs.get(record.callId);
     tracked.pendingUserInputs.delete(record.callId);
     if (!tracked.backfilling && !tracked.initializingUserInputs && this._onUserInputResolved) {
-      this._onUserInputResolved(tracked.sessionId, record.callId);
+      this._onUserInputResolved(tracked.sessionId, record.callId, {
+        source: "function-call-output",
+        // Correlate to the original request, not a newer active turn that may
+        // already have started before this output is drained from the file.
+        turnId: request.activity && request.activity.turnId || null,
+        recapOccurredAt: turnExtra.recapOccurredAt ?? null,
+        userInputReplay: this._isUserInputReplay(tracked, turnExtra),
+      });
     }
     return true;
+  }
+
+  _isUserInputReplay(tracked, extra) {
+    return !!(tracked.backfilling || tracked.initializingUserInputs)
+      || !Number.isSafeInteger(extra.recapOccurredAt)
+      || extra.recapOccurredAt < this._startedAtMs - 1500;
   }
 
   // Drop any request_user_input still open for this session because its
@@ -2004,12 +2042,17 @@ class CodexLogMonitor {
   // function_call_output for the same callId can't resurrect it; the
   // dismiss callback only fires for a genuinely live (non-backfill,
   // non-initializing) transition, matching every other emit in this file.
-  _clearPendingUserInputsForTrackedSession(tracked) {
+  _clearPendingUserInputsForTrackedSession(tracked, reason = "turn-terminal") {
     if (!(tracked.pendingUserInputs instanceof Map) || tracked.pendingUserInputs.size === 0) return;
     const callIds = [...tracked.pendingUserInputs.keys()];
     tracked.pendingUserInputs.clear();
     if (tracked.backfilling || tracked.initializingUserInputs || !this._onUserInputResolved) return;
-    for (const callId of callIds) this._onUserInputResolved(tracked.sessionId, callId);
+    for (const callId of callIds) {
+      this._onUserInputResolved(tracked.sessionId, callId, {
+        source: "turn-terminal",
+        reason,
+      });
+    }
   }
 
   _emitPendingUserInputRequests(tracked) {
@@ -2023,6 +2066,7 @@ class CodexLogMonitor {
     if (!this._onUserInputRequest || this._isTrackedSubagent(tracked)) return;
     const agentPid = this._resolveTrackedAgentPid(tracked);
     this._onUserInputRequest(tracked.sessionId, request, {
+      ...(request.activity || { userInputReplay: true }),
       cwd: tracked.cwd,
       sourcePid: agentPid,
       agentPid,

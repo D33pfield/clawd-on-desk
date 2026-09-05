@@ -342,6 +342,62 @@ test("remoteSsh:list-statuses returns runtime list", async () => {
   ipc.dispose();
 });
 
+test("remoteSsh:list-statuses waits for the lazy installation identity", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  let resolveIdentity;
+  const identityPending = new Promise((resolve) => { resolveIdentity = resolve; });
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: mockSettingsController(),
+    remoteSshRuntime: mockRuntime(),
+    BrowserWindow,
+    getInstallationIdentity: () => identityPending,
+  });
+
+  let settled = false;
+  const statuses = ipcMain.invoke("remoteSsh:list-statuses").then((result) => {
+    settled = true;
+    return result;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+
+  resolveIdentity({
+    installId: TEST_INSTALL_ID,
+    strongStorage: true,
+    storageBackend: "safe-storage",
+  });
+  const result = await statuses;
+  assert.deepEqual(result.bindingSecurity, {
+    strongStorage: true,
+    storageBackend: "safe-storage",
+  });
+  ipc.dispose();
+});
+
+test("remoteSsh:list-statuses degrades to unavailable when lazy identity access is denied", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const logs = [];
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: mockSettingsController(),
+    remoteSshRuntime: mockRuntime(),
+    BrowserWindow,
+    getInstallationIdentity: async () => { throw new Error("keychain denied"); },
+    log: (...args) => logs.push(args.join(" ")),
+  });
+
+  const result = await ipcMain.invoke("remoteSsh:list-statuses");
+  assert.deepEqual(result.bindingSecurity, {
+    strongStorage: false,
+    storageBackend: "unavailable",
+  });
+  assert.equal(logs.some((line) => line.includes("keychain denied")), true);
+  ipc.dispose();
+});
+
 test("remoteSsh:list-statuses primes safe cross-profile serialized conflicts", async () => {
   const ipcMain = mockIpcMain();
   const { BrowserWindow } = mockBrowserWindow();
@@ -430,6 +486,87 @@ test("remoteSsh:connect calls runtime.connect with the resolved profile", async 
   const r = await ipcMain.invoke("remoteSsh:connect", "p1");
   assert.equal(r.status, "ok");
   assert.equal(connectArg.id, "p1");
+  ipc.dispose();
+});
+
+test("remoteSsh:connect waits for lazy identity verification before starting SSH", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const rt = mockRuntime();
+  let resolveIdentity;
+  let connects = 0;
+  rt.connect = () => { connects += 1; };
+  const identityPending = new Promise((resolve) => { resolveIdentity = resolve; });
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: mockSettingsController([readyProfile]),
+    remoteSshRuntime: rt,
+    BrowserWindow,
+    getInstallationIdentity: () => identityPending,
+  });
+
+  const pending = ipcMain.invoke("remoteSsh:connect", readyProfile.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(connects, 0);
+  resolveIdentity({ installId: TEST_INSTALL_ID });
+
+  const result = await pending;
+  assert.equal(result.status, "ok");
+  assert.equal(connects, 1);
+  ipc.dispose();
+});
+
+test("remoteSsh:connect fails closed when lazy identity verification mismatches prefs", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const rt = mockRuntime();
+  let connects = 0;
+  rt.connect = () => { connects += 1; };
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: mockSettingsController([readyProfile]),
+    remoteSshRuntime: rt,
+    BrowserWindow,
+    getInstallationIdentity: async () => ({ installId: "b".repeat(64) }),
+  });
+
+  const result = await ipcMain.invoke("remoteSsh:connect", readyProfile.id);
+  assert.equal(result.status, "error");
+  assert.match(result.message, /unavailable or mismatched/);
+  assert.equal(connects, 0);
+  ipc.dispose();
+});
+
+test("remoteSsh:connect re-reads clone-recovered profile authority after lazy identity load", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const recoveredInstallId = "c".repeat(64);
+  const settingsController = actionBackedSettingsController([readyProfile]);
+  const rt = mockRuntime();
+  let connects = 0;
+  rt.connect = () => { connects += 1; };
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController,
+    remoteSshRuntime: rt,
+    BrowserWindow,
+    getInstallationIdentity: async () => {
+      const recovered = await settingsController.applyCommand("remoteSsh.applyInstallationIdentity", {
+        installId: recoveredInstallId,
+        cloneRecoveryRequired: true,
+      });
+      assert.equal(recovered.status, "ok");
+      return { installId: recoveredInstallId };
+    },
+  });
+
+  const result = await ipcMain.invoke("remoteSsh:connect", readyProfile.id);
+  assert.equal(result.status, "error");
+  assert.equal(result.reason, "deployment_required");
+  assert.equal(connects, 0);
+  const recoveredProfile = settingsController.getSnapshot().remoteSsh.profiles[0];
+  assert.equal(recoveredProfile.routingNonce, undefined);
+  assert.equal(recoveredProfile.lastDeployedAt, undefined);
   ipc.dispose();
 });
 
@@ -950,6 +1087,83 @@ test("settings remoteSsh updates refresh cached runtime profiles and stop remove
 });
 
 // ── connect-on-launch sweep ──
+
+test("connectOnLaunchProfiles does not load identity when no profile opted in", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  let identityLoads = 0;
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: mockSettingsController([
+      { ...readyProfile, id: "p1", connectOnLaunch: false },
+    ]),
+    remoteSshRuntime: mockRuntime(),
+    BrowserWindow,
+    getInstallationIdentity: async () => {
+      identityLoads += 1;
+      return { installId: TEST_INSTALL_ID };
+    },
+  });
+
+  assert.deepEqual(await ipc.connectOnLaunchProfiles(), []);
+  assert.equal(identityLoads, 0);
+  ipc.dispose();
+});
+
+test("connectOnLaunchProfiles attempts denied identity only once for several profiles", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const rt = mockRuntime();
+  let identityLoads = 0;
+  let connects = 0;
+  rt.connect = () => { connects += 1; };
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: mockSettingsController([
+      { ...readyProfile, id: "p1", connectOnLaunch: true },
+      { ...readyProfile, id: "p2", connectOnLaunch: true },
+    ]),
+    remoteSshRuntime: rt,
+    BrowserWindow,
+    getInstallationIdentity: async () => {
+      identityLoads += 1;
+      throw new Error("keychain denied");
+    },
+  });
+
+  assert.deepEqual(await ipc.connectOnLaunchProfiles(), []);
+  assert.equal(identityLoads, 1);
+  assert.equal(connects, 0);
+  ipc.dispose();
+});
+
+test("connectOnLaunchProfiles re-reads launch intent after lazy identity load", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  let profile = { ...readyProfile, connectOnLaunch: true };
+  const settingsController = {
+    getSnapshot: () => ({
+      remoteSsh: { installId: TEST_INSTALL_ID, profiles: [profile] },
+    }),
+  };
+  const rt = mockRuntime();
+  let connects = 0;
+  rt.connect = () => { connects += 1; };
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController,
+    remoteSshRuntime: rt,
+    BrowserWindow,
+    getInstallationIdentity: async () => {
+      profile = { ...profile, connectOnLaunch: false };
+      return { installId: TEST_INSTALL_ID };
+    },
+  });
+
+  assert.deepEqual(await ipc.connectOnLaunchProfiles(), []);
+  assert.equal(connects, 0);
+  ipc.dispose();
+});
 
 test("connectOnLaunchProfiles connects only flagged profiles", async () => {
   const ipcMain = mockIpcMain();
@@ -2359,11 +2573,40 @@ test("profile isolation stays release-gated until the real SSH and CLI matrix is
 
 // ── Deploy stamp ──
 
+test("remoteSsh:deploy fails before admission when lazy identity access is denied", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const settingsController = mockSettingsController([baseProfile]);
+  let deploys = 0;
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController,
+    remoteSshRuntime: mockRuntime(),
+    BrowserWindow,
+    getInstallationIdentity: async () => { throw new Error("keychain denied"); },
+    deployFn: async () => {
+      deploys += 1;
+      return { ok: true };
+    },
+  });
+
+  const result = await ipcMain.invoke("remoteSsh:deploy", baseProfile.id);
+  assert.equal(result.status, "error");
+  assert.match(result.message, /keychain denied/);
+  assert.equal(deploys, 0);
+  assert.equal(
+    settingsController._commandCalls.some((call) => call.action === "remoteSsh.beginIdentityRotation"),
+    false,
+  );
+  ipc.dispose();
+});
+
 test("remoteSsh:deploy stamps via markDeployed (not full update) on success", async () => {
   const ipcMain = mockIpcMain();
   const { BrowserWindow } = mockBrowserWindow();
   const settingsController = mockSettingsController([baseProfile]);
   const before = Date.now();
+  let deployInstallId = null;
   const ipc = registerRemoteSshIpc({
     ipcMain,
     settingsController,
@@ -2372,17 +2615,21 @@ test("remoteSsh:deploy stamps via markDeployed (not full update) on success", as
     spawn: makeSucceedingSpawn().spawn,
     // Inject a fake deploy that just resolves ok — we're testing the
     // post-success commit, not the deploy steps themselves.
-    deployFn: async () => ({
-      ok: true,
-      remoteNode: {
-        nodeBin: "/usr/local/bin/node",
-        version: "v20.10.0",
-        source: "path",
-      },
-    }),
+    deployFn: async ({ installId }) => {
+      deployInstallId = installId;
+      return {
+        ok: true,
+        remoteNode: {
+          nodeBin: "/usr/local/bin/node",
+          version: "v20.10.0",
+          source: "path",
+        },
+      };
+    },
   });
   const r = await ipcMain.invoke("remoteSsh:deploy", "p1");
   assert.equal(r.status, "ok");
+  assert.equal(deployInstallId, TEST_INSTALL_ID);
   const markCall = settingsController._commandCalls.find((call) => call.action === "remoteSsh.markDeployed");
   assert.ok(markCall, "secure deploy must stamp with markDeployed before transaction commit");
   const markIndex = settingsController._commandCalls.findIndex(

@@ -26,6 +26,7 @@ const reasonix = require("../../hooks/reasonix-install");
 const qoderwork = require("../../hooks/qoderwork-install");
 const qwenwork = require("../../hooks/qwenwork-install");
 const workbuddy = require("../../hooks/workbuddy-install");
+const traecode = require("../../hooks/traecode-install");
 const dsh = require("../../hooks/dsh-install");
 
 function agentName(agentId) {
@@ -210,7 +211,7 @@ const AGENT_DESCRIPTORS = Object.freeze([
     nested: true,
     hookEvents: zcode.ZCODE_HOOK_EVENTS,
     hookExecutorShape: "zcode-process",
-    processHookTimeoutMs: zcode.timeoutMsForZcodeEvent(),
+    processHookTimeoutMsForEvent: zcode.timeoutMsForZcodeEvent,
     // ZCode config-file hooks nest under hooks.events.* (NOT hooks.* like the
     // Claude/Qwen settings.json schema). Generic findHookCommandsForEvent reads
     // this to locate the per-event arrays; without it the doctor would scan the
@@ -354,6 +355,18 @@ const AGENT_DESCRIPTORS = Object.freeze([
     nested: true,
     hookEvents: qoderwork.QODERWORK_HOOK_EVENTS,
     hookGroupId: "clawd",
+  }),
+  Object.freeze({
+    agentId: "traecode",
+    agentName: agentName("traecode"),
+    eventSource: agentEventSource("traecode"),
+    parentDir: traecode.DEFAULT_PARENT_DIR,
+    configPath: traecode.DEFAULT_CONFIG_PATH,
+    configMode: "file",
+    autoInstall: true,
+    marker: traecode.MARKER,
+    nested: true,
+    hookEvents: traecode.TRAECODE_HOOK_EVENTS,
   }),
   Object.freeze({
     agentId: "qwenwork",

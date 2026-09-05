@@ -5,11 +5,16 @@ const path = require("node:path");
 const { app, BrowserWindow } = require("electron");
 
 const ROOT = path.resolve(__dirname, "..", "..");
-const { PET_ACCESSORY_CATALOG } = require(path.join(ROOT, "src", "pet-customization-catalog"));
+const {
+  PET_ACCESSORY_CATALOG,
+  PET_MOUTH_ACCESSORY_CATALOG,
+} = require(path.join(ROOT, "src", "pet-customization-catalog"));
 const { computeDynamicAccessoryLayout } = require(path.join(ROOT, "src", "pet-accessory-layout"));
 const { isAccessoryMirrored } = require(path.join(ROOT, "src", "pet-accessory-mirror"));
+const { resolveAccessoryDescriptor } = require(path.join(ROOT, "src", "pet-accessory-descriptor"));
 const {
   BUILTIN_ACCESSORY_MOTION_PADDING,
+  BUILTIN_MOUTH_ACCESSORY_MOTION_PADDING,
   resolveAccessoryAwareHitBox,
 } = require(path.join(ROOT, "src", "pet-accessory-hitbox"));
 const hitGeometry = require(path.join(ROOT, "src", "hit-geometry"));
@@ -21,7 +26,18 @@ const BUILTINS = [
   { id: "clawd", theme: path.join(ROOT, "themes", "clawd", "theme.json"), assets: path.join(ROOT, "assets", "svg") },
   { id: "cloudling", theme: path.join(ROOT, "themes", "cloudling", "theme.json"), assets: path.join(ROOT, "themes", "cloudling", "assets") },
 ];
-const ACCESSORIES = PET_ACCESSORY_CATALOG.filter((entry) => entry.id !== "none");
+const SLOT_AUDITS = Object.freeze([
+  Object.freeze({
+    slot: "head",
+    field: "accessories",
+    accessories: PET_ACCESSORY_CATALOG.filter((entry) => entry.id !== "none"),
+  }),
+  Object.freeze({
+    slot: "mouth",
+    field: "mouthAccessories",
+    accessories: PET_MOUTH_ACCESSORY_CATALOG.filter((entry) => entry.id !== "none"),
+  }),
+]);
 const MOTION_EPSILON = 0.15;
 const SCREEN_EPSILON = 0.51;
 const LARGE_SCREEN_BOUNDS = Object.freeze({ x: 0, y: 0, width: 6000, height: 6000 });
@@ -165,6 +181,31 @@ async function sampleMatrices(win, targetId, options = {}) {
       if (typeof window.__cloudlingSetPointer !== "function") {
         throw new Error("cloudling scripted pointer hook is unavailable");
       }
+      if (typeof window.__clawdSetLowPowerPaused !== "function") {
+        throw new Error("cloudling animation pause hook is unavailable");
+      }
+      // Drive the SVG's own frame callbacks at a fixed cadence. Wall-clock
+      // sleeps under-sample hidden windows on busy CI hosts, particularly the
+      // mini visual whose rotation lag advances once per rendered frame.
+      window.__clawdSetLowPowerPaused(true);
+      const nativeRequest = window.requestAnimationFrame;
+      const nativeCancel = window.cancelAnimationFrame;
+      const pendingFrames = new Map();
+      let nextFrameId = 0;
+      let frameTime = performance.now();
+      window.requestAnimationFrame = (callback) => {
+        const id = ++nextFrameId;
+        pendingFrames.set(id, callback);
+        return id;
+      };
+      window.cancelAnimationFrame = (id) => pendingFrames.delete(id);
+      const advanceFrame = () => {
+        const callbacks = [...pendingFrames.values()];
+        pendingFrames.clear();
+        if (callbacks.length !== 1) throw new Error("expected one live SVG frame callback");
+        frameTime += 1000 / 60;
+        callbacks[0](frameTime);
+      };
       // The diagonals alone cap the eye offset's x component at 1/sqrt(2), so
       // they can never reach the full MAX_ROT_DEG the horizontal probes do —
       // which is how the sampled envelope came out short of the real one.
@@ -178,13 +219,22 @@ async function sampleMatrices(win, targetId, options = {}) {
         { x: -1000, y: 1000, inside: true },
         { x: 1000, y: 1000, inside: true },
       ];
-      for (const probe of probes) {
-        window.__cloudlingSetPointer(probe);
-        await wait(1200);
-        for (let i = 0; i < 12; i++) {
-          out.push(snapshot());
-          await wait(16);
+      try {
+        window.__clawdSetLowPowerPaused(false);
+        frameTime = performance.now();
+        for (const probe of probes) {
+          window.__cloudlingSetPointer(probe);
+          // Include the lag's transition, then a complete breath cycle after
+          // settling (both pointer visuals use a five-second period).
+          for (let i = 0; i <= 480; i++) {
+            advanceFrame();
+            out.push(snapshot());
+          }
         }
+      } finally {
+        window.__clawdSetLowPowerPaused(true);
+        window.requestAnimationFrame = nativeRequest;
+        window.cancelAnimationFrame = nativeCancel;
       }
       return out;
     }
@@ -201,6 +251,22 @@ async function sampleMatrices(win, targetId, options = {}) {
       const horizon = Math.min(12000, Math.max(4000, ...durations.map(({ duration }) => duration * 4)));
       for (let t = 0; t <= horizon; t += 25) {
         for (const { animation, duration } of durations) animation.currentTime = t % duration;
+        out.push(snapshot());
+      }
+      return out;
+    }
+
+    const smilAnimations = root.querySelectorAll("animate, animateTransform, animateMotion");
+    if (smilAnimations.length > 0 && typeof root.setCurrentTime === "function") {
+      if (typeof root.pauseAnimations === "function") root.pauseAnimations();
+      const parsedDurations = [...smilAnimations]
+        .map((element) => /^([0-9]+(?:\.[0-9]+)?)s$/.exec(element.getAttribute("dur") || ""))
+        .filter(Boolean)
+        .map((match) => Number(match[1]))
+        .filter((duration) => Number.isFinite(duration) && duration > 0);
+      const horizon = Math.min(12, Math.max(4, ...parsedDurations));
+      for (let t = 0; t <= horizon; t += 0.025) {
+        root.setCurrentTime(t);
         out.push(snapshot());
       }
       return out;
@@ -245,17 +311,17 @@ async function sampleMatrices(win, targetId, options = {}) {
 async function auditTheme(win, builtin) {
   const raw = JSON.parse(fs.readFileSync(builtin.theme, "utf8"));
   const theme = themeLoader.loadTheme(builtin.id, { strict: true });
-  const files = raw.customization && raw.customization.accessories && raw.customization.accessories.files;
-  if (!files) return [];
   const scriptedCycles = raw.trustedRuntime && raw.trustedRuntime.scriptedSvgCycleMs || {};
   const failures = [];
+  const matrixCache = new Map();
 
-  for (const [file, descriptor] of Object.entries(files)) {
-    if (!descriptor || !descriptor.followTarget || !descriptor.staticFrame) continue;
+  async function matricesFor(file, targetId) {
+    const key = `${file}|${targetId}`;
+    if (matrixCache.has(key)) return matrixCache.get(key);
     const svgPath = path.join(builtin.assets, file);
     if (!fs.existsSync(svgPath)) throw new Error(`missing SVG for motion audit: ${svgPath}`);
     await win.loadFile(svgPath);
-    const matrices = await sampleMatrices(win, descriptor.followTarget.id, {
+    const matrices = await sampleMatrices(win, targetId, {
       // Every visual the pointer bridge drives, not just idle:
       // src/tick.js's POINTER_BRIDGE_STATES covers mini-idle too, and probing
       // only idle measured mini-idle's breath-only subspace and called it the
@@ -263,46 +329,73 @@ async function auditTheme(win, builtin) {
       cloudlingPointer: builtin.id === "cloudling" && POINTER_DRIVEN.has(file),
       scriptedCycleMs: Number(scriptedCycles[file]) || 0,
     });
-    const authored = descriptor.hitBoxPadding || emptyPadding();
-    const measured = (BUILTIN_ACCESSORY_MOTION_PADDING[builtin.id] || {})[file] || emptyPadding();
-    const configured = maxPadding(authored, measured);
-    const required = emptyPadding();
-    const state = stateForFile(file);
-    const viewBox = hitGeometry.resolveViewBox(theme, state, file);
-    const baseHitBox = baseHitBoxFor(theme, file);
-    if (!viewBox || !baseHitBox) throw new Error(`${builtin.id}/${file}: missing viewBox/base hitbox`);
-    const mini = state.startsWith("mini-");
-    const edges = mini ? ["right", "left"] : [null];
+    matrixCache.set(key, matrices);
+    return matrices;
+  }
 
-    for (const accessory of ACCESSORIES) {
-      const staticRect = rectFor(descriptor.staticFrame, accessory, builtin.id);
-      const normalizedAccessory = {
-        aspect: accessory.viewBox.width / accessory.viewBox.height,
-        widthScale: staticRect.widthScale,
-        offsetY: accessory.offsetY,
-      };
-      const payload = {
-        id: accessory.id,
-        assetFile: accessory.file,
-        ...normalizedAccessory,
-      };
+  for (const slotAudit of SLOT_AUDITS) {
+    const attachments = theme.customization && theme.customization[slotAudit.field];
+    if (!attachments || !attachments.files) continue;
+    for (const file of Object.keys(attachments.files)) {
+      const state = stateForFile(file);
+      const viewBox = hitGeometry.resolveViewBox(theme, state, file);
+      const baseHitBox = baseHitBoxFor(theme, file);
+      if (!viewBox || !baseHitBox) throw new Error(`${builtin.id}/${file}: missing viewBox/base hitbox`);
+      const mini = state.startsWith("mini-");
+      const edges = mini ? ["right", "left"] : [null];
 
-      for (const matrix of matrices) {
-        const layout = computeDynamicAccessoryLayout({
-          matrix,
-          frame: descriptor.followTarget.frame,
-          accessory: normalizedAccessory,
-          mediaOffset: { x: 0, y: 0 },
-          stageSize: { width: 1000, height: 1000 },
+      for (const accessory of slotAudit.accessories) {
+        const descriptor = resolveAccessoryDescriptor({
+          attachments,
+          slot: slotAudit.slot,
+          itemId: accessory.id,
+          file,
+          state,
         });
-        if (!layout) throw new Error(`${builtin.id}/${file}/${accessory.id}: dynamic layout rejected sampled CTM`);
-        const b = layout.bounds;
-        required.left = Math.max(required.left, staticRect.left - b.x);
-        required.top = Math.max(required.top, staticRect.top - b.y);
-        required.right = Math.max(required.right, b.x + b.width - staticRect.right);
-        required.bottom = Math.max(required.bottom, b.y + b.height - staticRect.bottom);
+        if (
+          !descriptor
+          || descriptor.visibility === "hidden"
+          || !descriptor.followTarget
+          || !descriptor.staticFrame
+        ) continue;
+        const matrices = await matricesFor(file, descriptor.followTarget.id);
+        const authored = descriptor.hitBoxPadding || emptyPadding();
+        const measuredByTheme = slotAudit.slot === "mouth"
+          ? BUILTIN_MOUTH_ACCESSORY_MOTION_PADDING
+          : BUILTIN_ACCESSORY_MOTION_PADDING;
+        const measured = (measuredByTheme[builtin.id] || {})[file] || emptyPadding();
+        const configured = maxPadding(authored, measured);
+        const required = emptyPadding();
+        const staticRect = rectFor(descriptor.staticFrame, accessory, builtin.id);
+        const normalizedAccessory = {
+          aspect: accessory.viewBox.width / accessory.viewBox.height,
+          widthScale: staticRect.widthScale,
+          offsetY: accessory.offsetY,
+        };
+        const payload = {
+          id: accessory.id,
+          assetFile: accessory.file,
+          ...normalizedAccessory,
+        };
+        let screenFailure = null;
 
-        for (const edge of edges) {
+        for (const matrix of matrices) {
+          const layout = computeDynamicAccessoryLayout({
+            matrix,
+            frame: descriptor.followTarget.frame,
+            normalizeReflection: descriptor.followTarget.normalizeReflection,
+            accessory: normalizedAccessory,
+            mediaOffset: { x: 0, y: 0 },
+            stageSize: { width: 1000, height: 1000 },
+          });
+          if (!layout) throw new Error(`${builtin.id}/${file}/${accessory.id}: dynamic layout rejected sampled CTM`);
+          const b = layout.bounds;
+          required.left = Math.max(required.left, staticRect.left - b.x);
+          required.top = Math.max(required.top, staticRect.top - b.y);
+          required.right = Math.max(required.right, b.x + b.width - staticRect.right);
+          required.bottom = Math.max(required.bottom, b.y + b.height - staticRect.bottom);
+
+          for (const edge of edges) {
           // Same rule the renderer applies and reports; do not re-derive it
           // here, or the audit certifies a facing production never produces.
           const mirrorX = isAccessoryMirrored(state, {
@@ -314,12 +407,15 @@ async function auditTheme(win, builtin) {
             roamHeadingLeft: false,
             roamFlipAssets: false,
           });
+          const slotPayloads = slotAudit.slot === "head"
+            ? { head: payload, mouth: null }
+            : { head: null, mouth: payload };
           const hitBox = resolveAccessoryAwareHitBox(
             theme,
             state,
             file,
             baseHitBox,
-            payload,
+            slotPayloads,
             { viewBox, mirrorX }
           );
           let finalHit = hitGeometry.getHitRectScreen(
@@ -351,34 +447,41 @@ async function auditTheme(win, builtin) {
             visibleScreenRect = clipped.actual;
           }
 
-          if (!containsScreenRect(finalHit, visibleScreenRect)) {
-            failures.push(
-              `${builtin.id}/${file}/${accessory.id}${edge ? `/${edge}` : ""} final-screen miss: `
+          if (!screenFailure && !containsScreenRect(finalHit, visibleScreenRect)) {
+            screenFailure = (
+              `${builtin.id}/${slotAudit.slot}/${file}/${accessory.id}${edge ? `/${edge}` : ""} final-screen miss: `
               + `hit=${JSON.stringify(finalHit)} actual=${JSON.stringify(visibleScreenRect)}`
             );
-            break;
           }
         }
       }
-    }
+        if (screenFailure) failures.push(screenFailure);
+        // A pointer-driven visual that measured no horizontal travel means the
+        // probes never engaged — which reads identically to "this animation barely
+        // moves" and silently certifies a far-too-small envelope.
+        if (POINTER_DRIVEN.has(file) && required.left < 1 && required.right < 1) {
+          failures.push(
+            `${builtin.id}/${slotAudit.slot}/${file}: pointer probes produced no rotation `
+            + `(required=${JSON.stringify(required)}) — the sweep measured the idle subspace only`
+          );
+        }
 
-    // A pointer-driven visual that measured no horizontal travel means the
-    // probes never engaged — which reads identically to "this animation barely
-    // moves" and silently certifies a far-too-small envelope.
-    if (POINTER_DRIVEN.has(file) && required.left < 1 && required.right < 1) {
-      failures.push(
-        `${builtin.id}/${file}: pointer probes produced no rotation `
-        + `(required=${JSON.stringify(required)}) — the sweep measured the idle subspace only`
-      );
-    }
-
-    for (const side of ["left", "top", "right", "bottom"]) {
-      const need = Math.max(0, required[side]);
-      if (need > configured[side] + MOTION_EPSILON) {
-        failures.push(`${builtin.id}/${file} ${side}: need ${need.toFixed(3)}, configured ${configured[side].toFixed(3)}`);
+        for (const side of ["left", "top", "right", "bottom"]) {
+          const need = Math.max(0, required[side]);
+          if (need > configured[side] + MOTION_EPSILON) {
+            failures.push(
+              `${builtin.id}/${slotAudit.slot}/${file}/${accessory.id} ${side}: `
+              + `need ${need.toFixed(3)}, configured ${configured[side].toFixed(3)}`
+            );
+          }
+        }
+        process.stdout.write(
+          `${builtin.id}/${slotAudit.slot}/${file}/${accessory.id}: `
+          + `samples=${matrices.length} required=${JSON.stringify(required)} `
+          + `configured=${JSON.stringify(configured)}\n`
+        );
       }
     }
-    process.stdout.write(`${builtin.id}/${file}: samples=${matrices.length} required=${JSON.stringify(required)} configured=${JSON.stringify(configured)}\n`);
   }
   return failures;
 }

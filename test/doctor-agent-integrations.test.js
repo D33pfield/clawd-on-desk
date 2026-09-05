@@ -17,6 +17,8 @@ const { HOOK_ENTRIES: CODEWHALE_HOOK_ENTRIES } = require("../hooks/codewhale-ins
 const { QODER_HOOK_EVENTS, buildQoderHookCommand } = require("../hooks/qoder-install");
 const { KIMI_HOOK_EVENTS } = require("../hooks/kimi-install");
 const {
+  CODEX_WINDOWS_STABLE_ARG,
+  buildCodexHookCommand,
   buildStableCodexHookCommand,
   materializeStableCodexHookLauncher,
 } = require("../hooks/codex-install-utils");
@@ -31,6 +33,7 @@ const {
   buildZcodeProcessHook,
   timeoutMsForZcodeEvent,
 } = require("../hooks/zcode-install");
+const { TRAECODE_HOOK_EVENTS } = require("../hooks/traecode-install");
 const {
   BRIDGE_PACKAGE_NAME,
   BRIDGE_PROTOCOL_VERSION,
@@ -305,7 +308,7 @@ function zcodeDescriptor() {
     nested: true,
     hookEvents: ZCODE_HOOK_EVENTS,
     hookExecutorShape: "zcode-process",
-    processHookTimeoutMs: timeoutMsForZcodeEvent(),
+    processHookTimeoutMsForEvent: timeoutMsForZcodeEvent,
     hookEventsContainer: ["hooks", "events"],
   });
 }
@@ -1320,6 +1323,58 @@ describe("checkAgentIntegrations", () => {
     assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "zcode" });
   });
 
+  it("reports a foreign PermissionRequest hook as a conflict without offering a Fix", () => {
+    const descriptor = zcodeDescriptor();
+    const config = zcodeHooksConfig();
+    // Replace Clawd's entry with a user's own security hook.
+    config.hooks.events.PermissionRequest = [{
+      hooks: [{ type: "process", command: "/node", args: ["/Users/dev/security-hook.js", "PermissionRequest"], timeoutMs: 30000 }],
+    }];
+    writeJson(descriptor.configPath, config);
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.level, "warning");
+    assert.strictEqual(detail.supplementary.value, "permission-conflict");
+    assert.ok(detail.detail.includes("foreign PermissionRequest hook"));
+    // A Fix would re-register Clawd's hook next to the foreign one and create
+    // the exact last-wins override this report exists to prevent.
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+
+  it("reports a nested non-command PermissionRequest hook as a conflict without offering a Fix", () => {
+    const descriptor = zcodeDescriptor();
+    const config = zcodeHooksConfig();
+    config.hooks.events.PermissionRequest = [{
+      hooks: [{ type: "http", url: "http://127.0.0.1:23333/permission", timeout: 600 }],
+    }];
+    writeJson(descriptor.configPath, config);
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.level, "warning");
+    assert.strictEqual(detail.supplementary.value, "permission-conflict");
+    assert.ok(detail.detail.includes("foreign PermissionRequest hook"));
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+
+  it("reports coexistence of Clawd and foreign PermissionRequest hooks as a conflict", () => {
+    const descriptor = zcodeDescriptor();
+    const config = zcodeHooksConfig();
+    config.hooks.events.PermissionRequest.push({
+      hooks: [{ type: "process", command: "/node", args: ["/Users/dev/security-hook.js", "PermissionRequest"], timeoutMs: 30000 }],
+    });
+    writeJson(descriptor.configPath, config);
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.supplementary.value, "permission-conflict");
+    assert.ok(detail.detail.includes("coexists"));
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+
   it("validates Windows ZCode process hooks with a spaced absolute node path", () => {
     const descriptor = zcodeDescriptor();
     const scriptPath = "D:/app/hooks/zcode-hook.js";
@@ -1439,6 +1494,30 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.status, "ok");
     assert.strictEqual(detail.commandCount, QODER_HOOK_EVENTS.length);
     assert.ok(seen.every((command) => command.includes("qoder-hook.js")));
+  });
+
+  it("annotates healthy TraeCode hooks with an enable-in-Trae notice", () => {
+    const descriptor = managedFileDescriptor("traecode", ".trae-cn");
+    writeJson(descriptor.configPath, { hooks: nestedHooksConfig(TRAECODE_HOOK_EVENTS, "traecode-hook.js") });
+
+    const detail = runOne(descriptor, {
+      validateCommand: () => ({ ok: true, nodeBin: "/node", scriptPath: "/app/hooks/traecode-hook.js" }),
+    });
+
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.commandCount, TRAECODE_HOOK_EVENTS.length);
+    assert.match(detail.detail, /Settings → Hooks → Enable/);
+    assert.match(detail.detail, /run mode: Sandbox/);
+  });
+
+  it("does not annotate TraeCode hooks when the integration is broken", () => {
+    const descriptor = managedFileDescriptor("traecode", ".trae-cn");
+    fs.mkdirSync(descriptor.parentDir, { recursive: true });
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.doesNotMatch(detail.detail, /Settings → Hooks → Enable/);
   });
 
   it("detects portable Windows Qoder hooks (bash-safe form, marker in plain text)", () => {
@@ -2005,6 +2084,54 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.hookCommandIssue, "stable-manifest-invalid");
     assert.strictEqual(detail.scriptPath, stable.launcherPath);
     assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "codex" });
+  });
+
+  it("validates managed Windows sidecar integrity behind a direct command", () => {
+    const descriptor = codexDescriptor();
+    const target = path.join(descriptor.parentDir, "source", "codex-hook.js");
+    writeText(target, "process.stdout.write('{}');\n");
+    const stable = materializeStableCodexHookLauncher(target, {
+      codexDir: descriptor.parentDir,
+      nodeBin: process.execPath,
+      platform: "win32",
+    });
+    const commandWindows = `${buildCodexHookCommand(
+      stable.nodeBin,
+      stable.target,
+      "win32"
+    )} ${CODEX_WINDOWS_STABLE_ARG}`;
+    const settings = {
+      hooks: {
+        Stop: [{ hooks: [{
+          type: "command",
+          command: '"node.exe" "/mnt/c/app/hooks/codex-hook.js" --clawd-wsl-interop',
+          commandWindows,
+          timeout: 30,
+        }] }],
+      },
+    };
+    writeJson(descriptor.configPath, settings);
+    fs.writeFileSync(
+      descriptor.supplementary.configPath,
+      codexTrustState(descriptor, settings, "win32"),
+      "utf8"
+    );
+
+    const healthy = runOne(descriptor, {
+      platform: "win32",
+      validateTarget: (candidate) => ({ ok: true, ...candidate }),
+    });
+    assert.strictEqual(healthy.status, "ok");
+    assert.match(healthy.detail, /stable execution target verified/);
+
+    fs.writeFileSync(stable.windowsRunPath, "corrupt-sidecar\n", "utf8");
+    const damaged = runOne(descriptor, {
+      platform: "win32",
+      validateTarget: (candidate) => ({ ok: true, ...candidate }),
+    });
+    assert.strictEqual(damaged.status, "broken-path");
+    assert.strictEqual(damaged.hookCommandIssue, "stable-launcher-invalid");
+    assert.deepStrictEqual(damaged.fixAction, { type: "agent-integration", agentId: "codex" });
   });
 
   it("reports a missing Codex stable-launcher target as repairable", () => {
