@@ -59,6 +59,28 @@ function getSessionFocusTarget(entry, options = {}) {
   return { canFocus: false, type: null, url: null };
 }
 
+// A Codex Desktop deep link can select the application window, but the OS
+// foreground check cannot prove which of its conversations owns the composer.
+// Direct Send must therefore keep Desktop out of the paste path even when the
+// session still carries a sourcePid. Navigation callers continue to use the
+// regular target above and can open the thread URL normally.
+function getDirectSendFocusTarget(entry, options = {}) {
+  const isCodexDesktop = !!entry
+    && entry.agentId === "codex"
+    && isCodexDesktopOriginator(entry.codexOriginator || entry.originator);
+  if (isCodexDesktop) {
+    return {
+      canFocus: false,
+      type: "codex-thread",
+      url: getCodexThreadUrl(entry),
+      reason: "codex_desktop_requires_manual_paste",
+    };
+  }
+
+  const target = getSessionFocusTarget(entry, options);
+  return target;
+}
+
 function isFocusableLocalHudSession(entry, options = {}) {
   return !!entry
     && getSessionFocusTarget(entry, options).canFocus
@@ -78,6 +100,7 @@ function getFocusableLocalHudSessionIds(snapshot, options = {}) {
 module.exports = {
   getCodexThreadId,
   getCodexThreadUrl,
+  getDirectSendFocusTarget,
   getFocusableLocalHudSessionIds,
   getSessionFocusTarget,
   isFocusableLocalHudSession,

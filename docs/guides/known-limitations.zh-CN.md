@@ -4,6 +4,7 @@
 
 | 限制 | 说明 |
 |------|------|
+| **Telegram Direct Send：Codex Desktop 使用剪贴板回退** | `codex://threads/...` 深链接可以把 Desktop 窗口带到前台，但无法证明当前输入框属于哪一个对话。为了避免把回复粘到另一个 Desktop 对话，即使存在 source PID，Direct Send 也会对 Codex Desktop 保持剪贴板回退；请在本地选中对话后再粘贴发送。HUD / Dashboard 导航仍会打开 Desktop 对话深链接。 |
 | **Codex CLI：终端跳转是 best-effort** | `request_user_input` 卡片会在 official hook / session metadata 能定位本地窗口时跳回 Codex。仅靠 JSONL 可能拿不到可用终端 PID；Remote SSH 会话也无法从本机聚焦远端窗口，此时卡片只作为只读提醒。 |
 | **Codex CLI：hook 覆盖仍不完整** | Official hooks 已覆盖实时状态和 `PermissionRequest` 观察 / intercept 模式，但不是所有运行时信号都有 hook。Clawd 会保留 JSONL 轮询，用于 hook 被禁用的会话，以及 web search、context compaction、turn aborted 等 fallback-only 状态 / metadata 事件；这些事件仍可能有轮询延迟。审批不再从 JSONL 猜测，必须依赖 official `PermissionRequest` hook。 |
 | **Codex CLI：用户提问卡片只读** | Codex official hook 事件集目前不包含 `request_user_input`。Clawd 从 JSONL transcript 观察它，因此提醒可能有一个轮询周期的延迟。选项和自由输入仍在 Codex 原生界面完成；Clawd 不注入按键，也不会把这些问题变成 Telegram / 飞书可操作审批。 |
