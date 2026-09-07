@@ -1,0 +1,557 @@
+"use strict";
+
+// Temporary keyboard mode for the real Dashboard page (macOS/Windows only).
+//
+// There is exactly one Dashboard page. Pressing the shortcut moves that same
+// `WebContentsView` into a non-activating quick host so the user can press 1–9
+// without Clawd entering the Cmd+Tab / Alt+Tab return chain, then moves it back.
+// Nothing about the page, its DOM state, drafts or scroll is rebuilt.
+//
+// Ordering that the native probe proved and this owner must keep:
+//   * never hide()/showInactive() an already-visible ordinary host — that
+//     raises it above the source window on return (measured, not theoretical).
+//     A visible ordinary host is instead parked at opacity 0 with mouse input
+//     disabled, and restored to its captured value on every exit path.
+//   * a parked host must never hold the keyboard: setIgnoreMouseEvents(true)
+//     explicitly still delivers key events to a focused window.
+//   * `submitted` only means the jump was handed to the production focus path.
+//     The quick host stays up until the native blur completes the handoff.
+//
+// Round identity: main owns a monotonic revision. Only main may advance it (a
+// fresh shortcut press); every renderer->main call must carry the exact current
+// revision, and `dismissed` carries the revision of the round it ended.
+
+const createOriginFocus = require("./quick-select-origin-focus");
+
+const QUICK_PLATFORMS = new Set(["darwin", "win32"]);
+
+function isSupportedQuickPlatform(platform) {
+  return QUICK_PLATFORMS.has(platform);
+}
+
+function isLiveWindow(win) {
+  if (!win) return false;
+  try {
+    return typeof win.isDestroyed !== "function" || !win.isDestroyed();
+  } catch {
+    return false;
+  }
+}
+
+function callSafe(target, method, ...args) {
+  if (!target || typeof target[method] !== "function") return undefined;
+  try {
+    return target[method](...args);
+  } catch {
+    return undefined;
+  }
+}
+
+// Frozen membership: the first nine focusable candidates in the shared
+// snapshot's own order. Digits own IDs for the whole round, never list indices.
+function orderedCandidates(snapshot) {
+  const sessions = Array.isArray(snapshot && snapshot.sessions) ? snapshot.sessions : [];
+  const byId = new Map(sessions.map((entry) => [entry.id, entry]));
+  const ids = [
+    ...(Array.isArray(snapshot && snapshot.groups) ? snapshot.groups : [])
+      .flatMap((group) => (group && group.ids) || []),
+    ...((snapshot && snapshot.orderedIds) || []),
+    ...sessions.map((entry) => entry.id),
+  ];
+  return [...new Set(ids)]
+    .map((id) => byId.get(id))
+    .filter((entry) => entry && entry.canFocus === true)
+    .slice(0, 9);
+}
+
+function publicEntry(entry) {
+  return {
+    id: entry.id,
+    title: entry.displayTitle || entry.sessionTitle || entry.id,
+    agentName: entry.agentName || entry.agentId || "",
+    badge: entry.badge || "idle",
+    canFocus: entry.canFocus === true,
+  };
+}
+
+function createDashboardQuickMode(ctx = {}) {
+  const platform = ctx.platform || process.platform;
+  const supported = isSupportedQuickPlatform(platform);
+  const electron = ctx.electron || {};
+  // Windows only: remember the foreground window this round borrowed from and
+  // hand it back on an explicit cancel. Never on blur or on a real handoff.
+  const originFocus = ctx.originFocus || createOriginFocus({ platform });
+
+  let origin = null;
+  let quickWindow = null;
+  let revision = 0;
+  // The round main has offered but the renderer has not accepted yet.
+  let pendingRevision = 0;
+  // The accepted, currently active round (0 = no active round).
+  let activeRevision = 0;
+  // The round whose host is actually armed. A round is accepted by `enter()`
+  // but only becomes activatable once `ready()` has placed the page on a host
+  // that holds focus — otherwise a reply racing an ordinary open could submit
+  // a jump from a window the user is no longer looking at.
+  let readyRevision = 0;
+  // False for a round opened with no candidates: the full Dashboard is shown
+  // (so the shortcut is never a silent no-op) but digits capture nothing.
+  let numericCapture = false;
+  let mappedEntries = [];
+  let submitted = false;
+  let shown = false;
+  let transferring = false;
+  // Set while this owner is the cause of a native focus change, so a blur or
+  // focus it triggered itself is never mistaken for the user leaving/entering.
+  let selfFocusDepth = 0;
+  // Park bookkeeping for the ordinary host. Captured exactly once per round;
+  // `restore` is idempotent and safe on an already destroyed handle.
+  let parked = null;
+
+  const snapshot = () => (ctx.getSessionSnapshot && ctx.getSessionSnapshot()) || { sessions: [] };
+  const normalWindow = () => (ctx.getNormalWindow ? ctx.getNormalWindow() : null);
+  const webContents = () => (ctx.getWebContents ? ctx.getWebContents() : null);
+
+  function send(channel, payload) {
+    const contents = webContents();
+    if (!contents) return;
+    if (typeof contents.isDestroyed === "function" && contents.isDestroyed()) return;
+    try { contents.send(channel, payload); } catch {}
+  }
+
+  function currentEntries(nextSnapshot = snapshot()) {
+    const byId = new Map(((nextSnapshot && nextSnapshot.sessions) || [])
+      .map((entry) => [entry.id, entry]));
+    // Tombstones: a numbered session that vanished keeps its digit as an
+    // inactive placeholder. Digits are never handed to a different session.
+    return mappedEntries.map((previous) => {
+      const live = byId.get(previous.id);
+      return live ? publicEntry(live) : { ...previous, canFocus: false };
+    });
+  }
+
+  function ensureQuickWindow() {
+    if (isLiveWindow(quickWindow)) return quickWindow;
+    const { BaseWindow } = electron;
+    if (!BaseWindow) return null;
+    const created = new BaseWindow({
+      show: false,
+      frame: true,
+      resizable: true,
+      minimizable: false,
+      maximizable: false,
+      alwaysOnTop: false,
+      // Windows tool windows take keyboard focus without entering Alt+Tab;
+      // macOS panels take key focus without activating the app, which keeps
+      // Clawd out of the Cmd+Tab return chain even with a visible Dock tile.
+      skipTaskbar: platform !== "darwin",
+      ...(platform === "win32" ? { type: "toolbar" } : {}),
+      ...(platform === "darwin" ? { type: "panel" } : {}),
+      title: ctx.t ? ctx.t("dashboardWindowTitle") : "Sessions",
+      ...(ctx.getBackgroundColor ? { backgroundColor: ctx.getBackgroundColor() } : {}),
+      ...(ctx.iconPath ? { icon: ctx.iconPath } : {}),
+    });
+    quickWindow = created;
+    callSafe(created, "setMenuBarVisibility", false);
+    created.on("blur", () => {
+      // Detach/attach and native dialogs produce blur that is not an exit.
+      if (created !== quickWindow || transferring || !shown) return;
+      dismiss({ reason: "blur" });
+    });
+    created.on("close", (event) => {
+      if (created !== quickWindow) return;
+      // The quick host is a transient surface for the shared page; closing it
+      // must return the page, not destroy the Dashboard.
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      dismiss({ reason: "close", restoreOrigin: true });
+    });
+    created.on("resize", () => {
+      if (created !== quickWindow || !shown) return;
+      ctx.syncViewBounds && ctx.syncViewBounds();
+      ctx.applyPageScale && ctx.applyPageScale();
+    });
+    // The quick host can be dragged onto a display with a different text
+    // scale. The borrowed page must follow the host it is actually in, not
+    // the parked ordinary window's display.
+    created.on("move", () => {
+      if (created !== quickWindow || !shown) return;
+      ctx.applyPageScale && ctx.applyPageScale();
+    });
+    return created;
+  }
+
+  function quickBounds() {
+    if (!ctx.getQuickHostBounds) return null;
+    try { return ctx.getQuickHostBounds(); } catch { return null; }
+  }
+
+  function parkNormalHost() {
+    if (parked) return;
+    const win = normalWindow();
+    if (!isLiveWindow(win)) return;
+    const visible = callSafe(win, "isVisible") === true;
+    if (!visible) return;
+    // Capture the real opacity once; restore writes this value back rather
+    // than assuming 1. There is no native getter for the mouse-input policy,
+    // so the owner records the value it set.
+    const opacity = typeof win.getOpacity === "function" ? callSafe(win, "getOpacity") : 1;
+    parked = {
+      window: win,
+      opacity: Number.isFinite(opacity) ? opacity : 1,
+      ignoreMouseEvents: false,
+    };
+    callSafe(win, "setIgnoreMouseEvents", true);
+    callSafe(win, "setOpacity", 0);
+  }
+
+  function unparkNormalHost() {
+    if (!parked) return;
+    const { window: win, opacity, ignoreMouseEvents } = parked;
+    parked = null;
+    if (!isLiveWindow(win)) return;
+    callSafe(win, "setIgnoreMouseEvents", ignoreMouseEvents);
+    callSafe(win, "setOpacity", opacity);
+  }
+
+  function attachViewTo(win) {
+    if (!ctx.attachViewTo) return false;
+    transferring = true;
+    selfFocusDepth += 1;
+    try {
+      return ctx.attachViewTo(win) !== false;
+    } catch {
+      return false;
+    } finally {
+      selfFocusDepth -= 1;
+      transferring = false;
+    }
+  }
+
+  // Run a native call that we expect to move focus, so our own blur/focus
+  // events are not read as the user leaving or returning.
+  function selfFocus(fn) {
+    selfFocusDepth += 1;
+    transferring = true;
+    try {
+      return fn();
+    } finally {
+      transferring = false;
+      selfFocusDepth -= 1;
+    }
+  }
+
+  // Ends the round: invalidate first, then restore the page, then hide.
+  function dismiss(options = {}) {
+    const endedRevision = activeRevision || pendingRevision;
+    const wasActive = activeRevision !== 0;
+    const wasShown = shown;
+    const wasSubmitted = submitted;
+    const previousOrigin = origin;
+    origin = null;
+    pendingRevision = 0;
+    activeRevision = 0;
+    readyRevision = 0;
+    numericCapture = false;
+    mappedEntries = [];
+    submitted = false;
+    shown = false;
+
+    if (wasActive || wasShown) {
+      if (wasShown) attachViewTo(normalWindow());
+      unparkNormalHost();
+      if (isLiveWindow(quickWindow) && callSafe(quickWindow, "isVisible") === true) {
+        // Only an explicit cancel returns the borrowed foreground. A blur or a
+        // real jump already handed focus somewhere the user chose.
+        if (options.restoreOrigin === true && !wasSubmitted) {
+          originFocus.restore(previousOrigin, quickWindow);
+        }
+        selfFocus(() => callSafe(quickWindow, "hide"));
+      }
+      // Back on the ordinary host: restore that display's page scale.
+      if (wasShown) ctx.applyPageScale && ctx.applyPageScale();
+    } else {
+      // A pending-but-unaccepted round never touched the hosts.
+      unparkNormalHost();
+    }
+
+    if (endedRevision) send("dashboard:quick-dismissed", { revision: endedRevision });
+    return { status: "ok" };
+  }
+
+  // Called by the owner before it performs an ordinary show/focus so the page
+  // is back in the ordinary host and opaque before it takes the keyboard.
+  function endForOrdinaryOpen() {
+    if (!activeRevision && !pendingRevision && !shown && !parked) return false;
+    dismiss({ reason: "ordinary-open" });
+    return true;
+  }
+
+  // The page navigated, reloaded, failed to load or died. Whatever round was
+  // in flight is meaningless now: no late enter/ready reply may revive it.
+  function invalidateRound(reason) {
+    if (!activeRevision && !pendingRevision && !shown && !parked) return false;
+    dismiss({ reason: reason || "page-invalidated" });
+    return true;
+  }
+
+  // The ordinary host became the real foreground while it was parked and
+  // empty. Return the page before it can take the keyboard as a blank window.
+  function handleNormalHostFocus() {
+    if (selfFocusDepth > 0) return false;
+    if (!shown && !parked) return false;
+    return invalidateRound("normal-host-focus");
+  }
+
+  // In-place rounds live on the ordinary host, so its blur ends them. A blur
+  // caused by our own transfer is not an exit.
+  function handleNormalHostBlur() {
+    if (selfFocusDepth > 0 || shown) return false;
+    if (!activeRevision) return false;
+    dismiss({ reason: "normal-host-blur" });
+    return true;
+  }
+
+  function show() {
+    if (!supported) return { status: "unsupported" };
+    if (!ctx.ensurePage) return { status: "error" };
+    let page = null;
+    try { page = ctx.ensurePage(); } catch { page = null; }
+    if (!page) return { status: "error" };
+
+    // A second press supersedes the previous offer; the old round can no
+    // longer accept, activate or dismiss.
+    if (activeRevision || shown || parked) dismiss({ reason: "reenter" });
+    revision += 1;
+    pendingRevision = revision;
+    mappedEntries = [];
+    submitted = false;
+    send("dashboard:quick-intent", { revision: pendingRevision });
+    return { status: "ok", revision: pendingRevision };
+  }
+
+  // renderer -> main. The renderer reports whether it is busy editing before
+  // anything native moves, because the detach itself would blur an alias input
+  // and commit a half-typed draft.
+  function enter(payload) {
+    if (!supported) return { status: "unsupported" };
+    if (!payload || typeof payload !== "object") return { status: "rejected", reason: "invalid-payload" };
+    if (payload.revision !== pendingRevision || pendingRevision === 0) {
+      return { status: "stale" };
+    }
+    if (payload.busy === true) {
+      // Refuse this press entirely: no mapping, no transfer, no latent armed
+      // state. The draft/IME/select keeps its keyboard untouched.
+      pendingRevision = 0;
+      return { status: "busy", revision: payload.revision };
+    }
+    const candidates = orderedCandidates(snapshot()).map(publicEntry);
+    // No candidates still opens the real Dashboard on its own empty state —
+    // the shortcut must never look broken — but the round captures no digits
+    // and is bounded by the same cancel/blur/ordinary-open lifecycle.
+    activeRevision = pendingRevision;
+    pendingRevision = 0;
+    readyRevision = 0;
+    mappedEntries = candidates;
+    numericCapture = candidates.length > 0;
+    submitted = false;
+    return {
+      status: candidates.length ? "ok" : "empty",
+      revision: activeRevision,
+      numericCapture,
+      entries: currentEntries(),
+    };
+  }
+
+  // renderer -> main, after the digits are painted into the existing page.
+  // Only now may the quick host appear.
+  function ready(payload) {
+    if (!payload || payload.revision !== activeRevision || activeRevision === 0) {
+      return { status: "stale" };
+    }
+    // The user started editing between accepting the round and painting it.
+    // Nothing has moved yet, so abandon the whole round rather than transfer
+    // a page whose detach would blur an alias input and commit its draft.
+    if (payload.busy === true) {
+      dismiss({ reason: "busy-at-ready" });
+      return { status: "busy" };
+    }
+    if (shown || readyRevision === activeRevision) return { status: "ok" };
+
+    const normal = normalWindow();
+    const alreadyFocused = isLiveWindow(normal) && callSafe(normal, "isFocused") === true;
+    if (alreadyFocused) {
+      // The user is already looking at the Dashboard: arm the digits in place.
+      // No borrow, no host flags, no geometry change.
+      shown = false;
+      readyRevision = activeRevision;
+      return { status: "ok", inPlace: true };
+    }
+
+    const win = ensureQuickWindow();
+    if (!win) {
+      dismiss({ reason: "quick-host-unavailable" });
+      return { status: "error" };
+    }
+
+    // Capture the borrowed foreground before anything of ours takes focus.
+    origin = originFocus.capture(win, origin);
+    const bounds = quickBounds();
+    if (bounds) callSafe(win, "setBounds", bounds);
+    parkNormalHost();
+    if (!attachViewTo(win)) {
+      // Roll the attachment back too: ctx.attachViewTo detaches before it
+      // adds, so a failure can leave the page parented to nothing.
+      rollbackBorrow();
+      return { status: "error" };
+    }
+    shown = true;
+    // show()/focus() can throw on a window the OS tore down underneath us;
+    // that must roll the borrow back, not leave a parked invisible host.
+    const raised = selfFocus(() => {
+      try {
+        win.show();
+        win.focus();
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    if (!raised || !isLiveWindow(win)) {
+      shown = false;
+      rollbackBorrow();
+      return { status: "error" };
+    }
+    readyRevision = activeRevision;
+    ctx.syncViewBounds && ctx.syncViewBounds();
+    // The quick host may sit on a display with a different text scale.
+    ctx.applyPageScale && ctx.applyPageScale();
+    ctx.focusPage && ctx.focusPage();
+    return { status: "ok", inPlace: false, numericCapture };
+  }
+
+  // Undo a half-applied borrow: attachment first (so the page is never
+  // orphaned), then the host flags, then the round itself.
+  function rollbackBorrow() {
+    attachViewTo(normalWindow());
+    unparkNormalHost();
+    if (isLiveWindow(quickWindow) && callSafe(quickWindow, "isVisible") === true) {
+      selfFocus(() => callSafe(quickWindow, "hide"));
+    }
+    shown = false;
+    dismiss({ reason: "transfer-failed" });
+  }
+
+  function activate(payload) {
+    if (!supported) return { status: "rejected", reason: "unsupported" };
+    const keys = payload && typeof payload === "object" && !Array.isArray(payload)
+      ? Object.keys(payload).sort()
+      : [];
+    if (
+      keys.length !== 2
+      || keys[0] !== "revision"
+      || keys[1] !== "sessionId"
+      || typeof payload.sessionId !== "string"
+      || !payload.sessionId
+      || !Number.isInteger(payload.revision)
+    ) {
+      return { status: "rejected", reason: "invalid-payload" };
+    }
+    if (activeRevision === 0 || payload.revision !== activeRevision) {
+      return { status: "rejected", reason: "stale-revision" };
+    }
+    // Accepted is not enough: the round must have reached `ready()`, so the
+    // page is demonstrably on an armed host. This also covers the in-place
+    // round, which never shows a quick window.
+    if (readyRevision !== activeRevision) {
+      return { status: "rejected", reason: "round-not-ready" };
+    }
+    if (!numericCapture) return { status: "rejected", reason: "no-candidates" };
+    if (submitted) return { status: "rejected", reason: "dropped-duplicate" };
+    // The host that currently owns the page must hold native focus, so a
+    // background window can never submit a jump.
+    const host = shown ? quickWindow : normalWindow();
+    if (!isLiveWindow(host) || callSafe(host, "isFocused") !== true) {
+      return { status: "rejected", reason: "host-not-focused" };
+    }
+    const entry = currentEntries().find((item) => item.id === payload.sessionId);
+    if (!entry || !entry.canFocus) return { status: "rejected", reason: "focus-unavailable" };
+
+    let result;
+    try {
+      result = ctx.focusSession(payload.sessionId, { requestSource: "dashboard-quick" });
+    } catch {
+      return { status: "rejected", reason: "focus-threw" };
+    }
+    const reason = result && result.reason;
+    if (result && typeof result.then === "function") {
+      Promise.resolve(result).catch((err) =>
+        console.warn("Dashboard quick select focus request failed:", err));
+    } else if (result !== true && !["submitted", "queued", "linux-command-submitted"].includes(reason)) {
+      return { status: "rejected", reason: reason || "focus-unavailable" };
+    }
+    // Submitted only means handed off. The quick host stays until native blur.
+    submitted = true;
+    return { status: "submitted" };
+  }
+
+  function dismissFromRenderer(payload) {
+    const target = payload && payload.revision;
+    if (!Number.isInteger(target)) return { status: "rejected", reason: "invalid-payload" };
+    if (target !== activeRevision && target !== pendingRevision) return { status: "stale" };
+    // Esc / Tab is the explicit cancel path.
+    return dismiss({ reason: "renderer", restoreOrigin: true });
+  }
+
+  return {
+    isSupported: () => supported,
+    show,
+    enter,
+    ready,
+    activate,
+    dismissFromRenderer,
+    endForOrdinaryOpen,
+    invalidateRound,
+    handleNormalHostFocus,
+    handleNormalHostBlur,
+    getRevision: () => activeRevision,
+    isReady: () => readyRevision !== 0 && readyRevision === activeRevision,
+    capturesDigits: () => numericCapture,
+    // True while this owner is itself moving native focus (detach/attach,
+    // show, hide). Callers must not read a focus/blur raised during that
+    // window as a user-driven activation.
+    isSelfFocusing: () => selfFocusDepth > 0,
+    // True while the ordinary host is parked: transparent, input-disabled and
+    // holding no page. It must never be handed the keyboard.
+    isParked: () => parked !== null,
+    // A page that finished loading after the shortcut press asks for the
+    // intent it missed; late/cancelled rounds report 0.
+    getPendingRevision: () => pendingRevision,
+    isActive: () => activeRevision !== 0,
+    isShown: () => shown,
+    getQuickWindow: () => (isLiveWindow(quickWindow) ? quickWindow : null),
+    getActiveHost: () => (shown ? quickWindow : normalWindow()),
+    broadcastSessionSnapshot(nextSnapshot) {
+      if (!activeRevision) return;
+      send("dashboard:quick-entries", {
+        revision: activeRevision,
+        entries: currentEntries(nextSnapshot),
+      });
+    },
+    // Page/renderer went away: drop the round and un-park so no invisible,
+    // click-through ordinary host can survive.
+    handlePageGone() {
+      dismiss({ reason: "page-gone" });
+    },
+    dispose() {
+      dismiss({ reason: "dispose" });
+      if (isLiveWindow(quickWindow)) callSafe(quickWindow, "destroy");
+      quickWindow = null;
+    },
+  };
+}
+
+module.exports = {
+  createDashboardQuickMode,
+  isSupportedQuickPlatform,
+  orderedCandidates,
+};

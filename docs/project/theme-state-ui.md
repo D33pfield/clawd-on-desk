@@ -156,17 +156,35 @@ Mini 状态映射：
 
 ## Runtime UI Systems
 
-### Session Quick Select
+### Session Quick Select（Dashboard 临时键盘模式）
 
-- Settings → Shortcuts 的“快速选择会话”默认未分配；一个全局快捷键打开独立快选窗口，普通 Dashboard 继续负责会话管理。
-- `src/session-quick-select.js` 同时拥有窗口、可消费的进入 intent 和本轮固定的最多九个 session ID。窗口按鼠标所在显示器的 work area 定位，并使用该显示器的文字缩放；极小工作区可滚动查看。
-- 按 `1–9` 跳转，主键区和小键盘分别跟踪物理按键。全部数字键释放后静默 120ms 才提交，连续按键只提交一次。Esc、Tab、Shift+Tab、关闭按钮或失焦取消尚未提交的跳转。
-- 数字映射只在明确再次进入时建立；snapshot 更新只刷新原 ID 的标题、状态和可用性。消失或变得不可聚焦的会话保留原数字但不可激活，新会话不会顶替它。空列表展示提示，不进入数字模式；单个候选也要显式按 `1`。
-- `preload-session-quick-select.js` 只提供进入、展示数据订阅、激活和取消。三个 invoke channel 都检查当前 owner 的真实 main frame 和精确本地页面 URL；激活只接受 `{ sessionId }`，并在主进程按最新共享 snapshot 再校验候选。
-- `submitted` 仅表示已交给现有平台 focus 路径，不表示已确认前台，更不 ack completion。成功提交不提前隐藏/销毁窗口；原生焦点离开后才收起。若目标未取得焦点，保留窄提示和 Esc 退出入口。
-- Windows 固定使用 `skipTaskbar:true`、`type:"toolbar"`，不进入 Alt+Tab。显式取消时，`quick-select-origin-focus.js` 仅在快选仍持有原生前台、来源 HWND 的 PID 一致且仍可见时尝试返回本轮来源；失焦和正常目标交接不执行这个恢复，不注入 ALT 或改 z-order。
-- macOS 独立快选使用 framed `type:"panel"`：Electron 的 `show()` / `focus()` 只取得 key-window 焦点，不激活整个应用，避免 Dock 可见时把 Clawd 插入 Cmd+Tab 返回链。用户 Dock 设置、应用 activation policy 和普通 Dashboard 均不变；沿用 keep-open、原生 blur 后收起的交接顺序。两种 Dock 设置下的数字输入、取消及 Terminal / Codex task 返回均需真实键盘与前台窗口验收，不能从 unit tests 推断。
-- renderer 的 main-frame navigation/reload 会使旧 readiness、映射和 revision 失效。新页面挂好订阅后消费 intent，窗口同时等到页面完成加载才显示；关闭或 renderer 崩溃清理 owner 状态，下次快捷键重建。
+平台范围：**macOS / Windows only。Linux 本轮 NOT SUPPORTED**——不是“未验证”，而是明确不开放；Linux 保留原有桌宠、普通 Dashboard 和既有快捷键。
+
+- Settings → Shortcuts 的“快速选择会话”默认未分配。快捷键打开的是**完整 Dashboard 本身**的一个临时键盘模式，不是第二套 UI：同一份 `dashboard.html` / preload / renderer / 页面状态，卡片、group、quota、alias、automation 全部保留。
+- 平台 gate 的唯一真相是 `shortcut-actions.js` 的 `SHORTCUT_ACTIONS.quickSelectSession.supportedPlatforms`，由 `isShortcutActionSupported()` 统一判定。Linux：Settings 不渲染该行、`globalShortcut` 不注册、录制被拒、绕过 UI 的 `registerShortcut` / `resetShortcut` 明确报错。预览版遗留的 `shortcuts.quickSelectSession` 值**原样保留在 prefs**，只是不执行、不占用冲突位，也不会被 Reset All 改写。
+- **不支持的平台上这套 IPC 根本不注册**：`session-ipc.js` 只在 `quickMode.isSupported()` 时注册 `dashboard:quick-*`，`preload-dashboard.js` 也只在 darwin/win32 暴露对应方法并订阅对应通道，renderer 按方法是否存在做特性检测。因此 Linux 上不存在“可以调用但回 unsupported”的能力面，也不会调用未注册通道。
+- `src/dashboard.js` 是唯一 owner。darwin/win32 的普通宿主是 `BaseWindow + WebContentsView`（`src/dashboard-host.js`），Linux 仍是 `BrowserWindow`。BaseWindow **不会**触发 `ready-to-show`，首次显示由该 view 真实 `webContents` 的 load 事件驱动；页面的 `webContents` 只能从 owner 取，不能走 `window.webContents` 或 `BrowserWindow.fromWebContents()`。
+- quick 宿主（`src/dashboard-quick-mode.js`）懒创建：macOS `type:"panel"`，Windows `type:"toolbar" + skipTaskbar`。尺寸取普通宿主的 `getNormalBounds()` 并按当前 workArea 钳制——**不得沿用全屏 / maximized / macOS Zoom 的 transient rect**，否则 panel 会铺满整屏挡住来源窗口。
+- 借用规则按真机结论固定：**禁止 `hide()` + `showInactive()` 归还**（实测归还时会把普通 Dashboard 抬到来源窗口之上）。可见但非前台的普通宿主改为 `opacity=0` + `setIgnoreMouseEvents(true)`，原值捕获一次、任何退出路径幂等恢复（恢复的是捕获值，不是硬编码 1）。`setIgnoreMouseEvents(true)` **不挡键盘**，所以被停放的宿主绝不能持有焦点。冷启动 / 隐藏 / 最小化的普通宿主不 park、不 show、不 restore。普通 Dashboard 已聚焦时只就地进入数字模式，不借用、不改任何宿主旗标。
+- **统一 busy gate**：renderer 存在 activeEdit / composing / 聚焦的 native select 或 editable 元素时，本次进入与转移**整体拒绝**——不建立映射、不 force render、不 cancel、不 commit、不吞按键，只在固定的模式提示节点提示“先结束编辑”。判定发生在任何原生动作之前，因为 detach 本身就会让别名输入框 blur 并提交半截草稿；`dashboard-renderer.js` 的 forced 重绘还会在 rAF 里重新 `focus()` + `select()` 整段草稿。**busy 在 `enter` 与 `ready` 两个时刻都要判**：等待 `enter` 回包期间用户开始编辑时，renderer 以 `ready{busy:true}` 让 main 直接放弃该轮，绝不转移。结束编辑后需要再次明确按快捷键才进入，不会暗中 armed。
+- 轮次身份：main 持有单调 revision，**只有 main 签发的新 intent 可以推进轮次**；renderer→main 的 ready / activate / dismiss 必须携带精确当前 revision，`dismissed` 携带**被结束轮**的 revision。旧轮既不能激活也不能取消新轮。renderer 侧另有一个 round 序号：dismiss / ordinary open / 失效都会推进它，因此**在途的 `enter` / `ready` 回包无法复活已经结束的轮**（只比 revision 不够——dismiss 不改 revision）。
+- **accepted ≠ armed**：`enter()` 只冻结候选，必须等 `ready()` 把页面放到一个真实持有焦点的宿主上，`activate` 才可能成功（`round-not-ready`）；就地（已聚焦普通宿主）那一轮同样要走 `ready()`。
+- 页面 main-frame 导航 / reload / 加载失败 / WebContents 销毁 / 崩溃一律作废当前轮并归还页面；就地轮由普通宿主 blur 结束，而**借用轮的普通宿主 blur 是预期的、不算退出**。owner 自己触发的 focus/blur（detach、attach、show、hide）不当作用户切换。
+- **普通宿主被真正重新激活时，归还 view 之后必须显式 focus 那个 owned WebContents**：窗口拿到原生焦点不等于页面拿到键盘，真机上会出现「普通窗 focused=true、轮次已结束、`document.hasFocus()` 仍为 false」。`BrowserWindow` 本来会隐式做这件事，`BaseWindow + WebContentsView` 必须显式补上。
+- **「是否刚结束借用」和「是否该把键盘交给页面」是两个独立判断，不能用前者门控后者。** Electron 41.10.4 已实测 quick 宿主先 blur（借用已在那时结束、view 已归还），普通 focus 随后到达时已无借用可结束；测试另覆盖普通 focus 先到、借用仍在的顺序，不把该模拟顺序宣称为已完成真机验证。若按「本次事件是否结束了借用」门控，已实测的前一种次序会被整个跳过。因此 handler 先无条件调 `handleNormalHostFocus()` 结束仍存活的借用，再独立判断该窗口此刻是否真的是持有页面的 key host。
+- 交出键盘的前置条件只看「页面和原生焦点现在在哪」：owner 自己正在移动焦点（`isSelfFocusing()`）、页面还在 quick 宿主（`isShown()`）、普通宿主处于 parked（透明且不收输入）、或该窗口并未真正持有原生焦点时，一律不交。只 focus 页面、不再 focus 窗口（会重入自己的 focus handler），并有重入标志兜底；不抢其他 app 的前台，不用 timer / Dock 切换 / `showInactive`。
+- 就地（in-place）轮在普通宿主上：原生 focus **可以**把键盘交给页面，但**不得**因此结束本轮；没有任何轮次时，普通宿主获焦同样应该让它自己的页面拿到键盘（这是正常行为，不是需要阻止的情况）。
+- 转移失败要**整体回滚**：`attachViewTo` 失败先把 view 挂回普通宿主（避免页面无父），再恢复 opacity/input，再作废该轮；`show()`/`focus()` 抛错同样走这条回滚，不能只 unpark 就返回。
+- 数字是本轮的 **ID 所有权**，不是 snapshot 下标：明确进入时冻结前九个 `canFocus` 候选。
+- **进入模式不重排用户已经在看的 Dashboard**：renderer 在本轮开始时抓一份小型 *presentation skeleton*（哪个 group 装了哪些 id、什么顺序），整轮按它渲染。原有 local / remote 分组、分组内卡片位置与 scroll 全部保持，活着的会话仍用完整 `createCard`（管理按钮一个不少），live 字段照常每秒更新。snapshot 重排不会让任何数字换行；编号会话消失时**在它原来的分组、原来的位置**留下不可用 tombstone，下方不上移；轮次中新出现的会话按稳定规则追加在该组冻结卡片之后，全新分组追加在末尾，都不补编号、不重复。退出该轮丢弃 skeleton，列表立刻恢复按 snapshot 自身排序。**不设置顶 quick 分组，不复制页面、不引入通用 layout 框架。**
+- 空候选**同样开完整 Dashboard**（原空态 + 简短提示），只是不捕获数字：`activate` 返回 `no-candidates`，Esc / blur / ordinary open 一样收束该轮。快捷键绝不允许表现为“毫无反应”。
+- 输入：主键区与小键盘按 `event.code` 分别跟踪物理键；全部数字键释放后静默 120ms 才提交，按住 / 连按只提交一次，auto-repeat 不改目标。静默期内的 `focusin`（进入可编辑元素）、`input`、`compositionstart/update` 与真实页面 blur 都取消待发跳转，且**提交前会再判一次 safe state**，避免在输入法/输入框拿到焦点后仍然跳走。Esc / Tab / Shift+Tab、外部点击、再次快捷键与普通 `showDashboard()` 都取消未提交的跳转。带修饰键、composing 中、或落在输入控件上的按键一律不拦截。
+- IPC：`dashboard:quick-pending / enter / ready / activate / dismiss` 全部检查**唯一 owned WC + 当前真实 mainFrame + 精确 `dashboard.html` URL**。`activate` 只接受严格 `{ sessionId, revision }`（精确键集 + 合法整数），主进程再校验当前轮、宿主确实持有原生焦点、映射成员身份和最新 `canFocus`，并有 round 级 submitted once-guard。Kimi 手动配额的可信判定同样改走 owner 的真实 WC，**不放宽**。
+- `submitted` 仅表示已交给现有 focus 路径，不代表已确认前台，也不 ack completion（数字路径禁止模拟点击带 ack 的按钮）。提交后不提前 hide/destroy，等原生 blur 完成交接。Windows 显式取消时 `quick-select-origin-focus.js` 才尝试归还来源前台；失焦和真实跳转不执行该恢复。
+- automation 警告等管理类 modal 必须先结束借用、把 Dashboard 提升为真正的普通窗口再创建，parent 由 owner 识别，不回落到置顶桌宠（在 Windows 上会变成可见但不可交互）。
+- 借用期间的移动 / resize / scale 不写 `dashboardWindowBounds`，不污染 pendingUserBounds / retry debt（普通宿主此时是停放的空壳，它的几何事件不代表用户意图，连 debounce 都不排）。**普通宿主的 resize 也不得重排已借走的页面**：`dashboard-host.js` 记录当前持有 view 的窗口，布局只跟随它。主题背景色变化同时同步到 quick 宿主，避免下次借用闪出另一套配色。
+- **页面缩放跟随 active host 的显示器**：quick 宿主的 `move` / `resize` 都会按它当前的 bounds 重算页面 scale；借用期间 Settings 触发的 `applyTextScaleToWindow()` 同样用 active host 解析页面 scale，不会把借出的页面按停放中的普通窗（或 default bounds）重新缩放。窗口的 minimum size、programmatic baseline 与 pendingUserBounds/retry debt 仍然只针对普通宿主，不写 quick bounds；退出借用按普通宿主的显示器恢复 scale。renderer 崩溃、页面关闭、ordinary open、dispose、`will-quit` 都必须归还 view 并恢复 opacity/input，唯一的 webContents 恰好关闭一次。
+- 两种 Dock 设置下的数字输入、取消、Terminal / Codex task 返回，以及 Windows Alt+Tab 与 cancel 归还，都必须真机验收，**不能从 unit tests 推断**。「普通 Dashboard 当前聚焦 + 数字 → 真实目标 → 返回」是独立一条 gate。
 
 ### Sound
 

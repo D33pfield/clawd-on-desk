@@ -31,6 +31,309 @@ const titleEl = document.getElementById("title");
 const countEl = document.getElementById("count");
 const contentEl = document.getElementById("content");
 const quotaSummaryEl = document.getElementById("quotaSummary");
+// Fixed node in the header. Keeping the mode banner outside the card tree
+// means entering the mode never reflows or rebuilds the user's content.
+const quickBannerEl = document.getElementById("quickBanner");
+
+// ── Dashboard keyboard mode ─────────────────────────────────────────────────
+// A temporary state of this same page: same DOM, same drafts, same scroll.
+// Digits own session IDs for the whole round (never list indices), so a
+// snapshot arriving mid-round can disable a number but never reassign it.
+const QUICK_HANDOFF_QUIET_MS = 120;
+const quick = {
+  revision: 0,
+  entries: [],
+  active: false,
+  // Digits are only captured when the round actually froze candidates. An
+  // empty round still opens the Dashboard, it just captures nothing.
+  capture: false,
+  pending: false,
+  pendingId: null,
+  feedbackKey: "",
+  hintKey: "",
+  // Bumped on every cancel/exit so a late timer or in-flight IPC reply from an
+  // abandoned attempt can never activate anything.
+  generation: 0,
+  // Bumped whenever a round is started, refused or ended. An `enter`/`ready`
+  // reply that arrives after its round was abandoned must not revive it, and
+  // comparing revisions alone cannot detect that (a dismissal leaves the
+  // revision in place so a stale `dismissed` can still be matched).
+  roundSeq: 0,
+  // Frozen presentation for the round: which group held which id, in which
+  // order, at the moment the round started. Discarded when the round ends.
+  skeleton: null,
+  held: new Set(),
+  timer: null,
+};
+let composing = false;
+
+function isEditableElement(el) {
+  if (!el || !el.tagName) return false;
+  const tag = el.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  return el.isContentEditable === true;
+}
+
+// The single busy predicate. It is answered before anything native moves,
+// because the host transfer itself blurs a focused alias input and would
+// commit a half-typed draft.
+function isEditingBusy() {
+  if (activeEdit) return true;
+  if (composing) return true;
+  return isEditableElement(document.activeElement);
+}
+
+function quickDigitForSession(sessionId) {
+  if (!quick.active || !quick.capture || !sessionId) return 0;
+  const index = quick.entries.findIndex((entry) => entry.id === sessionId);
+  return index === -1 ? 0 : index + 1;
+}
+
+function clearQuickTimer() {
+  if (quick.timer !== null) clearTimeout(quick.timer);
+  quick.timer = null;
+}
+
+// Drop any not-yet-sent jump without touching the round itself.
+function cancelPendingActivation() {
+  clearQuickTimer();
+  quick.generation += 1;
+  quick.held = new Set();
+  quick.pending = false;
+  quick.pendingId = null;
+}
+
+function endQuickRound() {
+  cancelPendingActivation();
+  // Invalidate the round itself so any enter/ready reply still in flight is
+  // discarded instead of re-arming a round the user already left.
+  quick.roundSeq += 1;
+  quick.active = false;
+  quick.capture = false;
+  quick.entries = [];
+  // Dropping the skeleton restores the ordinary dynamic ordering.
+  quick.skeleton = null;
+  quick.feedbackKey = "";
+  quick.hintKey = "";
+  renderQuickBanner();
+  render();
+}
+
+function setQuickHint(key) {
+  quick.hintKey = key || "";
+  renderQuickBanner();
+}
+
+function setQuickFeedback(key) {
+  quick.feedbackKey = key || "";
+  renderQuickBanner();
+}
+
+function renderQuickBanner() {
+  if (!quickBannerEl) return;
+  const message = quick.feedbackKey || quick.hintKey
+    || (quick.active ? "dashboardQuickSelectHint" : "");
+  if (!message) {
+    quickBannerEl.hidden = true;
+    quickBannerEl.textContent = "";
+    quickBannerEl.classList.remove("is-active");
+    return;
+  }
+  quickBannerEl.hidden = false;
+  quickBannerEl.textContent = t(message);
+  quickBannerEl.classList.toggle("is-active", quick.active);
+}
+
+async function beginQuickRound(revision) {
+  if (!Number.isInteger(revision) || revision <= 0) return;
+  // Only main issues rounds and only ever forward; a stale or repeated intent
+  // can never reopen a finished round.
+  if (revision <= quick.revision) return;
+  quick.revision = revision;
+  cancelPendingActivation();
+  quick.roundSeq += 1;
+  const seq = quick.roundSeq;
+  quick.active = false;
+  quick.capture = false;
+  quick.entries = [];
+
+  let result;
+  try {
+    result = await window.dashboardAPI.quickEnter({ revision, busy: isEditingBusy() });
+  } catch {
+    result = null;
+  }
+  // The round was superseded, dismissed or invalidated while we waited.
+  if (!result || seq !== quick.roundSeq || revision !== quick.revision) return;
+  if (result.status !== "ok" && result.status !== "empty") {
+    // Busy: this press is refused outright. The draft/IME/select keeps its
+    // keyboard, nothing is armed, and the user presses the shortcut again once
+    // the edit is finished. Do NOT force a render here — a forced rebuild
+    // re-creates the alias input and re-selects the whole draft.
+    if (result.status === "busy") setQuickHint("dashboardQuickSelectBusy");
+    return;
+  }
+  quick.entries = Array.isArray(result.entries) ? result.entries : [];
+  quick.capture = result.status === "ok" && quick.entries.length > 0;
+  quick.active = true;
+  // Pin the layout the user is already looking at before the first render of
+  // the round, so entering the mode never rearranges existing cards.
+  quick.skeleton = quick.capture ? captureQuickSkeleton() : null;
+  quick.feedbackKey = "";
+  quick.hintKey = quick.capture ? "" : "dashboardQuickSelectEmpty";
+
+  // Editing may have started while `enter` was in flight. Nothing native has
+  // moved yet, so tell main to abandon the round rather than transfer a page
+  // whose detach would blur the input and commit its draft.
+  if (isEditingBusy()) {
+    quick.active = false;
+    quick.capture = false;
+    quick.entries = [];
+    quick.skeleton = null;
+    quick.roundSeq += 1;
+    setQuickHint("dashboardQuickSelectBusy");
+    try {
+      const pending = window.dashboardAPI.quickReady({ revision, busy: true });
+      if (pending && typeof pending.catch === "function") pending.catch(() => {});
+    } catch { /* main also ends the round on blur/close. */ }
+    return;
+  }
+
+  // Paint the digits into the existing page before the quick host appears.
+  renderQuickBanner();
+  render({ force: true });
+  let readyResult;
+  try {
+    readyResult = await window.dashboardAPI.quickReady({ revision, busy: false });
+  } catch {
+    readyResult = null;
+  }
+  if (seq !== quick.roundSeq) return;
+  // Main refused or could not arm the round: drop the local mode so the page
+  // never shows digits that cannot be activated.
+  if (!readyResult || (readyResult.status !== "ok")) endQuickRound();
+}
+
+function dismissQuickRound() {
+  const revision = quick.revision;
+  cancelPendingActivation();
+  if (!revision) return;
+  try {
+    const pending = window.dashboardAPI.quickDismiss({ revision });
+    if (pending && typeof pending.catch === "function") pending.catch(() => {});
+  } catch {
+    /* main also ends the round on blur/close. */
+  }
+  endQuickRound();
+}
+
+// Main-key row and numpad are tracked as distinct physical keys so holding one
+// while tapping the other cannot fire early.
+function physicalDigit(event) {
+  if (/^(Digit|Numpad)[1-9]$/.test(event.code || "")) return event.code;
+  return /^[1-9]$/.test(event.key) ? `key:${event.key}` : null;
+}
+
+function armQuickHandoff() {
+  clearQuickTimer();
+  if (!quick.pending || quick.held.size > 0) return;
+  const attempt = quick.generation;
+  const sessionId = quick.pendingId;
+  const seq = quick.roundSeq;
+  quick.timer = setTimeout(async () => {
+    quick.timer = null;
+    if (!quick.active || !quick.capture) return;
+    if (quick.generation !== attempt || quick.roundSeq !== seq) return;
+    // Re-validate the safe state at submit time, not only at keydown: an
+    // input, select or IME composition may have taken focus during the quiet
+    // period, and a jump must never fire out from under it.
+    if (isEditingBusy()) {
+      quick.pending = false;
+      return;
+    }
+    const entry = quick.entries.find((item) => item.id === sessionId);
+    if (!entry || !entry.canFocus) {
+      quick.pending = false;
+      setQuickFeedback("dashboardQuickSelectUnavailable");
+      return;
+    }
+    let result;
+    try {
+      result = await window.dashboardAPI.quickActivate({ sessionId, revision: quick.revision });
+    } catch {
+      result = { status: "rejected" };
+    }
+    if (quick.generation !== attempt || quick.roundSeq !== seq) return;
+    quick.pending = false;
+    if (result && result.status === "submitted") {
+      // Handed to the production focus path — not confirmed, not acked. Main
+      // keeps the quick host up until the native blur completes the handoff.
+      setQuickFeedback("dashboardQuickSelectSubmitted");
+    } else if (result && result.reason === "dropped-duplicate") {
+      setQuickFeedback("dashboardQuickSelectAlreadyRequested");
+    } else {
+      setQuickFeedback("dashboardQuickSelectUnavailable");
+    }
+  }, QUICK_HANDOFF_QUIET_MS);
+}
+
+function handleQuickKeydown(event) {
+  if (!quick.active) return;
+  if (event.isComposing || composing) {
+    cancelPendingActivation();
+    return;
+  }
+  // An empty round shows the Dashboard but captures no digits; only Esc/Tab
+  // are meaningful, and every other key belongs to the page.
+  if (!quick.capture) {
+    if (event.key === "Escape" || event.key === "Tab") {
+      if (isEditingBusy() || isEditableElement(event.target)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      dismissQuickRound();
+    }
+    return;
+  }
+  // Inputs, selects, contenteditable and an active alias edit keep their own
+  // keyboard: the mode never swallows a keystroke it does not act on.
+  if (isEditingBusy() || isEditableElement(event.target)) {
+    cancelPendingActivation();
+    return;
+  }
+  if (event.key === "Escape" || event.key === "Tab") {
+    event.preventDefault();
+    event.stopPropagation();
+    dismissQuickRound();
+    return;
+  }
+  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+  if (!/^[1-9]$/.test(event.key)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const physicalKey = physicalDigit(event);
+  if (physicalKey) quick.held.add(physicalKey);
+  clearQuickTimer();
+  // First target wins for the whole hold; auto-repeat never re-targets.
+  if (quick.pending || event.repeat) return;
+  const entry = quick.entries[Number(event.key) - 1];
+  if (!entry) return;
+  if (!entry.canFocus) {
+    setQuickFeedback("dashboardQuickSelectUnavailable");
+    return;
+  }
+  quick.pending = true;
+  quick.pendingId = entry.id;
+  setQuickFeedback("");
+}
+
+function handleQuickKeyup(event) {
+  if (!quick.active) return;
+  const physicalKey = physicalDigit(event);
+  if (!physicalKey) return;
+  quick.held.delete(physicalKey);
+  // Quiet period starts only once every digit key is up.
+  armQuickHandoff();
+}
 // The manual Kimi quota refresh lives inside the Kimi quota section header
 // (built by renderQuotaSummary), so these refs are re-pointed on every quota
 // summary rebuild and stay null whenever the section is not rendered.
@@ -842,6 +1145,17 @@ function createCard(session, now) {
   const card = document.createElement("article");
   card.className = session.canFocus === true ? "card" : "card card-unfocusable";
 
+  // The digit badge is produced here, from the frozen round state, on every
+  // rebuild. The one-second tick replaces the whole card tree, so anything
+  // injected after a render would be wiped a second later.
+  const digit = quickDigitForSession(session.id);
+  if (digit) {
+    card.classList.add("card-quick-numbered");
+    const badge = createText("span", "quick-digit-badge", String(digit));
+    badge.setAttribute("aria-hidden", "true");
+    card.appendChild(badge);
+  }
+
   if (session.id) {
     const idTail = String(session.id).slice(-3);
     card.appendChild(createText("span", "session-id-badge", `#${idTail}`));
@@ -1168,6 +1482,148 @@ function appendSessionAutomationOrphans(fragment) {
   fragment.appendChild(section);
 }
 
+function createQuickTombstoneCard(entry, digit) {
+  const card = document.createElement("article");
+  card.className = "card card-unfocusable card-quick-tombstone";
+  const badge = createText("span", "quick-digit-badge", String(digit));
+  badge.setAttribute("aria-hidden", "true");
+  card.appendChild(badge);
+  const main = document.createElement("div");
+  main.className = "main";
+  main.appendChild(createText("div", "session-title", entry.title || entry.id));
+  main.appendChild(createText("div", "meta", t("dashboardQuickSelectUnavailable")));
+  card.appendChild(main);
+  return card;
+}
+
+// Presentation skeleton for one round.
+//
+// Entering the mode must not rearrange the Dashboard the user is already
+// looking at: the existing host groups, the order of the cards inside them and
+// the scroll position all stay as they were. So the round snapshots the
+// *presentation* (which group held which id, in which order) once, and renders
+// from that for as long as the round lasts. Live fields still update every
+// second; only the layout is pinned. Leaving the round drops the skeleton and
+// the list goes back to following the shared snapshot's own ordering.
+function captureQuickSkeleton() {
+  const groups = deriveGroups(snapshot).map((group) => ({
+    host: group.host || null,
+    displayHost: group.displayHost || null,
+    ids: (Array.isArray(group.ids) ? group.ids : []).slice(),
+  }));
+  const covered = new Set(groups.flatMap((group) => group.ids));
+  // A numbered candidate can come from orderedIds/sessions without belonging
+  // to any group; it still needs a stable home for the round.
+  const ungrouped = quick.entries
+    .map((entry) => entry && entry.id)
+    .filter((id) => id && !covered.has(id));
+  if (ungrouped.length) groups.push({ host: null, displayHost: null, ids: ungrouped });
+  return { groups };
+}
+
+function quickGroupKey(group) {
+  return (group && group.host) || "";
+}
+
+// One frozen group: its own ids in their frozen positions first, then any
+// session that joined this group during the round appended after them.
+function buildQuickFrozenGroup(frozen, currentGroup, byId, now, placed) {
+  const cards = document.createElement("div");
+  cards.className = "cards";
+  let rendered = 0;
+
+  for (const id of frozen.ids) {
+    placed.add(id);
+    const live = byId.get(id);
+    if (live) {
+      cards.appendChild(createCard(live, now));
+      rendered += 1;
+      continue;
+    }
+    // A numbered session that disappeared holds its own position as an
+    // inactive placeholder, so nothing below it shifts up.
+    const slot = quick.entries.findIndex((entry) => entry && entry.id === id);
+    if (slot !== -1) {
+      cards.appendChild(createQuickTombstoneCard(quick.entries[slot], slot + 1));
+      rendered += 1;
+    }
+  }
+
+  const currentIds = currentGroup && Array.isArray(currentGroup.ids) ? currentGroup.ids : [];
+  for (const id of currentIds) {
+    if (placed.has(id)) continue;
+    placed.add(id);
+    const live = byId.get(id);
+    if (!live) continue;
+    cards.appendChild(createCard(live, now));
+    rendered += 1;
+  }
+
+  if (!rendered) return null;
+  const section = document.createElement("section");
+  section.className = "group";
+  const host = (currentGroup && (currentGroup.displayHost || currentGroup.host))
+    || frozen.displayHost
+    || frozen.host
+    || "";
+  section.appendChild(createText("h2", "group-title", host || t("sessionLocal")));
+  section.appendChild(cards);
+  return section;
+}
+
+function appendPlainGroup(fragment, group, byId, now, placed) {
+  const ids = Array.isArray(group.ids) ? group.ids : [];
+  const groupSessions = ids
+    .filter((id) => !placed || !placed.has(id))
+    .map((id) => byId.get(id))
+    .filter(Boolean);
+  if (!groupSessions.length) return;
+  if (placed) for (const session of groupSessions) placed.add(session.id);
+
+  const section = document.createElement("section");
+  section.className = "group";
+  const host = group.displayHost || group.host || "";
+  section.appendChild(createText("h2", "group-title", host || t("sessionLocal")));
+
+  const cards = document.createElement("div");
+  cards.className = "cards";
+  for (const session of groupSessions) cards.appendChild(createCard(session, now));
+  section.appendChild(cards);
+  fragment.appendChild(section);
+}
+
+function appendSessionGroups(fragment, byId, now) {
+  const skeleton = quick.active ? quick.skeleton : null;
+  if (!skeleton) {
+    for (const group of deriveGroups(snapshot)) {
+      appendPlainGroup(fragment, group, byId, now, null);
+    }
+    return;
+  }
+
+  const currentGroups = deriveGroups(snapshot);
+  const currentByKey = new Map(currentGroups.map((group) => [quickGroupKey(group), group]));
+  const frozenKeys = new Set(skeleton.groups.map(quickGroupKey));
+  const placed = new Set();
+
+  for (const frozen of skeleton.groups) {
+    const section = buildQuickFrozenGroup(
+      frozen,
+      currentByKey.get(quickGroupKey(frozen)),
+      byId,
+      now,
+      placed
+    );
+    if (section) fragment.appendChild(section);
+  }
+  // Whole groups that appeared during the round are appended after the frozen
+  // ones rather than pushing the existing context around.
+  for (const group of currentGroups) {
+    if (frozenKeys.has(quickGroupKey(group))) continue;
+    appendPlainGroup(fragment, group, byId, now, placed);
+  }
+}
+
 function hasFocusedSessionAutomationSelect() {
   const active = document.activeElement;
   return !!(
@@ -1206,10 +1662,15 @@ function render(options = {}) {
   document.title = t("dashboardWindowTitle");
   renderQuotaSummary(snapshot);
 
+  renderQuickBanner();
+
   const orphanCount = Array.isArray(snapshot.sessionAutomationOrphans)
     ? snapshot.sessionAutomationOrphans.length
     : 0;
-  if (count === 0 && orphanCount === 0) {
+  // A round with a frozen presentation keeps rendering its own groups even if
+  // every session in them disappeared — the numbered slots still belong to
+  // this round and must not collapse into the generic empty state.
+  if (count === 0 && orphanCount === 0 && !(quick.active && quick.skeleton)) {
     renderEmpty();
     return;
   }
@@ -1217,24 +1678,9 @@ function render(options = {}) {
   const byId = new Map(sessions.map((session) => [session.id, session]));
   const fragment = document.createDocumentFragment();
 
-  for (const group of deriveGroups(snapshot)) {
-    const ids = Array.isArray(group.ids) ? group.ids : [];
-    const groupSessions = ids.map((id) => byId.get(id)).filter(Boolean);
-    if (!groupSessions.length) continue;
-
-    const section = document.createElement("section");
-    section.className = "group";
-    const host = group.displayHost || group.host || "";
-    section.appendChild(createText("h2", "group-title", host || t("sessionLocal")));
-
-    const cards = document.createElement("div");
-    cards.className = "cards";
-    for (const session of groupSessions) {
-      cards.appendChild(createCard(session, now));
-    }
-    section.appendChild(cards);
-    fragment.appendChild(section);
-  }
+  // While a round is on, the groups come from its frozen presentation; the
+  // ordinary dynamic ordering resumes as soon as it ends.
+  appendSessionGroups(fragment, byId, now);
   appendSessionAutomationOrphans(fragment);
 
   contentEl.replaceChildren(fragment);
@@ -1273,6 +1719,58 @@ async function init() {
   render();
 
   setInterval(render, 1000);
+
+  initQuickMode();
+}
+
+function initQuickMode() {
+  const api = window.dashboardAPI;
+  // Linux never registers the shortcut and never exposes these channels; the
+  // shared page simply stays an ordinary Dashboard there.
+  if (!api || typeof api.quickEnter !== "function") return;
+
+  // Anything that starts real text entry during the 120ms quiet period must
+  // drop the queued jump: the user is typing, not navigating.
+  document.addEventListener("compositionstart", () => {
+    composing = true;
+    cancelPendingActivation();
+  });
+  document.addEventListener("compositionend", () => { composing = false; });
+  document.addEventListener("compositionupdate", cancelPendingActivation);
+  document.addEventListener("focusin", (event) => {
+    if (isEditableElement(event && event.target)) cancelPendingActivation();
+  });
+  document.addEventListener("input", cancelPendingActivation);
+  // Capture phase so the mode sees keys before page controls, while still
+  // deferring to any focused editable target.
+  document.addEventListener("keydown", handleQuickKeydown, true);
+  document.addEventListener("keyup", handleQuickKeyup, true);
+  // A real page blur cancels an unsubmitted jump; main ends the round too.
+  window.addEventListener("blur", cancelPendingActivation);
+  window.addEventListener("beforeunload", cancelPendingActivation);
+
+  api.onQuickIntent((payload) => {
+    void beginQuickRound(payload && payload.revision);
+  });
+  api.onQuickEntries((payload) => {
+    if (!payload || !quick.active || payload.revision !== quick.revision) return;
+    quick.entries = Array.isArray(payload.entries) ? payload.entries : [];
+    render();
+  });
+  api.onQuickDismissed((payload) => {
+    // Strictly the round that ended: a late dismissal cannot cancel a new one.
+    if (!payload || payload.revision !== quick.revision) return;
+    endQuickRound();
+  });
+
+  // A shortcut pressed while this page was still loading left a pending round.
+  if (typeof api.quickPending === "function") {
+    api.quickPending().then((result) => {
+      if (result && result.status === "ok" && result.revision) {
+        void beginQuickRound(result.revision);
+      }
+    }).catch(() => {});
+  }
 }
 
 init().catch((err) => {

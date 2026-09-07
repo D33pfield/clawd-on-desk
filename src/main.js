@@ -897,6 +897,7 @@ roamFencePickerRuntime = createRoamFencePicker({
 shortcutRuntime = createShortcutRuntime({
   ipcMain,
   globalShortcut,
+  platform: process.platform,
   settingsController: _settingsController,
   getSettingsWindow,
   shortcutHandlers,
@@ -1338,11 +1339,6 @@ function applyTextScaleNow() {
     }
   } catch (err) {
     console.warn("Clawd: dashboard text scale failed:", err && err.message);
-  }
-  try {
-    _quickSelect.applyTextScaleToWindow();
-  } catch (err) {
-    console.warn("Clawd: quick select text scale failed:", err && err.message);
   }
   repositionAnchoredFloatingSurfaces();
 }
@@ -2570,6 +2566,7 @@ const _dashboard = require("./dashboard")({
   t: (key) => translate(key),
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
   getI18n: () => getDashboardI18nPayload(),
+  focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
   getPetWindowBounds,
   getNearestWorkArea,
   getSettingsWindow: () => settingsWindowRuntime.getWindow(),
@@ -2583,28 +2580,16 @@ const _dashboard = require("./dashboard")({
   iconPath: settingsWindowRuntime.getIconPath(),
 });
 showDashboard = _dashboard.showDashboard;
-
-const _quickSelect = require("./session-quick-select")({
-  ipcMain,
-  t: (key) => translate(key),
-  getSessionSnapshot: () => _state.buildSessionSnapshot(),
-  getI18n: () => getDashboardI18nPayload(),
-  focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
-  getTextScale: (bounds) => effectiveTextScaleForKey(
-    getDisplayKeyForBounds(bounds) || getPetDisplayKey()
-  ),
-  iconPath: settingsWindowRuntime.getIconPath(),
-});
-showQuickSelect = _quickSelect.show;
+// The keyboard mode is a temporary state of the real Dashboard page, so it is
+// owned by the Dashboard rather than by a second window/renderer.
+showQuickSelect = () => _dashboard.quick.show();
 broadcastDashboardSessionSnapshot = (snapshot) => {
   _dashboard.broadcastSessionSnapshot(snapshot);
-  _quickSelect.broadcastSessionSnapshot(snapshot);
 };
 sendDashboardI18n = () => {
   _dashboard.sendI18n();
-  _quickSelect.sendI18n();
 };
-app.on("will-quit", () => _quickSelect.dispose());
+app.on("will-quit", () => _dashboard.quick.dispose());
 
 // ── First-run onboarding tutorial ──
 // Buckets the installable agents for the tutorial's step 2. We call the
@@ -4754,7 +4739,8 @@ registerSessionIpc({
   ipcMain,
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
   getI18n: () => getDashboardI18nPayload(),
-  getDashboardWindow: () => _dashboard.getWindow(),
+  getDashboardWebContents: () => _dashboard.getWebContents(),
+  quickMode: _dashboard.quick,
   getKimiQuotaStatus: () => _kimiQuotaRuntime.getStatus(),
   refreshKimiQuota: () => _kimiQuotaRuntime.refresh(),
   focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
@@ -4763,9 +4749,19 @@ registerSessionIpc({
   ackSessionCompletion: (sessionId) => _state.ackSessionCompletion(sessionId),
   setSessionAlias: (payload) => _settingsController.applyCommand("setSessionAlias", payload),
   setSessionAutomationOverride: (payload, context) => {
+    // The Dashboard page can live in a WebContentsView, where
+    // BrowserWindow.fromWebContents() returns null and the warning would fall
+    // back to the always-on-top pet — visible but not interactive on Windows.
+    // Resolve the owner instead, and make sure a quick round is ended so the
+    // modal parents onto a real ordinary window.
     let warningParent = null;
     try {
-      warningParent = BrowserWindow.fromWebContents(context && context.sender);
+      const sender = context && context.sender;
+      if (_dashboard.getHostForWebContents(sender)) {
+        warningParent = _dashboard.promoteToOrdinaryWindow();
+      } else {
+        warningParent = BrowserWindow.fromWebContents(sender);
+      }
     } catch {}
     return sessionAutomationCoordinator.setSessionAutomationOverride(payload, { warningParent });
   },

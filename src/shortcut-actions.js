@@ -20,6 +20,11 @@
       defaultAccelerator: null,
       labelKey: "shortcutLabelQuickSelectSession",
       showInTutorial: false,
+      // The Dashboard keyboard mode needs a non-activating quick host, which
+      // only darwin/win32 can provide (opacity parking is a documented no-op on
+      // Linux). Linux keeps the ordinary Dashboard, so the action is not
+      // offered, registered, or allowed to occupy an accelerator there.
+      supportedPlatforms: Object.freeze(["darwin", "win32"]),
     }),
     permissionAllow: Object.freeze({
       persistent: false,
@@ -168,8 +173,41 @@
     };
   }
 
+  // Platform truth for every gate (Settings row, global registration, settings
+  // command, conflict occupancy). Renderers have no `process`, so they must
+  // pass an explicit platform; an unresolvable platform is treated as
+  // unsupported so a gated action can never leak onto an unknown host.
+  // Only an omitted platform falls back to `process.platform`. An explicitly
+  // supplied but unresolvable value (a renderer that could not identify its
+  // host) must stay unresolved so the gate stays closed.
+  function resolveShortcutPlatform(platform) {
+    if (platform === undefined || platform === null) {
+      return typeof process !== "undefined" && process.platform ? process.platform : "";
+    }
+    if (typeof platform === "string") return platform;
+    if (typeof platform === "object" && typeof platform.platform === "string") {
+      return platform.platform;
+    }
+    return "";
+  }
+
+  function isShortcutActionSupported(actionId, platform) {
+    const meta = SHORTCUT_ACTIONS[actionId];
+    if (!meta) return false;
+    if (!Array.isArray(meta.supportedPlatforms)) return true;
+    return meta.supportedPlatforms.includes(resolveShortcutPlatform(platform));
+  }
+
+  function getSupportedShortcutActionIds(platform) {
+    return SHORTCUT_ACTION_IDS.filter((actionId) =>
+      isShortcutActionSupported(actionId, platform));
+  }
+
   function resolveIsMac(options) {
     if (options && typeof options.isMac === "boolean") return options.isMac;
+    if (options && typeof options.platform === "string" && options.platform) {
+      return options.platform === "darwin";
+    }
     return typeof process !== "undefined" && process.platform === "darwin";
   }
 
@@ -231,6 +269,7 @@
 
   function normalizeShortcuts(value, defaultsValue, options) {
     const isMac = resolveIsMac(options);
+    const platform = resolveShortcutPlatform(options && options.platform);
     const platformOptions = { isMac };
     const defaults = buildShortcutDefaults(defaultsValue);
     const raw = isPlainObject(value) ? value : {};
@@ -260,7 +299,17 @@
       if (key !== null) taken.add(key);
     };
 
+    // A leftover binding for an action this platform does not support is kept
+    // verbatim (never silently deleted from the user's prefs) but must not
+    // occupy its accelerator, otherwise it would block a supported action from
+    // using the same combination on that platform.
     for (const actionId of SHORTCUT_ACTION_IDS) {
+      if (isShortcutActionSupported(actionId, platform)) continue;
+      out[actionId] = normalized[actionId];
+    }
+
+    for (const actionId of SHORTCUT_ACTION_IDS) {
+      if (Object.prototype.hasOwnProperty.call(out, actionId)) continue;
       if (acceleratorsConflict(normalized[actionId], defaults[actionId], platformOptions)) {
         out[actionId] = normalized[actionId];
         markTaken(out[actionId]);
@@ -432,6 +481,9 @@
     SHORTCUT_ACTIONS,
     SHORTCUT_ACTION_IDS,
     DANGEROUS_ACCELERATORS,
+    isShortcutActionSupported,
+    getSupportedShortcutActionIds,
+    resolveShortcutPlatform,
     getDefaultShortcuts,
     parseAccelerator,
     normalizeKey,
