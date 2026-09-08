@@ -893,6 +893,17 @@ describe("dashboard window", () => {
     assert.strictEqual(h.dashboard.quick.isActive(), false);
   });
 
+  it("repairs Windows page focus even when a busy refusal left only the borrowed editor", () => {
+    const h = nativeReturnHarness();
+    const refused = h.dashboard.quick.show();
+    h.dashboard.quick.enter({ revision: refused.revision, busy: true });
+    const before = h.getPageContents().focusCount;
+    h.setForeground(h.normal);
+    h.quickWindow.emit("blur");
+    assert.strictEqual(h.getPageContents().focusCount, before + 1);
+    assert.strictEqual(h.dashboard.quick.isShown(), false);
+  });
+
   it("rechecks the chosen foreground after hide and never takes an external window's keys", () => {
     const h = nativeReturnHarness();
     const before = h.getPageContents().focusCount;

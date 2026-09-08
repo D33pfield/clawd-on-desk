@@ -106,6 +106,8 @@ function createDashboardQuickMode(ctx = {}) {
   let numericCapture = false;
   let mappedEntries = [];
   let submitted = false;
+  // Physical borrow, independent of an accepted numeric round. A busy
+  // replacement keeps the editor here until an explicit exit or fresh offer.
   let shown = false;
   let transferring = false;
   // Set while this owner is the cause of a native focus change, so a blur or
@@ -313,7 +315,9 @@ function createDashboardQuickMode(ctx = {}) {
 
   // Ends the round: invalidate first, then restore the page, then hide.
   function dismiss(options = {}) {
-    const endedRevision = activeRevision || pendingRevision;
+    // A busy replacement can leave the editor borrowed without an accepted
+    // numeric round. It still needs its current dismissal notification.
+    const endedRevision = activeRevision || pendingRevision || (shown ? revision : 0);
     const wasActive = activeRevision !== 0;
     const wasShown = shown;
     const wasSubmitted = submitted;
@@ -403,22 +407,33 @@ function createDashboardQuickMode(ctx = {}) {
     try { page = ctx.ensurePage(); } catch { page = null; }
     if (!page) return { status: "error" };
 
-    // A second press supersedes the previous offer; the old round can no
-    // longer accept, activate or dismiss.
-    // Its original source survives only while this unsubmitted borrow (or its
-    // replacement offer) still owns native foreground. Dismiss normally clears
-    // it; recapturing the still-foreground quick HWND with null would then lose
-    // the source. A genuinely new foreground, refusal or exit must not inherit it.
-    const continuingOrigin = !submitted && (activeRevision || pendingRevision)
-      && stillHoldsForeground(quickWindow) ? origin : null;
-    if (activeRevision || shown || parked) dismiss({ reason: "reenter" });
-    origin = continuingOrigin;
+    // Supersede the *numeric round*, not the physical borrow. Moving the view
+    // here blurs/commits an alias before the renderer can answer busy. Keep its
+    // editor on the current host through both enter and ready negotiations.
+    // The main fence closes synchronously, before the intent reaches renderer.
+    origin = !submitted && shown && stillHoldsForeground(quickWindow) ? origin : null;
+    activeRevision = 0;
+    readyRevision = 0;
+    numericCapture = false;
     revision += 1;
     pendingRevision = revision;
     mappedEntries = [];
     submitted = false;
     send("dashboard:quick-intent", { revision: pendingRevision });
     return { status: "ok", revision: pendingRevision };
+  }
+
+  function refuseBusyRound(targetRevision) {
+    pendingRevision = 0;
+    activeRevision = 0;
+    readyRevision = 0;
+    numericCapture = false;
+    mappedEntries = [];
+    // No host actions and no dismissal message: either could blur/rebuild the
+    // input. A previously borrowed editor stays open, with only a fenced cancel
+    // after editing; this reply cannot later be used as an enter/ready ticket.
+    if (!shown) origin = null;
+    return { status: "busy", revision: targetRevision, retainedBorrow: shown };
   }
 
   // renderer -> main. The renderer reports whether it is busy editing before
@@ -433,9 +448,7 @@ function createDashboardQuickMode(ctx = {}) {
     if (payload.busy === true) {
       // Refuse this press entirely: no mapping, no transfer, no latent armed
       // state. The draft/IME/select keeps its keyboard untouched.
-      pendingRevision = 0;
-      origin = null;
-      return { status: "busy", revision: payload.revision };
+      return refuseBusyRound(payload.revision);
     }
     const candidates = orderedCandidates(snapshot()).map(publicEntry);
     // No candidates still opens the real Dashboard on its own empty state —
@@ -465,14 +478,28 @@ function createDashboardQuickMode(ctx = {}) {
     // Nothing has moved yet, so abandon the whole round rather than transfer
     // a page whose detach would blur an alias input and commit its draft.
     if (payload.busy === true) {
-      dismiss({ reason: "busy-at-ready" });
-      return { status: "busy" };
+      return refuseBusyRound(payload.revision);
     }
-    if (shown || readyRevision === activeRevision) return { status: "ok" };
+    if (readyRevision === activeRevision) return { status: "ok" };
 
     const normal = normalWindow();
     const alreadyFocused = isLiveWindow(normal) && callSafe(normal, "isFocused") === true;
     if (alreadyFocused) {
+      // Normally a real ordinary focus event already ended the old borrow.
+      // If that event is delayed, finish the return only NOW, after both busy
+      // checks, without ending the new revision negotiated with this page.
+      if (shown) {
+        const returned = attachViewTo(normal);
+        unparkNormalHost();
+        selfFocus(() => callSafe(quickWindow, "hide"));
+        shown = false;
+        ctx.applyPageScale && ctx.applyPageScale();
+        if (!returned) {
+          dismiss({ reason: "transfer-failed" });
+          return { status: "error" };
+        }
+        selfFocus(() => { ctx.focusPage && ctx.focusPage(); });
+      }
       // The user is already looking at the Dashboard: arm the digits in place.
       // No borrow, no host flags, no geometry change.
       shown = false;
@@ -481,6 +508,12 @@ function createDashboardQuickMode(ctx = {}) {
       return { status: "ok", inPlace: true };
     }
 
+    // Do not treat a newly recreated empty host as the one still holding the
+    // borrowed page. Clean up the lost borrow; a fresh press may create again.
+    if (shown && (!isLiveWindow(quickWindow) || callSafe(quickWindow, "isVisible") !== true)) {
+      dismiss({ reason: "quick-host-unavailable" });
+      return { status: "error" };
+    }
     const win = ensureQuickWindow();
     if (!win) {
       dismiss({ reason: "quick-host-unavailable" });
@@ -489,6 +522,25 @@ function createDashboardQuickMode(ctx = {}) {
 
     // Capture the borrowed foreground before anything of ours takes focus.
     origin = originFocus.capture(win, origin);
+    if (shown) {
+      // Reuse the very same view/host; do not detach, unpark/repark, resize or
+      // reset native input just to replace a set of digits. An explicit new
+      // shortcut from another foreground may still need to raise this host.
+      const ownsKeyboard = callSafe(win, "isFocused") === true
+        && (platform !== "win32" || stillHoldsForeground(win));
+      if (!ownsKeyboard) {
+        const raised = selfFocus(() => {
+          try { win.show(); win.focus(); ctx.focusPage && ctx.focusPage(); return true; }
+          catch { return false; }
+        });
+        if (!raised || !isLiveWindow(win)) {
+          rollbackBorrow();
+          return { status: "error" };
+        }
+      }
+      readyRevision = activeRevision;
+      return { status: "ok", inPlace: false, numericCapture };
+    }
     const bounds = quickBounds();
     if (bounds) callSafe(win, "setBounds", bounds);
     parkNormalHost();
@@ -590,8 +642,9 @@ function createDashboardQuickMode(ctx = {}) {
 
   function dismissFromRenderer(payload) {
     const target = payload && payload.revision;
-    if (!Number.isInteger(target)) return { status: "rejected", reason: "invalid-payload" };
-    if (target !== activeRevision && target !== pendingRevision) return { status: "stale" };
+    if (!Number.isInteger(target) || target <= 0) return { status: "rejected", reason: "invalid-payload" };
+    const retainedBorrow = shown && activeRevision === 0 && pendingRevision === 0 && target === revision;
+    if (target !== activeRevision && target !== pendingRevision && !retainedBorrow) return { status: "stale" };
     // Esc / Tab is the explicit cancel path.
     return dismiss({ reason: "renderer", restoreOrigin: true });
   }

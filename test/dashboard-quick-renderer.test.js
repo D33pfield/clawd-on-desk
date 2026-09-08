@@ -11,6 +11,8 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { test } = require("node:test");
 const { i18n } = require("../src/i18n");
+const { createDashboardQuickMode } = require("../src/dashboard-quick-mode");
+const createOriginFocus = require("../src/quick-select-origin-focus");
 
 const RENDERER_SOURCE = fs.readFileSync(
   path.join(__dirname, "../src/dashboard-renderer.js"),
@@ -118,7 +120,7 @@ async function renderer(options = {}) {
   const windowListeners = new Map();
   const timers = new Map();
   const quickListeners = new Map();
-  const calls = { activate: [], enter: [], ready: [], dismiss: [], ack: [] };
+  const calls = { activate: [], enter: [], ready: [], dismiss: [], ack: [], alias: [] };
   let timerId = 0;
   let intervalFn = null;
 
@@ -126,7 +128,14 @@ async function renderer(options = {}) {
     title: "",
     documentElement: {},
     activeElement: null,
-    createElement: (tag) => new Element(tag),
+    createElement: (tag) => {
+      const element = new Element(tag);
+      if (options.modelFocus) {
+        element.focus = () => { document.activeElement = element; };
+        element.select = () => { element.selectionStart = 0; element.selectionEnd = element.value?.length || 0; };
+      }
+      return element;
+    },
     createDocumentFragment: () => new Element("fragment"),
     createTextNode: (text) => ({ textContent: text }),
     getElementById: (id) => {
@@ -145,7 +154,7 @@ async function renderer(options = {}) {
     focusSession: () => { throw new Error("focusSession must not be used by the numeric path"); },
     hideSession: async () => ({ status: "ok" }),
     openSessionFolder: async () => ({ status: "ok" }),
-    setSessionAlias: async () => ({ status: "ok" }),
+    setSessionAlias: async (payload) => { calls.alias.push(plain(payload)); return { status: "ok" }; },
     setSessionAutomationOverride: async () => ({ status: "applied" }),
     clearSessionAutomationGrant: async () => ({ status: "applied" }),
     ackCompletion: async (id) => { calls.ack.push(plain(id)); return { status: "ok" }; },
@@ -168,7 +177,10 @@ async function renderer(options = {}) {
       calls.activate.push(plain(payload));
       return options.activate ? options.activate(payload) : { status: "submitted" };
     },
-    quickDismiss: async (payload) => { calls.dismiss.push(plain(payload)); return { status: "ok" }; },
+    quickDismiss: async (payload) => {
+      calls.dismiss.push(plain(payload));
+      return options.dismiss ? options.dismiss(payload) : { status: "ok" };
+    },
     onQuickIntent: (fn) => quickListeners.set("intent", fn),
     onQuickEntries: (fn) => quickListeners.set("entries", fn),
     onQuickDismissed: (fn) => quickListeners.set("dismissed", fn),
@@ -202,7 +214,8 @@ async function renderer(options = {}) {
   sandbox.globalThis.window = sandbox.window;
   sandbox.globalThis.document = document;
 
-  vm.runInNewContext(RENDERER_SOURCE, sandbox);
+  const context = vm.createContext(sandbox);
+  vm.runInContext(RENDERER_SOURCE, context);
   await flush();
   await flush();
 
@@ -211,6 +224,19 @@ async function renderer(options = {}) {
     elements,
     calls,
     timers,
+    inspect: () => plain(vm.runInContext("({ activeEdit, composing, quick: { active: quick.active, capture: quick.capture, canDismissBorrow: quick.canDismissBorrow, revision: quick.revision } })", context)),
+    receive: (channel, payload) => {
+      const names = { "dashboard:quick-intent": "intent", "dashboard:quick-dismissed": "dismissed", "dashboard:quick-entries": "entries" };
+      quickListeners.get(names[channel])?.(payload);
+    },
+    // A view transfer blurs the real renderer-created input in this model.
+    // This invokes its production blur/alias handler, not a fake alias write.
+    blurEditable: () => {
+      const active = document.activeElement;
+      windowListeners.get("blur")?.();
+      document.activeElement = null;
+      active?.listeners.get("blur")?.();
+    },
     content: () => document.getElementById("content"),
     banner: () => document.getElementById("quickBanner"),
     tick: () => { if (intervalFn) intervalFn(); },
@@ -276,6 +302,282 @@ const twoEntries = [
   { id: "s1", title: "Title s1", agentName: "Codex", badge: "idle", canFocus: true },
   { id: "s2", title: "Title s2", agentName: "Codex", badge: "idle", canFocus: true },
 ];
+
+// F3 is a boundary between the real main-mode owner and the real renderer's
+// title editor. A standalone busy:true reply cannot exercise it. The only
+// simulated browser behaviour here is that moving the view blurs its input;
+// the alias commit itself runs the production renderer handler. Not GUI proof.
+async function borrowedEditor(options = {}) {
+  let page = null;
+  let foreground = "source-A";
+  let hosted = null;
+  let heldEnter = null;
+  let heldBusyReady = null;
+  const windows = [];
+  const moves = [];
+  const jumps = [];
+  class Window {
+    constructor(name) {
+      this.name = typeof name === "string" ? name : "quick";
+      this.visible = this.name === "normal";
+      this.focused = false;
+      this.destroyed = false;
+      this.opacity = 1;
+      this.events = new Map();
+      windows.push(this);
+    }
+    isDestroyed() { return this.destroyed; }
+    isVisible() { return this.visible; }
+    isFocused() { return this.focused; }
+    isMinimized() { return false; }
+    getOpacity() { return this.opacity; }
+    setOpacity(value) { this.opacity = value; moves.push("opacity:" + value); }
+    setIgnoreMouseEvents(value) { moves.push("ignore:" + value); }
+    setBounds() { moves.push("bounds"); }
+    setMenuBarVisibility() {}
+    on(event, fn) { this.events.set(event, fn); }
+    emit(event) { this.events.get(event)?.(); }
+    show() { this.visible = true; moves.push("show:" + this.name); }
+    hide() { this.visible = false; moves.push("hide:" + this.name); }
+    focus() {
+      for (const win of windows) win.focused = win === this;
+      foreground = this.name;
+      moves.push("focus:" + this.name);
+    }
+    destroy() { this.destroyed = true; this.visible = false; }
+  }
+  const normal = new Window("normal");
+  hosted = normal;
+  const originFocus = createOriginFocus({ platform: "win32", bindings: {
+    foreground: () => foreground, hwndOf: win => win.name,
+    same: (a, b) => a === b, pid: () => 17, visible: () => true, minimized: () => false,
+    setForeground: name => { foreground = name; return true; },
+  } });
+  const mode = createDashboardQuickMode({
+    platform: options.platform || "win32", electron: { BaseWindow: Window }, originFocus,
+    getNormalWindow: () => normal, ensurePage: () => ({}),
+    getWebContents: () => ({ isDestroyed: () => false, send: (channel, payload) => {
+      queueMicrotask(() => page.receive(channel, plain(payload)));
+    } }),
+    getSessionSnapshot: () => twoSessions,
+    getQuickHostBounds: () => ({ x: 0, y: 0, width: 480, height: 600 }),
+    attachViewTo: win => {
+      moves.push("attach:" + win.name);
+      if (hosted !== win) page?.blurEditable();
+      hosted = win;
+      return true;
+    },
+    focusSession: id => { jumps.push(id); return { reason: "submitted" }; },
+  });
+  page = await renderer({
+    modelFocus: true, snapshot: twoSessions,
+    enter: payload => {
+      const result = mode.enter(payload);
+      if (!heldEnter) return result;
+      const gate = heldEnter;
+      heldEnter = null;
+      return gate.then(() => result);
+    },
+    ready: payload => {
+      const result = mode.ready(payload);
+      if (!payload.busy || !heldBusyReady) return result;
+      const gate = heldBusyReady;
+      heldBusyReady = null;
+      return gate.then(() => result);
+    },
+    activate: payload => mode.activate(payload),
+    dismiss: payload => mode.dismissFromRenderer(payload),
+  });
+  return {
+    page, mode, moves, jumps, normal,
+    foreground: () => foreground,
+    hosted: () => hosted,
+    start: () => mode.show(),
+    async shortcut() { const result = mode.show(); await flushTicks(); return result; },
+    holdNextEnter() {
+      let release;
+      heldEnter = new Promise(resolve => { release = resolve; });
+      return release;
+    },
+    holdNextBusyReady() {
+      let release;
+      heldBusyReady = new Promise(resolve => { release = resolve; });
+      return release;
+    },
+    async edit(ime = false) {
+      const title = page.content().descendants().find(el => el.classList?.contains("session-title"));
+      title.listeners.get("dblclick")({ stopPropagation() {} });
+      const input = page.document.activeElement;
+      assert.equal(input.tagName, "INPUT");
+      input.value = ime ? "ni" : "uncommitted draft";
+      input.selectionStart = input.selectionEnd = 2;
+      input.listeners.get("input")();
+      if (ime) await page.fire("compositionstart");
+      return input;
+    },
+    async cancelEdit(input) {
+      await page.fire("compositionend");
+      input.listeners.get("keydown")({ key: "Escape", preventDefault() {} });
+      page.document.activeElement = null;
+      await flushTicks();
+    },
+    async externalBlur() {
+      foreground = "source-B";
+      mode.getQuickWindow().focused = false;
+      mode.getQuickWindow().emit("blur");
+      await flushTicks();
+    },
+  };
+}
+
+for (const platform of ["win32", "darwin"]) {
+  for (const ime of [false, true]) {
+    test(`F3 ${platform}: a borrowed ${ime ? "IME composition" : "alias draft"} survives a busy re-entry`, async () => {
+      const h = await borrowedEditor({ platform });
+      const first = await h.shortcut();
+      const input = await h.edit(ime);
+      const beforeMoves = h.moves.length;
+      const before = h.page.inspect();
+      await h.shortcut();
+
+      assert.deepEqual(h.page.calls.alias, [], "busy must not submit a draft before refusing");
+      assert.equal(h.moves.length, beforeMoves, "no detach, hide, focus, scale or parking while busy");
+      assert.equal(h.page.document.activeElement, input, "the same input keeps keyboard focus");
+      assert.equal(h.page.inspect().activeEdit.draft, before.activeEdit.draft);
+      assert.equal(h.page.inspect().composing, ime);
+      assert.equal(input.selectionStart, 2);
+      assert.equal(input.selectionEnd, 2);
+      assert.equal(h.mode.isShown(), true, "the borrowed editor stays where it was");
+      assert.equal(h.mode.isReady(), false);
+      assert.equal(h.mode.capturesDigits(), false);
+      assert.equal(h.page.inspect().quick.capture, false);
+      assert.equal(h.page.content().classList.contains("is-quick-capture"), false, "old badge paint is disabled without rebuilding input");
+      assert.equal(h.mode.activate({ sessionId: "s1", revision: first.revision }).reason, "stale-revision");
+    });
+  }
+}
+
+test("F3: editing that begins during a borrowed enter reply survives busy-at-ready", async () => {
+  const h = await borrowedEditor();
+  await h.shortcut();
+  const release = h.holdNextEnter();
+  const beforeMoves = h.moves.length;
+  h.start();
+  await flushTicks();
+  const input = await h.edit(true);
+  release();
+  await flushTicks();
+  assert.deepEqual(h.page.calls.alias, []);
+  assert.equal(h.moves.length, beforeMoves);
+  assert.equal(h.page.document.activeElement, input);
+  assert.equal(h.page.inspect().composing, true);
+  assert.equal(h.mode.isShown(), true);
+  assert.equal(h.mode.isReady(), false);
+  assert.equal(h.mode.capturesDigits(), false);
+  assert.equal(h.page.calls.ready.at(-1).busy, true);
+});
+
+test("F3: a refused borrowed round never auto-arms but Esc works after editing", async () => {
+  const h = await borrowedEditor();
+  await h.shortcut();
+  const input = await h.edit();
+  const refused = await h.shortcut();
+  await h.cancelEdit(input);
+  const digit = await h.page.key("keydown", "1");
+  await h.page.key("keyup", "1");
+  await h.page.runTimers();
+  assert.equal(digit.prevented, false);
+  assert.deepEqual(h.jumps, []);
+  assert.equal(h.mode.ready({ revision: refused.revision, busy: false }).status, "stale");
+  await h.page.key("keydown", "Escape");
+  assert.equal(h.mode.isShown(), false);
+  assert.equal(h.foreground(), "source-A");
+  assert.deepEqual(h.page.calls.alias, []);
+});
+
+test("F3: repeated busy offers keep the input and require a fresh shortcut after editing", async () => {
+  const h = await borrowedEditor();
+  await h.shortcut();
+  const input = await h.edit(true);
+  const beforeMoves = h.moves.length;
+  const refused = await h.shortcut();
+  const latest = await h.shortcut();
+  assert.deepEqual(h.page.calls.alias, []);
+  assert.equal(h.moves.length, beforeMoves);
+  assert.equal(h.mode.dismissFromRenderer({ revision: refused.revision }).status, "stale");
+  await h.cancelEdit(input);
+  await h.shortcut();
+  assert.equal(h.mode.isReady(), true);
+  assert.equal(h.mode.capturesDigits(), true);
+  assert.equal(h.page.content().classList.contains("is-quick-capture"), true);
+  assert.equal(h.mode.dismissFromRenderer({ revision: latest.revision }).status, "stale");
+  await h.page.key("keydown", "Escape");
+  assert.equal(h.foreground(), "source-A");
+});
+
+test("F3: the main fence rejects the old digit before the renderer sees a new intent", async () => {
+  const h = await borrowedEditor();
+  const first = await h.shortcut();
+  await h.page.key("keydown", "1");
+  await h.page.key("keyup", "1");
+  h.start(); // deliberately do not deliver the queued intent yet
+  assert.equal(h.mode.activate({ sessionId: "s1", revision: first.revision }).reason, "stale-revision");
+  await flushTicks();
+  await h.page.runTimers();
+  assert.deepEqual(h.jumps, []);
+});
+
+test("F3: an external blur after busy ends the retained page and stale Esc cannot reclaim it", async () => {
+  const h = await borrowedEditor();
+  await h.shortcut();
+  await h.edit();
+  const refused = await h.shortcut();
+  assert.deepEqual(h.page.calls.alias, []);
+  await h.externalBlur();
+  assert.equal(h.mode.isShown(), false);
+  assert.equal(h.foreground(), "source-B");
+  assert.equal(h.mode.dismissFromRenderer({ revision: refused.revision }).status, "stale");
+  assert.equal(h.page.inspect().quick.canDismissBorrow, false);
+});
+
+test("F3: a delayed busy reply cannot revive a borrow ended by an external blur", async () => {
+  const h = await borrowedEditor();
+  await h.shortcut();
+  await h.edit();
+  const release = h.holdNextEnter();
+  h.start();
+  await flushTicks();
+  assert.deepEqual(h.page.calls.alias, []);
+  await h.externalBlur();
+  release();
+  await flushTicks();
+  assert.equal(h.page.inspect().quick.canDismissBorrow, false);
+  assert.equal(h.page.inspect().quick.active, false);
+  assert.equal(h.mode.isShown(), false);
+  assert.equal(h.foreground(), "source-B");
+});
+
+test("F3: a late busy-at-ready response cannot cancel a newer accepted round", async () => {
+  const h = await borrowedEditor();
+  await h.shortcut();
+  const releaseEnter = h.holdNextEnter();
+  const releaseBusyReady = h.holdNextBusyReady();
+  h.start();
+  await flushTicks();
+  const input = await h.edit();
+  releaseEnter();
+  await flushTicks();
+  assert.equal(h.page.calls.ready.at(-1).busy, true);
+  assert.equal(h.mode.isReady(), false);
+  await h.cancelEdit(input);
+  await h.shortcut();
+  releaseBusyReady();
+  await flushTicks();
+  assert.equal(h.mode.isReady(), true);
+  assert.equal(h.page.inspect().quick.capture, true);
+  assert.equal(h.page.inspect().quick.canDismissBorrow, false);
+  assert.deepEqual(h.page.calls.alias, []);
+});
 
 test("entering the mode paints digit badges into the existing card tree", async () => {
   const r = await renderer({ snapshot: twoSessions, entries: twoEntries });

@@ -47,6 +47,8 @@ const quick = {
   // Digits are only captured when the round actually froze candidates. An
   // empty round still opens the Dashboard, it just captures nothing.
   capture: false,
+  // A busy replacement may leave an unarmed editor on the borrowed host.
+  canDismissBorrow: false,
   pending: false,
   pendingId: null,
   feedbackKey: "",
@@ -276,6 +278,7 @@ function endQuickRound() {
   quick.roundSeq += 1;
   quick.active = false;
   quick.capture = false;
+  quick.canDismissBorrow = false;
   quick.entries = [];
   // Dropping the skeleton restores the ordinary dynamic ordering.
   quick.skeleton = null;
@@ -300,6 +303,9 @@ function setQuickFeedback(key) {
 }
 
 function renderQuickBanner() {
+  // Busy negotiation must not rebuild an editor just to remove old digits.
+  // Hide their paint without changing card geometry or the focused input.
+  if (contentEl) contentEl.classList.toggle("is-quick-capture", quick.active && quick.capture);
   if (!quickBannerEl) return;
   const message = quick.feedbackKey || quick.hintKey
     || (quick.active ? "dashboardQuickSelectHint" : "");
@@ -325,7 +331,12 @@ async function beginQuickRound(revision) {
   const seq = quick.roundSeq;
   quick.active = false;
   quick.capture = false;
+  quick.canDismissBorrow = false;
   quick.entries = [];
+  quick.skeleton = null;
+  quick.feedbackKey = "";
+  quick.hintKey = "";
+  renderQuickBanner();
 
   let result;
   try {
@@ -340,7 +351,10 @@ async function beginQuickRound(revision) {
     // keyboard, nothing is armed, and the user presses the shortcut again once
     // the edit is finished. Do NOT force a render here — a forced rebuild
     // re-creates the alias input and re-selects the whole draft.
-    if (result.status === "busy") setQuickHint("dashboardQuickSelectBusy");
+    if (result.status === "busy") {
+      quick.canDismissBorrow = result.retainedBorrow === true;
+      setQuickHint("dashboardQuickSelectBusy");
+    }
     return;
   }
   quick.entries = Array.isArray(result.entries) ? result.entries : [];
@@ -360,11 +374,11 @@ async function beginQuickRound(revision) {
     quick.capture = false;
     quick.entries = [];
     quick.skeleton = null;
-    quick.roundSeq += 1;
     setQuickHint("dashboardQuickSelectBusy");
     try {
-      const pending = window.dashboardAPI.quickReady({ revision, busy: true });
-      if (pending && typeof pending.catch === "function") pending.catch(() => {});
+      const refused = await window.dashboardAPI.quickReady({ revision, busy: true });
+      if (seq !== quick.roundSeq || revision !== quick.revision) return;
+      quick.canDismissBorrow = refused && refused.status === "busy" && refused.retainedBorrow === true;
     } catch { /* main also ends the round on blur/close. */ }
     return;
   }
@@ -472,7 +486,17 @@ function handleQuickKeydown(event) {
     && (macInputHome || (!isEditingBusy() && !isEditableElement(event.target)))) {
     noteScrollIntent();
   }
-  if (!quick.active) return;
+  if (!quick.active) {
+    // A refused replacement leaves the borrowed editor intact. Once editing
+    // is over Esc/Tab may close that shell, but digits never auto-arm again.
+    if (quick.canDismissBorrow && (event.key === "Escape" || event.key === "Tab")
+      && !event.isComposing && !isEditingBusy() && !isEditableElement(event.target)) {
+      event.preventDefault();
+      event.stopPropagation();
+      dismissQuickRound();
+    }
+    return;
+  }
   if (event.isComposing || composing) {
     cancelPendingActivation();
     return;

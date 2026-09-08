@@ -75,6 +75,10 @@ function harness(options = {}) {
         constructor(opts) {
           const win = new FakeWindow("quick");
           win.opts = opts;
+          if (options.onQuickFocus) {
+            const focus = win.focus.bind(win);
+            win.focus = () => { focus(); options.onQuickFocus(); };
+          }
           if (options.quickShowThrows) {
             win.show = () => { throw new Error("native show failed"); };
           }
@@ -141,6 +145,7 @@ function nativeOriginHarness() {
   const h = harness({
     platform: "win32", snapshot: snapshotOf("s1"), originFocus: focus,
     onAttach: (name) => { if (name === "quick") foreground = "quick"; },
+    onQuickFocus: () => { foreground = "quick"; },
   });
   h.normal.focus = () => { h.normal.focused = true; foreground = "normal"; };
   return {
@@ -200,14 +205,17 @@ test("a new external foreground is captured instead of retaining the old source"
   assert.equal(h.foreground(), "source-B");
 });
 
-test("a busy refusal drops the retained origin rather than reviving it on a later press", () => {
+test("a busy refusal keeps the physical borrow's source without keeping a numeric round", () => {
   const h = nativeOriginHarness();
   h.arm();
   const refused = h.quick.show();
   assert.equal(h.quick.enter({ revision: refused.revision, busy: true }).status, "busy");
+  assert.equal(h.quick.isShown(), true, "refusing must not detach a busy editor");
+  assert.equal(h.quick.isActive(), false);
+  assert.equal(h.quick.isReady(), false);
   const next = h.arm();
   h.quick.dismissFromRenderer({ revision: next.revision });
-  assert.ok(!h.restores.includes("source-A"), "the refused round's origin is gone");
+  assert.deepEqual(h.restores, ["source-A"], "the same borrow, not an old exited round");
 });
 
 test("retaining an origin never bypasses source usability checks", () => {
@@ -219,7 +227,7 @@ test("retaining an origin never bypasses source usability checks", () => {
   assert.deepEqual(h.restores, []);
 });
 
-test("busy-at-ready and ordinary open both discard a replacement's old origin", () => {
+test("busy-at-ready keeps the borrow, but ordinary open ends its source continuity", () => {
   for (const exit of ["busy-at-ready", "ordinary-open"]) {
     const h = nativeOriginHarness();
     h.arm();
@@ -229,7 +237,56 @@ test("busy-at-ready and ordinary open both discard a replacement's old origin", 
     else h.quick.endForOrdinaryOpen();
     const next = h.arm();
     h.quick.dismissFromRenderer({ revision: next.revision });
-    assert.ok(!h.restores.includes("source-A"), exit);
+    assert.equal(h.restores.includes("source-A"), exit === "busy-at-ready", exit);
+  }
+});
+
+test("busy never carries an old source across a real exit or new foreground", () => {
+  for (const exit of ["external-blur", "new-foreground", "ordinary-open"]) {
+    const h = nativeOriginHarness();
+    h.arm();
+    const refused = h.quick.show();
+    h.quick.enter({ revision: refused.revision, busy: true });
+    h.setForeground("source-B");
+    if (exit === "external-blur") h.quickWindow().emit("blur");
+    if (exit === "ordinary-open") h.quick.endForOrdinaryOpen();
+    const next = h.arm();
+    h.quick.dismissFromRenderer({ revision: next.revision });
+    assert.deepEqual(h.restores, ["source-B"], exit);
+  }
+});
+
+test("a refused borrowed editor still returns or cleans up on lifecycle exits", () => {
+  for (const reason of ["navigation", "page-gone", "ordinary-open", "dispose"]) {
+    const h = nativeOriginHarness();
+    h.arm();
+    const refused = h.quick.show();
+    h.quick.enter({ revision: refused.revision, busy: true });
+    if (reason === "ordinary-open") h.quick.endForOrdinaryOpen();
+    else if (reason === "dispose") h.quick.dispose();
+    else h.quick.invalidateRound(reason);
+    assert.equal(h.quick.isShown(), false, reason);
+    assert.equal(h.quick.isParked(), false, reason);
+    assert.equal(h.normal.opacity, 1, reason);
+    assert.ok(h.sent.some(message => message.channel === "dashboard:quick-dismissed"
+      && message.payload.revision === refused.revision), reason);
+    assert.equal(h.quick.dismissFromRenderer({ revision: refused.revision }).status, "stale", reason);
+    assert.equal(h.restores.includes("source-A"), ["navigation", "page-gone"].includes(reason), reason);
+  }
+});
+
+test("a reused borrow whose host disappeared never arms a newly created empty window", () => {
+  for (const lost of ["destroyed", "hidden"]) {
+    const h = nativeOriginHarness();
+    h.arm();
+    const replacement = h.quick.show();
+    if (lost === "destroyed") h.quickWindow().destroyed = true;
+    else h.quickWindow().visible = false;
+    h.quick.enter({ revision: replacement.revision, busy: false });
+    assert.equal(h.quick.ready({ revision: replacement.revision, busy: false }).status, "error", lost);
+    assert.equal(h.quick.isReady(), false, lost);
+    assert.equal(h.quick.isShown(), false, lost);
+    assert.equal(h.quick.isParked(), false, lost);
   }
 });
 

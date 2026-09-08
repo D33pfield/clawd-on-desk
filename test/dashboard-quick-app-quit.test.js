@@ -297,6 +297,20 @@ test("a quit during a live borrow returns the page and un-parks before closing",
   assert.equal(h.page().closeCount, 1);
 });
 
+test("a quit after busy refusal closes the still-borrowed editor without a numeric round", () => {
+  const h = harness();
+  const ordinary = h.openDashboard();
+  h.borrow();
+  const refused = h.dashboard.quick.show();
+  h.dashboard.quick.enter({ revision: refused.revision, busy: true });
+  assert.equal(h.dashboard.quick.isShown(), true);
+  assert.equal(h.dashboard.quick.isActive(), false);
+  assert.equal(h.quitApp(), true);
+  assert.deepEqual(ordinary.opacityCalls, [0, 1]);
+  assert.deepEqual(ordinary.ignoreMouseCalls, [true, false]);
+  assert.equal(h.page().closeCount, 1);
+});
+
 test("a quit during an in-place round closes without creating a quick host", () => {
   const h = harness();
   const ordinary = h.openDashboard();
