@@ -25,6 +25,13 @@ const createOriginFocus = require("./quick-select-origin-focus");
 
 const QUICK_PLATFORMS = new Set(["darwin", "win32"]);
 
+// Page-level invalidations: the document the round was negotiated with is gone
+// (reload, failed load, crashed/destroyed page). They end the round while this
+// owner may still hold the foreground it borrowed, and unlike a blur, an
+// external click or a real jump, nothing else has been given the keyboard — so
+// the borrowed foreground goes back exactly like an explicit cancel.
+const FOREGROUND_RETURNING_REASONS = new Set(["navigation", "load-failed", "page-gone"]);
+
 function isSupportedQuickPlatform(platform) {
   return QUICK_PLATFORMS.has(platform);
 }
@@ -111,6 +118,12 @@ function createDashboardQuickMode(ctx = {}) {
   const snapshot = () => (ctx.getSessionSnapshot && ctx.getSessionSnapshot()) || { sessions: [] };
   const normalWindow = () => (ctx.getNormalWindow ? ctx.getNormalWindow() : null);
   const webContents = () => (ctx.getWebContents ? ctx.getWebContents() : null);
+  // True once the application itself is shutting down. A close arriving then is
+  // Electron asking for the window back, not a user cancelling a round.
+  const appQuitting = () => {
+    if (typeof ctx.isAppQuitting !== "function") return false;
+    try { return ctx.isAppQuitting() === true; } catch { return false; }
+  };
 
   function send(channel, payload) {
     const contents = webContents();
@@ -160,6 +173,13 @@ function createDashboardQuickMode(ctx = {}) {
     });
     created.on("close", (event) => {
       if (created !== quickWindow) return;
+      // A quit closes every window before `will-quit`, so refusing the close
+      // here would cancel the quit itself and leave this hidden window (and the
+      // process) alive. Return the page, then let the window go.
+      if (appQuitting()) {
+        dismiss({ reason: "app-quit" });
+        return;
+      }
       // The quick host is a transient surface for the shared page; closing it
       // must return the page, not destroy the Dashboard.
       if (typeof event.preventDefault === "function") event.preventDefault();
@@ -240,6 +260,40 @@ function createDashboardQuickMode(ctx = {}) {
     }
   }
 
+  // Whether the given host is, right now, the native foreground window. False
+  // whenever the platform cannot answer (macOS, or Windows without the native
+  // bindings), which keeps every caller on the "do nothing" branch.
+  function stillHoldsForeground(win) {
+    if (typeof originFocus.holdsForeground !== "function") return false;
+    try {
+      return originFocus.holdsForeground(win) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Last resort after the quick host hid while it still owned the foreground
+  // and the source could not take it back (destroyed, minimized, reused by
+  // another process, or never captured). Windows can leave the hidden tool
+  // window as GetForegroundWindow(), which leaves no visible window holding the
+  // keyboard at all. Hand it to the window that now holds the page — never to
+  // an unrelated window, never by showing or restoring a host the user had not
+  // opened, and never to a host whose page is gone.
+  function returnForegroundToOrdinaryHost() {
+    const win = normalWindow();
+    if (!isLiveWindow(win)) return false;
+    if (callSafe(win, "isVisible") !== true) return false;
+    if (callSafe(win, "isMinimized") === true) return false;
+    if (!webContents()) return false;
+    selfFocus(() => {
+      callSafe(win, "focus");
+      if (ctx.focusPage) {
+        try { ctx.focusPage(); } catch {}
+      }
+    });
+    return true;
+  }
+
   // Ends the round: invalidate first, then restore the page, then hide.
   function dismiss(options = {}) {
     const endedRevision = activeRevision || pendingRevision;
@@ -260,12 +314,20 @@ function createDashboardQuickMode(ctx = {}) {
       if (wasShown) attachViewTo(normalWindow());
       unparkNormalHost();
       if (isLiveWindow(quickWindow) && callSafe(quickWindow, "isVisible") === true) {
-        // Only an explicit cancel returns the borrowed foreground. A blur or a
-        // real jump already handed focus somewhere the user chose.
-        if (options.restoreOrigin === true && !wasSubmitted) {
-          originFocus.restore(previousOrigin, quickWindow);
-        }
+        // Only an explicit cancel or a page-level invalidation returns the
+        // borrowed foreground. A blur or a real jump already handed focus
+        // somewhere the user chose.
+        const returning = options.restoreOrigin === true && !wasSubmitted;
+        const restored = returning && originFocus.restore(previousOrigin, quickWindow) === true;
         selfFocus(() => callSafe(quickWindow, "hide"));
+        // The fallback below is only allowed while this owner still owns the
+        // foreground, and that has to be proven AFTER the hide: hiding can hand
+        // the foreground to whatever the OS picks next, and that window is the
+        // user's, not ours to take. A probe from before the hide would authorize
+        // stealing it.
+        if (returning && !restored && stillHoldsForeground(quickWindow)) {
+          returnForegroundToOrdinaryHost();
+        }
       }
       // Back on the ordinary host: restore that display's page scale.
       if (wasShown) ctx.applyPageScale && ctx.applyPageScale();
@@ -287,10 +349,13 @@ function createDashboardQuickMode(ctx = {}) {
   }
 
   // The page navigated, reloaded, failed to load or died. Whatever round was
-  // in flight is meaningless now: no late enter/ready reply may revive it.
+  // in flight is meaningless now: no late enter/ready reply may revive it, and
+  // the borrowed foreground goes back to the source rather than staying with a
+  // window that is about to be hidden.
   function invalidateRound(reason) {
     if (!activeRevision && !pendingRevision && !shown && !parked) return false;
-    dismiss({ reason: reason || "page-invalidated" });
+    const key = reason || "page-invalidated";
+    dismiss({ reason: key, restoreOrigin: FOREGROUND_RETURNING_REASONS.has(key) });
     return true;
   }
 
@@ -538,9 +603,10 @@ function createDashboardQuickMode(ctx = {}) {
       });
     },
     // Page/renderer went away: drop the round and un-park so no invisible,
-    // click-through ordinary host can survive.
+    // click-through ordinary host can survive. Same foreground rule as the
+    // other page-level invalidations.
     handlePageGone() {
-      dismiss({ reason: "page-gone" });
+      dismiss({ reason: "page-gone", restoreOrigin: true });
     },
     dispose() {
       dismiss({ reason: "dispose" });

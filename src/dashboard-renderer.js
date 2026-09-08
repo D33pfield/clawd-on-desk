@@ -67,6 +67,172 @@ const quick = {
 };
 let composing = false;
 
+// ── Scroll continuity across a host transfer ────────────────────────────────
+// Observed on Windows (#972): after the mode borrowed this page and handed it
+// back, `#content` was at exactly 0. Same WebContents, same document token,
+// same group/card order and same scrollHeight before and after — but *which*
+// step drops the offset is not established. The card tree is rebuilt
+// (replaceChildren) on every render, the view is re-parented between two native
+// hosts, the host size changes and focus moves; the evidence does not single
+// any of them out, and this page cannot see below itself to find out. So this
+// is a repair, not a prevention, and it is deliberately narrow:
+//
+//   * `top` is the position the user last chose. A landing on exactly 0 that no
+//     user gesture produced never overwrites it.
+//   * `armed` is only true while a transfer is plausible: from the start of a
+//     round until the round has ended and one settling signal has arrived.
+//     Outside that window nothing is ever repaired.
+//   * a repair only fires at exactly 0, only while armed, only when the content
+//     is still tall enough, and it clamps to the current maximum.
+//   * a scroll the user asked for always wins, including a scroll to the top.
+//     Chromium turns one wheel notch into a whole animation — a scroll event
+//     per frame, only the first of which sits next to an input event — so what
+//     is tracked is the *gesture* (wheel / scrolling keys; the keys
+//     come from the document-capture handler, so a key that never reaches this
+//     element still counts), and every frame it produces belongs to the user.
+//     A gesture ends at `scrollend` or when a movement reverses it. Pointer
+//     holds are separate: a plain click must not leave a gesture waiting for
+//     a scrollend that will never come. Drag positions belong to the user
+//     until release, including a last position whose scroll event is queued.
+//
+// The repair rides the scroll/resize signals the transfer itself produces plus
+// the round's own IPC boundaries — no timers and no retry loops, which could
+// otherwise land on top of a scroll the user made in the meantime.
+const SCROLL_INTENT_KEYS = new Set([
+  "PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " ", "Spacebar",
+]);
+// Native keyboard semantics only, not the feature's platform-availability gate.
+// On macOS bare Home scrolls the page even while a text input owns focus; on
+// Windows that same key moves the caret and must not open a page gesture.
+const MAC_INPUT_HOME_SCROLL = typeof navigator !== "undefined"
+  && /^Mac/.test(navigator.platform || "");
+const scrollGuard = {
+  armed: false,
+  // The round ended: stay armed for the return transfer, then close on the
+  // first signal after it so nothing is repaired indefinitely.
+  settling: false,
+  top: 0,
+  // A scroll the user started that has not finished yet.
+  gesture: false,
+  // Which way that gesture is moving (-1 up, 1 down, 0 = not moved yet).
+  gestureDir: 0,
+  // A pointer is still down, so the whole drag is theirs whatever it does.
+  held: false,
+};
+let restoringScroll = false;
+
+function scrollMetrics() {
+  if (!contentEl) return null;
+  const top = contentEl.scrollTop;
+  const scrollHeight = contentEl.scrollHeight;
+  const clientHeight = contentEl.clientHeight;
+  if (!Number.isFinite(top) || !Number.isFinite(scrollHeight) || !Number.isFinite(clientHeight)) {
+    return null;
+  }
+  return { top, max: Math.max(0, scrollHeight - clientHeight) };
+}
+
+// The user started a scroll. Each input event opens a fresh gesture, so a
+// direction change (wheel down, then up) is not read as a reversal.
+function noteScrollIntent() {
+  scrollGuard.gesture = true;
+  scrollGuard.gestureDir = 0;
+}
+
+function endScrollGesture() {
+  scrollGuard.gesture = false;
+  scrollGuard.gestureDir = 0;
+}
+
+function endScrollHold() {
+  if (!scrollGuard.held) return;
+  // The last drag offset can be applied before its scroll event is delivered.
+  // Capture it while the pointer still owns it, without ending an independent
+  // wheel/key animation or recording releases that started outside content.
+  const metrics = scrollMetrics();
+  if (metrics) scrollGuard.top = metrics.top;
+  scrollGuard.held = false;
+}
+
+// Whether this scroll event is another frame of the gesture that is running.
+// Chromium animates one wheel notch into a sequence of scroll events that moves
+// steadily one way, so a same-direction move continues the gesture and a
+// reversal ends it. `scrollend` ends it properly where the event is available.
+function scrollContinuesGesture(top) {
+  if (!scrollGuard.gesture) return false;
+  const delta = top - scrollGuard.top;
+  // No movement attributes nothing, and must not end a running animation.
+  if (delta === 0) return false;
+  const direction = delta > 0 ? 1 : -1;
+  if (scrollGuard.gestureDir === 0) {
+    scrollGuard.gestureDir = direction;
+    return true;
+  }
+  if (scrollGuard.gestureDir === direction) return true;
+  endScrollGesture();
+  return false;
+}
+
+// From here on a transfer can move this page between hosts.
+function armScrollGuard() {
+  scrollGuard.armed = true;
+  scrollGuard.settling = false;
+  const metrics = scrollMetrics();
+  // A 0 here is either a top the user already chose (recorded when it happened)
+  // or an offset a transfer already dropped; neither is worth re-recording.
+  if (metrics && metrics.top !== 0) scrollGuard.top = metrics.top;
+}
+
+// The round is over. Main returns the view to the ordinary host *before* it
+// tells this page, so the return transfer can land first: stay armed for it.
+function settleScrollGuard() {
+  armScrollGuard();
+  scrollGuard.settling = true;
+}
+
+function closeScrollGuard() {
+  scrollGuard.armed = false;
+  scrollGuard.settling = false;
+}
+
+// One signal that the scroller may have moved: a scroll event, a layout change
+// or a transfer that just reported back.
+function handleScrollSignal(options = {}) {
+  if (restoringScroll) return false;
+  const metrics = scrollMetrics();
+  if (!metrics) {
+    closeScrollGuard();
+    return false;
+  }
+  // Only a scroll event can belong to a gesture; a layout signal or an IPC
+  // reply never does, and must not end one either.
+  const userOwned = options.fromScrollEvent === true
+    && (scrollGuard.held || scrollContinuesGesture(metrics.top));
+  if (!scrollGuard.armed) {
+    // No transfer is possible right now, so wherever the page sits is simply
+    // where the user is.
+    scrollGuard.top = metrics.top;
+    return false;
+  }
+  let repaired = false;
+  if (metrics.top !== 0 || userOwned) {
+    // A real position: the user's own, or a legitimate clamp.
+    scrollGuard.top = metrics.top;
+  } else if (scrollGuard.top > 0 && metrics.max > 0) {
+    restoringScroll = true;
+    try {
+      contentEl.scrollTop = Math.min(scrollGuard.top, metrics.max);
+    } finally {
+      restoringScroll = false;
+    }
+    const after = scrollMetrics();
+    if (after) scrollGuard.top = after.top;
+    repaired = true;
+  }
+  if (scrollGuard.settling) closeScrollGuard();
+  return repaired;
+}
+
 function isEditableElement(el) {
   if (!el || !el.tagName) return false;
   const tag = el.tagName;
@@ -117,6 +283,10 @@ function endQuickRound() {
   quick.hintKey = "";
   renderQuickBanner();
   render();
+  // After this round's own repaint, so the settle window is not closed by it:
+  // the page may still be on its way back to the ordinary host, because main
+  // returns the view before it sends the dismissal.
+  settleScrollGuard();
 }
 
 function setQuickHint(key) {
@@ -200,6 +370,9 @@ async function beginQuickRound(revision) {
   }
 
   // Paint the digits into the existing page before the quick host appears.
+  // Everything from here on can move this page to another native host, so
+  // remember where the user is first.
+  armScrollGuard();
   renderQuickBanner();
   render({ force: true });
   let readyResult;
@@ -211,7 +384,13 @@ async function beginQuickRound(revision) {
   if (seq !== quick.roundSeq) return;
   // Main refused or could not arm the round: drop the local mode so the page
   // never shows digits that cannot be activated.
-  if (!readyResult || (readyResult.status !== "ok")) endQuickRound();
+  if (!readyResult || (readyResult.status !== "ok")) {
+    endQuickRound();
+    return;
+  }
+  // The page is on its new host. If the move dropped the offset before this
+  // reply, no later scroll or layout signal is coming to report it.
+  handleScrollSignal();
 }
 
 function dismissQuickRound() {
@@ -278,6 +457,21 @@ function armQuickHandoff() {
 }
 
 function handleQuickKeydown(event) {
+  // Scroll intent first, and before the round check: this handler is on
+  // document capture, so it is the one place that sees a scrolling key no
+  // matter which element it is aimed at (the scroller itself is not focusable,
+  // so such a key often targets body). It must never change what the mode does
+  // with the key.
+  const buttonSpace = event && (event.key === " " || event.key === "Spacebar")
+    && event.target && event.target.tagName === "BUTTON";
+  const macInputHome = MAC_INPUT_HOME_SCROLL && event && event.key === "Home"
+    && event.target && event.target.tagName === "INPUT"
+    && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
+  if (event && SCROLL_INTENT_KEYS.has(event.key)
+    && !event.defaultPrevented && !event.isComposing && !composing && !buttonSpace
+    && (macInputHome || (!isEditingBusy() && !isEditableElement(event.target)))) {
+    noteScrollIntent();
+  }
   if (!quick.active) return;
   if (event.isComposing || composing) {
     cancelPendingActivation();
@@ -1636,6 +1830,9 @@ function hasFocusedSessionAutomationSelect() {
 }
 
 function render(options = {}) {
+  // A round that ended settles here if no scroll or layout signal closed it
+  // first: the guard must never stay armed indefinitely.
+  if (scrollGuard.settling) handleScrollSignal();
   // The one-second elapsed-time tick normally rebuilds the entire card tree.
   // Replacing a focused native <select> closes its open menu on Windows, so
   // defer ordinary snapshot/timer renders until the user finishes choosing.
@@ -1748,6 +1945,41 @@ function initQuickMode() {
   // A real page blur cancels an unsubmitted jump; main ends the round too.
   window.addEventListener("blur", cancelPendingActivation);
   window.addEventListener("beforeunload", cancelPendingActivation);
+
+  // Scroll continuity (see the guard near the top of this file): these are the
+  // signals a host transfer produces, plus the gestures that must always win
+  // over the remembered offset. Scrolling keys are handled in
+  // handleQuickKeydown, which is on document capture and therefore sees a key
+  // whatever it is aimed at.
+  if (contentEl && typeof contentEl.addEventListener === "function") {
+    // Passive: these only read state, and a non-passive wheel listener would
+    // make the compositor wait for JS on every scroll.
+    contentEl.addEventListener(
+      "scroll",
+      () => { handleScrollSignal({ fromScrollEvent: true }); },
+      { passive: true }
+    );
+    // Chromium fires `scrollend` once a scroll and any animation it started
+    // have finished (shipped in Chrome 114; this app runs a much newer
+    // Chromium). Where it is missing, a reversal still ends the gesture.
+    contentEl.addEventListener("scrollend", endScrollGesture, { passive: true });
+    contentEl.addEventListener("wheel", () => noteScrollIntent(), { passive: true });
+    contentEl.addEventListener("pointerdown", () => { scrollGuard.held = true; }, { passive: true });
+    // A drag usually ends outside the scroller, so the release is watched on
+    // the document.
+    document.addEventListener("pointerup", endScrollHold, { passive: true });
+    document.addEventListener("pointercancel", endScrollHold, { passive: true });
+    // A key that scrolls can be aimed anywhere, so it is marked from the
+    // document-capture handler in handleQuickKeydown, not from here.
+    if (typeof ResizeObserver === "function") {
+      try {
+        // Entering or leaving the mode re-lays the scroller out (the banner
+        // alone changes its height), so this fires right after the layout that
+        // could have dropped the offset.
+        new ResizeObserver(() => { handleScrollSignal(); }).observe(contentEl);
+      } catch { /* no observer: the scroll signal still covers the usual case */ }
+    }
+  }
 
   api.onQuickIntent((payload) => {
     void beginQuickRound(payload && payload.revision);

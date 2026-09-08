@@ -5,7 +5,7 @@
 // while the palette itself still owns foreground. Never use ALT injection,
 // z-order changes, or this path after a real target/user-driven focus change.
 module.exports = function createQuickSelectOriginFocus(options = {}) {
-  const noop = { capture: () => null, restore: () => false };
+  const noop = { capture: () => null, restore: () => false, holdsForeground: () => false };
   if ((options.platform || process.platform) !== "win32") return noop;
   let bindings = options.bindings;
   try {
@@ -31,6 +31,15 @@ module.exports = function createQuickSelectOriginFocus(options = {}) {
     return noop;
   }
   return {
+    // Whether the palette itself is still the foreground window. Callers use it
+    // to tell "we are giving our own foreground back" from "the user already
+    // went somewhere else"; it never changes anything.
+    holdsForeground(win) {
+      try {
+        if (!win || win.isDestroyed()) return false;
+        return bindings.same(bindings.foreground(), bindings.hwndOf(win));
+      } catch { return false; }
+    },
     capture(win, previous = null) {
       try {
         const hwnd = bindings.foreground();

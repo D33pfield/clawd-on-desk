@@ -2567,6 +2567,7 @@ const _dashboard = require("./dashboard")({
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
   getI18n: () => getDashboardI18nPayload(),
   focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
+  isAppQuitting: () => isQuitting,
   getPetWindowBounds,
   getNearestWorkArea,
   getSettingsWindow: () => settingsWindowRuntime.getWindow(),
@@ -2589,6 +2590,14 @@ broadcastDashboardSessionSnapshot = (snapshot) => {
 sendDashboardI18n = () => {
   _dashboard.sendI18n();
 };
+// The quick host is a real window whose own `close` handler refuses to close
+// (it is a borrow surface for the shared page, not something the user destroys).
+// Electron closes every window BEFORE `will-quit`, so disposing it only there
+// deadlocks a normal Quit: the close is refused, the window survives and
+// `will-quit` never arrives. Tear it down while the app is still deciding to
+// quit; the `will-quit` call stays as an idempotent backstop for a host created
+// after that point.
+app.on("before-quit", () => _dashboard.quick.dispose());
 app.on("will-quit", () => _dashboard.quick.dispose());
 
 // ── First-run onboarding tutorial ──

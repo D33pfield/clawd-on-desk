@@ -816,6 +816,7 @@ module.exports = function initDashboard(ctx) {
     getBackgroundColor: getDashboardBackgroundColor,
     getSessionSnapshot: getCurrentSnapshot,
     focusSession: ctx.focusSession,
+    isAppQuitting: ctx.isAppQuitting,
     getNormalWindow: () => dashboardWindow,
     getWebContents,
     ensurePage: ensurePageForQuickMode,

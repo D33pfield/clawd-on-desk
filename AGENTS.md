@@ -121,7 +121,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 | `src/update-bubble.js` | 更新气泡创建、测高、跟随桌宠定位，避让 HUD / permission stack |
 | `src/dashboard.js` + `src/dashboard-renderer.js` | Sessions Dashboard 唯一 owner：会话列表、别名编辑、终端跳转、几何持久化，以及同一页面的临时键盘模式 |
 | `src/dashboard-host.js` | Dashboard 普通宿主的平台封装：darwin/win32 用 `BaseWindow + WebContentsView`（无 `ready-to-show`），Linux 保留 `BrowserWindow` |
-| `src/dashboard-quick-mode.js` | 完整 Dashboard 的 1–9 键盘模式（**macOS/Windows only**）：quick 宿主、opacity/input parking、轮次栅栏与冻结数字映射；Windows 显式取消的来源恢复在 `src/quick-select-origin-focus.js` |
+| `src/dashboard-quick-mode.js` | 完整 Dashboard 的 1–9 键盘模式（**macOS/Windows only**）：quick 宿主、opacity/input parking、轮次栅栏与冻结数字映射；Windows 显式取消与页面失效的来源恢复在 `src/quick-select-origin-focus.js`，quick 宿主的退出清理挂在 `before-quit` |
 | `src/session-hud.js` + `src/session-hud-renderer.js` | 桌宠旁轻量会话 HUD、折叠行、点击跳转 |
 | `src/session-alias.js` | session alias key 规范化、TTL pruning、Kiro cwd scope |
 | `src/theme-loader.js` + `src/theme-runtime.js` | stateless 主题加载/消毒与唯一 active-theme owner |
