@@ -294,6 +294,23 @@ function createDashboardQuickMode(ctx = {}) {
     return true;
   }
 
+  // Windows may select the ordinary HWND on a source-window minimize without
+  // updating Electron's isFocused() bit or delivering another focus event.
+  // After the view has come home, give ONLY its page the keyboard. This is not
+  // a foreground return: the OS already chose the destination. Never raise a
+  // window, and prove that choice after our hide/scale work, not before it.
+  function focusReturnedPageIfNativeHostOwnsKeyboard() {
+    if (platform !== "win32" || appQuitting() || shown || parked) return;
+    const win = normalWindow();
+    if (!isLiveWindow(win) || callSafe(win, "isVisible") !== true) return;
+    if (callSafe(win, "isMinimized") === true) return;
+    if (callSafe(win, "isFocused") === true) return; // the ordinary focus handler covers this
+    if (!stillHoldsForeground(win) || typeof ctx.focusReturnedPage !== "function") return;
+    selfFocus(() => {
+      try { ctx.focusReturnedPage(win); } catch {}
+    });
+  }
+
   // Ends the round: invalidate first, then restore the page, then hide.
   function dismiss(options = {}) {
     const endedRevision = activeRevision || pendingRevision;
@@ -311,7 +328,7 @@ function createDashboardQuickMode(ctx = {}) {
     shown = false;
 
     if (wasActive || wasShown) {
-      if (wasShown) attachViewTo(normalWindow());
+      const pageReturned = !wasShown || attachViewTo(normalWindow());
       unparkNormalHost();
       if (isLiveWindow(quickWindow) && callSafe(quickWindow, "isVisible") === true) {
         // Only an explicit cancel or a page-level invalidation returns the
@@ -331,6 +348,9 @@ function createDashboardQuickMode(ctx = {}) {
       }
       // Back on the ordinary host: restore that display's page scale.
       if (wasShown) ctx.applyPageScale && ctx.applyPageScale();
+      if (wasShown && pageReturned && (options.reason === "blur" || options.reason === "normal-host-focus")) {
+        focusReturnedPageIfNativeHostOwnsKeyboard();
+      }
     } else {
       // A pending-but-unaccepted round never touched the hosts.
       unparkNormalHost();
@@ -385,7 +405,14 @@ function createDashboardQuickMode(ctx = {}) {
 
     // A second press supersedes the previous offer; the old round can no
     // longer accept, activate or dismiss.
+    // Its original source survives only while this unsubmitted borrow (or its
+    // replacement offer) still owns native foreground. Dismiss normally clears
+    // it; recapturing the still-foreground quick HWND with null would then lose
+    // the source. A genuinely new foreground, refusal or exit must not inherit it.
+    const continuingOrigin = !submitted && (activeRevision || pendingRevision)
+      && stillHoldsForeground(quickWindow) ? origin : null;
     if (activeRevision || shown || parked) dismiss({ reason: "reenter" });
+    origin = continuingOrigin;
     revision += 1;
     pendingRevision = revision;
     mappedEntries = [];
@@ -407,6 +434,7 @@ function createDashboardQuickMode(ctx = {}) {
       // Refuse this press entirely: no mapping, no transfer, no latent armed
       // state. The draft/IME/select keeps its keyboard untouched.
       pendingRevision = 0;
+      origin = null;
       return { status: "busy", revision: payload.revision };
     }
     const candidates = orderedCandidates(snapshot()).map(publicEntry);
@@ -448,6 +476,7 @@ function createDashboardQuickMode(ctx = {}) {
       // The user is already looking at the Dashboard: arm the digits in place.
       // No borrow, no host flags, no geometry change.
       shown = false;
+      origin = null;
       readyRevision = activeRevision;
       return { status: "ok", inPlace: true };
     }

@@ -825,6 +825,14 @@ module.exports = function initDashboard(ctx) {
     syncViewBounds: () => syncViewBoundsFor(null),
     applyPageScale,
     focusPage,
+    focusReturnedPage: (win) => {
+      // The mode has just confirmed this exact native foreground. Recheck the
+      // owner's actual view attachment before focusing only its WebContents.
+      if (win !== dashboardWindow || !dashboardHost || dashboardHost.getHostedWindow() !== win) return;
+      const contents = getWebContents();
+      if (!contents || (typeof contents.isCrashed === "function" && contents.isCrashed())) return;
+      focusOwnedWebContents();
+    },
   });
 
   return {

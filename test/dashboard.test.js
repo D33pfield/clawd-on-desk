@@ -9,11 +9,18 @@ const { describe, it } = require("node:test");
 
 const DASHBOARD_MODULE_PATH = require.resolve("../src/dashboard");
 
-function loadDashboardWithElectron(fakeElectron) {
+function loadDashboardWithElectron(fakeElectron, originFocus) {
   delete require.cache[DASHBOARD_MODULE_PATH];
   const originalLoad = Module._load;
   Module._load = function patchedLoad(request, parent, isMain) {
     if (request === "electron") return fakeElectron;
+    if (originFocus && request === "./dashboard-quick-mode" && parent.filename === DASHBOARD_MODULE_PATH) {
+      const actual = originalLoad.apply(this, arguments);
+      return {
+        ...actual,
+        createDashboardQuickMode: (ctx) => actual.createDashboardQuickMode({ ...ctx, originFocus }),
+      };
+    }
     return originalLoad.apply(this, arguments);
   };
   try {
@@ -203,7 +210,7 @@ describe("dashboard window", () => {
       WebContentsView: FakeWebContentsView,
       nativeTheme,
     };
-    const initDashboard = loadDashboardWithElectron(fakeElectron);
+    const initDashboard = loadDashboardWithElectron(fakeElectron, options.originFocus);
     const dashboard = initDashboard({
       platform,
       electron: fakeElectron,
@@ -214,6 +221,7 @@ describe("dashboard window", () => {
       getSavedBounds: options.getSavedBounds,
       onSaveBounds: options.onSaveBounds,
       getTextScale: options.getTextScale,
+      isAppQuitting: options.isAppQuitting,
       setTimeout: options.setTimeout || ((callback, delay) => {
         timers.push({ callback, delay, cleared: false });
         return timers.length;
@@ -840,6 +848,105 @@ describe("dashboard window", () => {
     // The quick host's blur arrives afterwards and must be a no-op.
     quickWindow.emit("blur");
     assert.strictEqual(getPageContents().focusCount, pageBefore + 1);
+  });
+
+  // Windows F1: GetForegroundWindow/GUI focus root can name the ordinary host
+  // while Electron isFocused() is still false and no later focus event comes.
+  // These are independent inputs, not a fake in which native and Electron focus
+  // are assumed to be the same bit. The real Dashboard owner wires the repair.
+  function nativeReturnHarness(extra = {}) {
+    let foreground = null;
+    const h = borrowedHarness({
+      platform: "win32",
+      originFocus: {
+        capture: () => null,
+        restore: () => false,
+        holdsForeground: (win) => win === foreground,
+      },
+      ...extra,
+    });
+    return { ...h, setForeground: (win) => { foreground = win; } };
+  }
+
+  it("gives the returned page keyboard when Windows chose its host without Electron focus", () => {
+    const h = nativeReturnHarness();
+    const before = h.getPageContents().focusCount;
+    const windowBefore = h.normal.focusCount;
+    h.setForeground(h.normal);
+    assert.strictEqual(h.normal.isFocused(), false);
+
+    // No ordinary focus event is fabricated after this native blur.
+    h.quickWindow.emit("blur");
+
+    assert.strictEqual(h.dashboard.quick.isShown(), false);
+    assert.strictEqual(h.getPageContents().focusCount, before + 1);
+    assert.strictEqual(h.normal.focusCount, windowBefore, "only the page, never the window");
+  });
+
+  it("covers ordinary focus arriving first with the same native/Electron disagreement", () => {
+    const h = nativeReturnHarness();
+    const before = h.getPageContents().focusCount;
+    h.setForeground(h.normal);
+    h.normal.emit("focus");
+    h.quickWindow.emit("blur");
+    assert.strictEqual(h.getPageContents().focusCount, before + 1);
+    assert.strictEqual(h.dashboard.quick.isActive(), false);
+  });
+
+  it("rechecks the chosen foreground after hide and never takes an external window's keys", () => {
+    const h = nativeReturnHarness();
+    const before = h.getPageContents().focusCount;
+    h.setForeground(h.normal);
+    const hide = h.quickWindow.hide.bind(h.quickWindow);
+    h.quickWindow.hide = () => { hide(); h.setForeground({ name: "external" }); };
+    h.quickWindow.emit("blur");
+    assert.strictEqual(h.getPageContents().focusCount, before);
+  });
+
+  it("does not repair the returned page when hidden, minimized, crashed, destroyed or quitting", () => {
+    for (const mode of ["hidden", "minimized", "crashed", "destroyed", "quitting"]) {
+      let quitting = false;
+      const h = nativeReturnHarness({ isAppQuitting: () => quitting });
+      const page = h.getPageContents();
+      const before = page.focusCount;
+      h.setForeground(h.normal);
+      if (mode === "hidden") h.normal.visible = false;
+      if (mode === "minimized") h.normal.isMinimized = () => true;
+      if (mode === "crashed") page.isCrashed = () => true;
+      if (mode === "destroyed") page.destroyed = true;
+      if (mode === "quitting") quitting = true;
+      h.quickWindow.emit("blur");
+      assert.strictEqual(page.focusCount, before, mode);
+    }
+  });
+
+  it("does not introduce a native-return focus action on macOS", () => {
+    const h = nativeReturnHarness({ platform: "darwin" });
+    const before = h.getPageContents().focusCount;
+    h.setForeground(h.normal);
+    h.quickWindow.emit("blur");
+    assert.strictEqual(h.getPageContents().focusCount, before);
+  });
+
+  it("does not focus an unattached page if the view's return fails", () => {
+    const h = nativeReturnHarness();
+    const before = h.getPageContents().focusCount;
+    h.setForeground(h.normal);
+    h.normal.contentView.addChildView = () => { throw new Error("native reattach failed"); };
+    h.quickWindow.emit("blur");
+    assert.strictEqual(h.getPageContents().focusCount, before);
+    assert.strictEqual(h.dashboard.quick.isActive(), false);
+  });
+
+  it("fails closed if the native foreground probe is unavailable or throws", () => {
+    for (const holdsForeground of [undefined, () => false, () => { throw new Error("native probe failed"); }]) {
+      const h = nativeReturnHarness({ originFocus: {
+        capture: () => null, restore: () => false, holdsForeground,
+      } });
+      const before = h.getPageContents().focusCount;
+      h.quickWindow.emit("blur");
+      assert.strictEqual(h.getPageContents().focusCount, before);
+    }
   });
 
   it("gives the page the keyboard when a plain ordinary window is focused", () => {

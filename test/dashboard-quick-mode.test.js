@@ -15,6 +15,7 @@ const {
   isSupportedQuickPlatform,
   orderedCandidates,
 } = require("../src/dashboard-quick-mode");
+const createOriginFocus = require("../src/quick-select-origin-focus");
 
 class FakeWindow {
   constructor(name) {
@@ -119,6 +120,153 @@ const focusable = (id) => ({ id, canFocus: true, displayTitle: `T ${id}`, agentN
 const snapshotOf = (...ids) => ({
   sessions: ids.map(focusable),
   groups: [{ host: "local", ids }],
+});
+
+// Production mode + production origin adapter, with native foreground separate
+// from FakeWindow.focused. A hidden quick host can remain GetForegroundWindow
+// during re-entry, exactly as the Windows F2 trace recorded.
+function nativeOriginHarness() {
+  let foreground = "source-A";
+  let sourceUsable = true;
+  const restores = [];
+  const focus = createOriginFocus({ platform: "win32", bindings: {
+    foreground: () => foreground,
+    hwndOf: (win) => win.name,
+    same: (a, b) => a === b,
+    pid: () => 17,
+    visible: () => true,
+    minimized: (hwnd) => hwnd.startsWith("source") && !sourceUsable,
+    setForeground: (hwnd) => { restores.push(hwnd); foreground = hwnd; return true; },
+  } });
+  const h = harness({
+    platform: "win32", snapshot: snapshotOf("s1"), originFocus: focus,
+    onAttach: (name) => { if (name === "quick") foreground = "quick"; },
+  });
+  h.normal.focus = () => { h.normal.focused = true; foreground = "normal"; };
+  return {
+    ...h, restores,
+    foreground: () => foreground,
+    setForeground: (value) => { foreground = value; },
+    disableSource: () => { sourceUsable = false; },
+    arm() {
+      const round = h.quick.show();
+      h.quick.enter({ revision: round.revision, busy: false });
+      h.quick.ready({ revision: round.revision, busy: false });
+      return round;
+    },
+  };
+}
+
+test("native re-entry then Esc keeps the original source through multiple revisions", () => {
+  const h = nativeOriginHarness();
+  const first = h.arm();
+  h.arm();
+  const third = h.arm();
+  assert.equal(h.quick.dismissFromRenderer({ revision: first.revision }).status, "stale");
+  assert.deepEqual(h.restores, [], "re-entry itself never raises the source");
+  h.quick.dismissFromRenderer({ revision: third.revision });
+  assert.equal(h.foreground(), "source-A");
+  assert.deepEqual(h.restores, ["source-A"]);
+});
+
+test("a repeated pending offer retains its source until the latest revision is accepted", () => {
+  const h = nativeOriginHarness();
+  h.arm();
+  const pending = h.quick.show();
+  const latest = h.arm();
+  assert.equal(h.quick.enter({ revision: pending.revision, busy: false }).status, "stale");
+  h.quick.dismissFromRenderer({ revision: latest.revision });
+  assert.equal(h.foreground(), "source-A");
+});
+
+test("a replacement accepted before ready can be superseded without losing its source", () => {
+  const h = nativeOriginHarness();
+  h.arm();
+  const accepted = h.quick.show();
+  h.quick.enter({ revision: accepted.revision, busy: false });
+  const latest = h.arm();
+  assert.equal(h.quick.ready({ revision: accepted.revision, busy: false }).status, "stale");
+  h.quick.dismissFromRenderer({ revision: latest.revision });
+  assert.equal(h.foreground(), "source-A");
+});
+
+test("a new external foreground is captured instead of retaining the old source", () => {
+  const h = nativeOriginHarness();
+  h.arm();
+  h.setForeground("source-B");
+  // Even if the native blur callback has not arrived, a new source must win.
+  const latest = h.arm();
+  h.quick.dismissFromRenderer({ revision: latest.revision });
+  assert.equal(h.foreground(), "source-B");
+});
+
+test("a busy refusal drops the retained origin rather than reviving it on a later press", () => {
+  const h = nativeOriginHarness();
+  h.arm();
+  const refused = h.quick.show();
+  assert.equal(h.quick.enter({ revision: refused.revision, busy: true }).status, "busy");
+  const next = h.arm();
+  h.quick.dismissFromRenderer({ revision: next.revision });
+  assert.ok(!h.restores.includes("source-A"), "the refused round's origin is gone");
+});
+
+test("retaining an origin never bypasses source usability checks", () => {
+  const h = nativeOriginHarness();
+  h.arm();
+  const latest = h.arm();
+  h.disableSource();
+  h.quick.dismissFromRenderer({ revision: latest.revision });
+  assert.deepEqual(h.restores, []);
+});
+
+test("busy-at-ready and ordinary open both discard a replacement's old origin", () => {
+  for (const exit of ["busy-at-ready", "ordinary-open"]) {
+    const h = nativeOriginHarness();
+    h.arm();
+    const replacement = h.quick.show();
+    h.quick.enter({ revision: replacement.revision, busy: false });
+    if (exit === "busy-at-ready") h.quick.ready({ revision: replacement.revision, busy: true });
+    else h.quick.endForOrdinaryOpen();
+    const next = h.arm();
+    h.quick.dismissFromRenderer({ revision: next.revision });
+    assert.ok(!h.restores.includes("source-A"), exit);
+  }
+});
+
+test("a replacement armed in place does not pass the former source to a later borrow", () => {
+  const h = nativeOriginHarness();
+  h.arm();
+  h.normal.focused = true;
+  h.setForeground("normal");
+  const inPlace = h.arm();
+  assert.equal(h.quick.isShown(), false);
+  h.quick.dismissFromRenderer({ revision: inPlace.revision });
+  h.normal.focused = false;
+  // Unknown/late foreground information may never resurrect the old source.
+  h.setForeground("quick");
+  const next = h.arm();
+  h.quick.dismissFromRenderer({ revision: next.revision });
+  assert.ok(!h.restores.includes("source-A"));
+});
+
+test("a submitted handoff cannot lend its source to a fresh shortcut press", () => {
+  const h = nativeOriginHarness();
+  const first = h.arm();
+  assert.equal(h.quick.activate({ revision: first.revision, sessionId: "s1" }).status, "submitted");
+  const next = h.arm();
+  h.quick.dismissFromRenderer({ revision: next.revision });
+  assert.ok(!h.restores.includes("source-A"));
+});
+
+test("an external blur ends source continuity even if the quick HWND later reports foreground", () => {
+  const h = nativeOriginHarness();
+  h.arm();
+  h.setForeground("source-B");
+  h.quickWindow().emit("blur");
+  h.setForeground("quick");
+  const next = h.arm();
+  h.quick.dismissFromRenderer({ revision: next.revision });
+  assert.ok(!h.restores.includes("source-A"));
 });
 
 test("platform support is limited to darwin and win32", () => {
