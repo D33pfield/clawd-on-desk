@@ -187,6 +187,11 @@ function createDashboardQuickMode(ctx = {}) {
       if (typeof event.preventDefault === "function") event.preventDefault();
       dismiss({ reason: "close", restoreOrigin: true });
     });
+    created.on("closed", () => {
+      // An exhausted Windows return may retire this empty shell. A delayed
+      // event from it must not clear a replacement created by a new shortcut.
+      if (quickWindow === created) quickWindow = null;
+    });
     created.on("resize", () => {
       if (created !== quickWindow || !shown) return;
       ctx.syncViewBounds && ctx.syncViewBounds();
@@ -296,6 +301,28 @@ function createDashboardQuickMode(ctx = {}) {
     return true;
   }
 
+  // If neither return target can take the keyboard, hiding a Windows toolbar
+  // can leave its empty HWND as native foreground. Retire only that shell and
+  // let Windows choose the next window; never pick an unrelated app ourselves.
+  // The shared page must already be safe at home, and the native ownership
+  // check is deliberately last (even the ordinary fallback may change it).
+  function retireStrandedQuickHost(pageReturned) {
+    const win = quickWindow;
+    if (platform !== "win32" || appQuitting() || !pageReturned || !isLiveWindow(win)) return false;
+    if (callSafe(win, "isVisible") !== false) return false;
+    try {
+      if (win.contentView.children.length !== 0) return false;
+    } catch { return false; }
+    if (!stillHoldsForeground(win)) return false;
+    return selfFocus(() => {
+      try {
+        win.destroy();
+        if (quickWindow === win) quickWindow = null;
+        return true;
+      } catch { return false; } // keep the handle tracked if destruction failed
+    });
+  }
+
   // Windows may select the ordinary HWND on a source-window minimize without
   // updating Electron's isFocused() bit or delivering another focus event.
   // After the view has come home, give ONLY its page the keyboard. This is not
@@ -333,6 +360,7 @@ function createDashboardQuickMode(ctx = {}) {
 
     if (wasActive || wasShown) {
       const pageReturned = !wasShown || attachViewTo(normalWindow());
+      let retiredQuickHost = false;
       unparkNormalHost();
       if (isLiveWindow(quickWindow) && callSafe(quickWindow, "isVisible") === true) {
         // Only an explicit cancel or a page-level invalidation returns the
@@ -347,12 +375,13 @@ function createDashboardQuickMode(ctx = {}) {
         // user's, not ours to take. A probe from before the hide would authorize
         // stealing it.
         if (returning && !restored && stillHoldsForeground(quickWindow)) {
-          returnForegroundToOrdinaryHost();
+          if (pageReturned) returnForegroundToOrdinaryHost();
+          retiredQuickHost = retireStrandedQuickHost(pageReturned);
         }
       }
       // Back on the ordinary host: restore that display's page scale.
       if (wasShown) ctx.applyPageScale && ctx.applyPageScale();
-      if (wasShown && pageReturned && (options.reason === "blur" || options.reason === "normal-host-focus")) {
+      if (wasShown && pageReturned && (retiredQuickHost || options.reason === "blur" || options.reason === "normal-host-focus")) {
         focusReturnedPageIfNativeHostOwnsKeyboard();
       }
     } else {

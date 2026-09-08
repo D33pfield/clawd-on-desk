@@ -39,11 +39,13 @@ function quickDisposeQuitEvents() {
   return events;
 }
 
-function loadDashboardWithElectron(fakeElectron) {
+function loadDashboardWithElectron(fakeElectron, originFocus) {
   delete require.cache[DASHBOARD_MODULE_PATH];
+  delete require.cache[require.resolve("../src/dashboard-quick-mode")];
   const originalLoad = Module._load;
   Module._load = function patchedLoad(request) {
     if (request === "electron") return fakeElectron;
+    if (request === "./quick-select-origin-focus" && originFocus) return () => originFocus;
     return originalLoad.apply(this, arguments);
   };
   try {
@@ -75,7 +77,7 @@ function harness(options = {}) {
     insertCSS() { return Promise.resolve("key"); }
     setZoomFactor() {}
     loadFile() { return Promise.resolve(); }
-    close() { this.closeCount += 1; }
+    close() { this.closeCount += 1; this.destroyed = true; this.emit("destroyed"); }
     once(name, callback) { this.onceCallbacks.set(name, callback); }
     on(name, callback) {
       const list = this.onCallbacks.get(name) || [];
@@ -85,6 +87,9 @@ function harness(options = {}) {
     emitOnce(name) {
       const callback = this.onceCallbacks.get(name);
       if (callback) callback();
+    }
+    emit(name, ...args) {
+      for (const callback of this.onCallbacks.get(name) || []) callback(...args);
     }
   }
 
@@ -122,8 +127,16 @@ function harness(options = {}) {
       this.onceCallbacks = new Map();
       const self = this;
       this.contentView = {
-        addChildView(view) { self.addedViews.push(view); },
-        removeChildView(view) { self.removedViews.push(view); },
+        children: [],
+        addChildView(view) {
+          self.addedViews.push(view);
+          for (const win of windows) win.contentView.children = win.contentView.children.filter(child => child !== view);
+          this.children.push(view);
+        },
+        removeChildView(view) {
+          self.removedViews.push(view);
+          this.children = this.children.filter(child => child !== view);
+        },
       };
       windows.push(this);
     }
@@ -188,7 +201,7 @@ function harness(options = {}) {
     nativeTheme,
   };
 
-  const initDashboard = loadDashboardWithElectron(fakeElectron);
+  const initDashboard = loadDashboardWithElectron(fakeElectron, options.originFocus);
   const dashboard = initDashboard({
     platform: options.platform || "darwin",
     electron: fakeElectron,
@@ -294,6 +307,44 @@ test("a quit during a live borrow returns the page and un-parks before closing",
   assert.deepEqual(ordinary.ignoreMouseCalls, [true, false]);
   assert.equal(ordinary.addedViews.length >= 2, true, "the page came back first");
   assert.equal(h.dashboard.quick.isActive(), false);
+  assert.equal(h.page().closeCount, 1);
+});
+
+test("closing the ordinary owner during a borrow cannot poison later empty-shell retirement", () => {
+  // The source stays unavailable; model only the native ownership needed for
+  // retirement. This test exercises the real dashboard and host teardown.
+  const h = harness({ platform: "win32", originFocus: {
+    capture: () => "minimized-source",
+    restore: () => false,
+    holdsForeground: () => true,
+  } });
+  const ordinary = h.openDashboard();
+  h.borrow();
+  const shell = h.quickWindow();
+  const oldPage = h.page();
+  assert.equal(shell.contentView.children.length, 1);
+  assert.equal(ordinary.requestClose(), true);
+  assert.equal(oldPage.isDestroyed(), true);
+  assert.equal(oldPage.closeCount, 1);
+  assert.equal(shell.destroyCount, 1, "closing the Dashboard owner also disposes its obsolete shell");
+  assert.equal(h.quickWindow(), null);
+
+  const next = h.borrow();
+  const nextShell = h.quickWindow();
+  assert.notEqual(nextShell, shell);
+  assert.notEqual(h.page(), oldPage, "only a closed Dashboard needs a new page");
+  assert.equal(nextShell.contentView.children.length, 1, "no stale view accompanies the new page");
+  const newOrdinary = h.dashboard.quick.getActiveHost() === nextShell
+    ? h.windows.find(win => win !== nextShell && !win.isDestroyed()) : null;
+  assert.ok(newOrdinary);
+  assert.equal(newOrdinary.isVisible(), false, "re-created ordinary host stays hidden");
+  h.dashboard.quick.dismissFromRenderer({ revision: next.revision });
+  assert.equal(nextShell.destroyCount, 1);
+  assert.equal(h.quickWindow(), null);
+  assert.equal(h.page().isDestroyed(), false, "the current page was returned, not destroyed");
+  assert.equal(h.page().closeCount, 0);
+  assert.equal(newOrdinary.contentView.children.length, 1);
+  assert.equal(h.quitApp(), true, "quit still works after the retirement");
   assert.equal(h.page().closeCount, 1);
 });
 

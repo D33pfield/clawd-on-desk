@@ -34,6 +34,8 @@ class FakeWindow {
     this.hiddenCount = 0;
     this.focusCount = 0;
     this.restoreCount = 0;
+    this.destroyCount = 0;
+    this.contentView = { children: [] };
     this.handlers = new Map();
   }
   isDestroyed() { return this.destroyed; }
@@ -44,7 +46,7 @@ class FakeWindow {
   hide() { this.visible = false; this.hiddenCount += 1; }
   restore() { this.minimized = false; this.restoreCount += 1; }
   focus() { this.focused = true; this.focusCount += 1; }
-  destroy() { this.destroyed = true; }
+  destroy() { this.destroyed = true; this.destroyCount += 1; this.emit("closed"); }
   getOpacity() { return this.opacity; }
   setOpacity(value) { this.opacity = value; this.opacityCalls.push(value); }
   setIgnoreMouseEvents(value) { this.ignoreMouseCalls.push(value); }
@@ -86,12 +88,19 @@ function harness(options = {}) {
   const attachments = [];
   const focusPageCalls = [];
   const originFocus = options.originFocus || fakeOriginFocus(options);
+  const focusNormal = normal.focus.bind(normal);
+  normal.focus = () => {
+    focusNormal();
+    options.holdsForeground = false; // ordinary fallback really took the native foreground
+  };
   let pageAlive = options.pageAlive !== false;
 
   const webContents = {
     isDestroyed: () => !pageAlive,
     send: (channel, payload) => sent.push({ channel, payload }),
   };
+  const view = { webContents };
+  normal.contentView.children.push(view);
 
   const quick = createDashboardQuickMode({
     platform: options.platform || "win32",
@@ -119,6 +128,10 @@ function harness(options = {}) {
     getQuickHostBounds: () => ({ x: 10, y: 20, width: 480, height: 600 }),
     attachViewTo: (win) => {
       attachments.push(win === normal ? "normal" : "quick");
+      for (const host of [normal, ...created]) {
+        host.contentView.children = host.contentView.children.filter(child => child !== view);
+      }
+      win.contentView.children.push(view);
       return true;
     },
     syncViewBounds: () => {},
@@ -225,6 +238,7 @@ test("a source that can no longer take focus falls back to the window holding th
   assert.equal(h.focusPageCalls.length, pageFocusBefore + 1, "and the page itself is focused");
   assert.equal(h.normal.shownCount, 0, "nothing was shown that the user had not opened");
   assert.equal(h.normal.restoreCount, 0);
+  assert.equal(h.quickWindow().destroyCount, 0, "a successful ordinary return keeps the reusable shell");
 });
 
 test("the fallback proves it still owns the foreground after hiding, not before", () => {
@@ -256,6 +270,7 @@ test("a hidden or minimized ordinary host is never revealed to take the foregrou
   hidden.quick.invalidateRound("navigation");
   assert.equal(hidden.normal.shownCount, 0, "a cold Dashboard stays closed");
   assert.equal(hidden.normal.focusCount, 0);
+  assert.equal(hidden.quickWindow().destroyCount, 1, "the stranded empty shell retires instead");
 
   const minimized = harness({ sourceUsable: false });
   minimized.normal.minimized = true;
@@ -263,6 +278,7 @@ test("a hidden or minimized ordinary host is never revealed to take the foregrou
   minimized.quick.invalidateRound("navigation");
   assert.equal(minimized.normal.restoreCount, 0, "a minimized Dashboard stays minimized");
   assert.equal(minimized.normal.focusCount, 0);
+  assert.equal(minimized.quickWindow().destroyCount, 1);
 });
 
 test("a page that is gone is never focused as a blank window", () => {
@@ -275,6 +291,7 @@ test("a page that is gone is never focused as a blank window", () => {
 
   assert.equal(h.normal.focusCount, 0, "there is no page to hand the keyboard to");
   assert.equal(h.focusPageCalls.length, pageFocusBefore);
+  assert.equal(h.quickWindow().destroyCount, 1, "the empty stranded shell still retires after page loss");
 });
 
 test("the ordinary host being activated by the user is not a foreground return", () => {

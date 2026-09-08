@@ -601,6 +601,10 @@ module.exports = function initDashboard(ctx) {
       if (dashboardHost === createdHost) {
         createdHost.closeWebContents();
         dashboardHost = null;
+        // A closed ordinary owner ends this Dashboard's lifetime. Its quick
+        // shell may still contain the now-closed view after a failed return;
+        // never reuse that shell for the next Dashboard's different page.
+        quickMode.dispose();
       }
       dashboardWindow = null;
     });
