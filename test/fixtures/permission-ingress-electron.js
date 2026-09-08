@@ -83,7 +83,7 @@ app.whenReady().then(async () => {
     const result = { platform: process.platform, arch: process.arch, electron: process.versions.electron,
       chromium: process.versions.chrome, expectBlocked, pageOrigin, browserOutcome,
       browserBubbleCount, browserRequest, separateResponses: true, realAgentExecuted: false,
-      securityFlagsDisabled: false };
+      securityFlagsDisabled: app.commandLine.hasSwitch("no-sandbox") };
     if (evidenceDir) fs.writeFileSync(path.join(evidenceDir, expectBlocked ? "fixed-electron.json" : "baseline-electron.json"), JSON.stringify(result, null, 2));
     console.log("PERMISSION_INGRESS_ELECTRON_OK " + JSON.stringify(result));
   } finally {
