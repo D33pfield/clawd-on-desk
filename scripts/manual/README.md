@@ -179,3 +179,30 @@ composition smoke, not a Settings GUI smoke.
 The live API smoke covered the account-default root home. Named-profile
 filesystem behavior and isolated-layout cleanup exclusion were covered by the
 native Pi regressions. This adds no live gateway-reload or Codespaces claim.
+
+### Hermes opt-in permission callback follow-up (2026-09-09)
+
+Real API sessions exposed a pre-existing callback error: an opted-in tool name
+was passed both positionally and in the upstream keyword payload, so Python
+raised before the permission request and Hermes continued the tool. The fix
+passes the callback keywords once and preserves the tool name in subsequent
+state events. A regression invokes the registered callback for Allow, Deny and
+no-decision; it fails with the original TypeError before the fix.
+
+Validation used the running Windows desktop app and its Settings Deploy/Repair,
+with the same Raspberry Pi 5 / Hermes 0.20.5 account-default root home. Each
+fresh test CLI temporarily set `CLAWD_HERMES_PERMISSION_TOOLS=terminal`; no
+gateway was restarted and the opt-in was not persisted.
+
+- The user clicked Approve on the real desktop bubble. The remote tool record
+  contained the expected `printf` output and exit code 0.
+- The user clicked Deny on a second real bubble. Its remote tool record contained
+  `User denied this tool execution` and no execution output. The agent did not
+  retry the blocked tool.
+- Dashboard snapshots carried the correct remote profile/host with no local
+  terminal PID. The SSH connection remained healthy after both sessions.
+- Windows plugin, installer and permission-route regressions: 172 passed,
+  zero failures, one privileged-symlink skip.
+
+This verifies the explicit tool opt-in path. It does not claim that Hermes'
+native once/session/always approval UI is fully intercepted.
