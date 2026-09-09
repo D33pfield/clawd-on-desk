@@ -488,6 +488,49 @@ function copyManagedPluginFiles(options = {}) {
   return { installed, updated, skipped };
 }
 
+// A first install must never expose an incomplete directory as a foreign
+// plugin. Prepare and verify both assets before promoting the directory.
+function installNewRemotePlugin(options, sourceHashes) {
+  const { pluginDir } = options;
+  const stageDir = fs.mkdtempSync(path.join(path.dirname(pluginDir), ".clawd-hermes-install-"));
+  fs.chmodSync(stageDir, 0o700);
+  const stageStat = fs.lstatSync(stageDir);
+  try {
+    const copied = copyManagedPluginFiles({ ...options, pluginDir: stageDir });
+    const hashes = readManagedPluginHashes(stageDir);
+    if (MANAGED_PLUGIN_FILES.some((name) => hashes[name] !== sourceHashes[name])) {
+      throw new Error("Hermes plugin file readback did not match the staged source");
+    }
+    if (lstatIfPresent(pluginDir)) throw new Error(`Hermes plugin path appeared during install: ${pluginDir}`);
+    fs.renameSync(stageDir, pluginDir);
+    return copied;
+  } catch (err) {
+    // Remove only unchanged files from this invocation's private staging
+    // directory. A replacement or unexpected entry is retained for inspection.
+    try {
+      const current = fs.lstatSync(stageDir);
+      if (current.isSymbolicLink() || !current.isDirectory()
+        || current.dev !== stageStat.dev || current.ino !== stageStat.ino) {
+        throw new Error("staging directory changed");
+      }
+      const names = fs.readdirSync(stageDir);
+      for (const name of names) {
+        const filePath = path.join(stageDir, name);
+        const stat = fs.lstatSync(filePath);
+        if (!MANAGED_PLUGIN_FILES.includes(name) || !stat.isFile() || stat.isSymbolicLink()
+          || sha256(fs.readFileSync(filePath)) !== sourceHashes[name]) {
+          throw new Error("staging content changed");
+        }
+      }
+      for (const name of names) fs.unlinkSync(path.join(stageDir, name));
+      fs.rmdirSync(stageDir);
+    } catch {
+      err.message += `; staging retained at ${stageDir}`;
+    }
+    throw err;
+  }
+}
+
 function runHermesCli(args, options = {}) {
   const hermesHome = options.hermesHome || resolveHermesHome(options);
   const command = resolveHermesCommand({ ...options, hermesHome });
@@ -711,14 +754,16 @@ function registerHermesPluginRemote(options = {}) {
 
     try {
       fs.mkdirSync(path.join(targetHome, "plugins"), { recursive: true, mode: 0o700 });
-      fs.mkdirSync(pluginDir, { recursive: true, mode: 0o700 });
-      const copied = copyManagedPluginFiles({
+      const copyOptions = {
         pluginDir,
         sourcePluginDir,
         writeFileSync: options.writeFileSync,
         renameSync: options.renameSync,
         unlinkSync: options.unlinkSync,
-      });
+      };
+      const copied = classification === "absent"
+        ? installNewRemotePlugin(copyOptions, sourceHashes)
+        : copyManagedPluginFiles(copyOptions);
       const changed = copied.installed + copied.updated;
       target.action = classification === "absent"
         ? "installed"

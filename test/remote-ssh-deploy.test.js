@@ -185,9 +185,9 @@ function secureHappySpawn(options = {}) {
     queueMicrotask(() => {
       if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
       if (response.stderr) child.stderr.emit("data", Buffer.from(response.stderr));
-      const code = response.code == null ? 0 : response.code;
-      child.emit("exit", code, null);
-      child.emit("close", code, null);
+      const code = Object.hasOwn(response, "code") ? response.code : 0;
+      child.emit("exit", code, response.signal || null);
+      child.emit("close", code, response.signal || null);
     });
   });
 }
@@ -1266,6 +1266,54 @@ test("an unknown Hermes installer result runs no cleanup and never releases the 
   assert.equal(roles.filter((role) => role === "installer-hermes").length, 1, "never replayed");
 });
 
+test("ordinary SSH preserves the Hermes stage and lease after every unknown installer result", async () => {
+  for (const installer of [
+    { code: 255, stderr: "Connection closed by remote host" },
+    { code: 1, stderr: "read: Connection reset by peer" },
+    { code: 1, stderr: "EOF" },
+    { code: null, signal: "SIGTERM" },
+    { code: null },
+  ]) {
+    const recorder = secureHappySpawn({ hermes: { present: true, installer } });
+    await assert.rejects(secureDeploy({
+      ...secureFixture(), runtime: makeRuntimeStub(), deps: { ...deployDeps(), spawn: recorder.spawn },
+    }), (err) => err.code === "transport_unknown_result" && err.recoveryCode === "manual_lock_inspection_required");
+    const commands = recorder.calls.map(lastArg);
+    assert.ok(isHermesInstallerRun(commands.at(-1)), "no cleanup or lease release after uncertain install");
+    assert.equal(commands.filter(isHermesInstallerRun).length, 1);
+  }
+});
+
+test("ordinary mutation deadlines retain recovery state until the exact child closes", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const child = makeFakeChild();
+  const tracked = new Set();
+  const pending = __test.spawnAndWait(() => child, "ssh", ["host", "mutate"], {
+    mutation: true, timeoutMs: 10,
+    runtime: { registerChild: (c) => tracked.add(c), unregisterChild: (c) => tracked.delete(c) },
+  });
+  const rejected = assert.rejects(pending, (err) => err.code === "transport_drain_timeout"
+    && err.recoveryCode === "manual_lock_inspection_required" && err.drainVerified === false);
+  t.mock.timers.tick(10);
+  t.mock.timers.tick(5000);
+  await rejected;
+  assert.ok(tracked.has(child));
+  child.emit("close", null, "SIGTERM");
+  assert.equal(tracked.size, 0);
+});
+
+test("ordinary timed-out mutations remain unknown even if their child subsequently exits zero", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const child = makeFakeChild();
+  const pending = __test.spawnAndWait(() => child, "ssh", ["host", "mutate"], { mutation: true, timeoutMs: 10 });
+  const rejected = assert.rejects(pending, (err) => err.code === "transport_unknown_result"
+    && err.recoveryCode === "manual_lock_inspection_required" && err.timedOut === true);
+  t.mock.timers.tick(10);
+  child.emit("exit", 0, null);
+  child.emit("close", 0, null);
+  await rejected;
+});
+
 test("Q4: Hermes is the final remote mutation phase of the deploy", async () => {
   const fixture = secureFixture({ profile: { autoStartCodexMonitor: true } });
   const recorder = secureHappySpawn({ hermes: { present: true } });
@@ -1342,9 +1390,12 @@ test("secure cleanup uninstalls the Hermes plugin before the shipped installer i
     remoteHome: "/home/remote-user",
   };
   let index = 0;
-  const recorder = makeRecordingSpawn((child) => {
+  const recorder = makeRecordingSpawn((child, meta) => {
     const current = index++;
-    const response = current === 1
+    const isHermesCleanup = String(meta.args.at(-1)).includes("'--uninstall' '--remote' '--json'");
+    const response = isHermesCleanup
+      ? { code: 0, stdout: hermesInstallerStdout({ operation: "uninstall", targets: [hermesResultTarget(HERMES_ROOT_HOME, "root", { action: "removed" })] }) }
+      : current === 1
       ? {
           code: 0,
           stdout: `${JSON.stringify({
@@ -1388,6 +1439,74 @@ test("secure cleanup uninstalls the Hermes plugin before the shipped installer i
   assert.ok(hermesCommand.includes("HERMES_HOME='/home/remote-user/.hermes'"));
   assert.match(hermesCommand, /leaseId/);
   assert.doesNotMatch(hermesCommand, /rm -rf/);
+});
+
+test("Hermes cleanup retains its payload and identity when a target remains or its result is invalid", async () => {
+  const conflictPath = `${HERMES_ROOT_HOME}/plugins/clawd-on-desk/foreign.txt`;
+  for (const [stdout, reason] of [
+    [hermesInstallerStdout({ operation: "uninstall", status: "warning", targets: [
+      hermesResultTarget(HERMES_ROOT_HOME, "root", { plugin: "foreign", action: "skipped", status: "warning", reason: "hermes-plugin-ownership-conflict", message: `Ownership conflict at ${conflictPath}` }),
+    ] }), "hermes_cleanup_incomplete"],
+    [hermesInstallerStdout({ operation: "uninstall", status: "warning", targets: [
+      hermesResultTarget(HERMES_ROOT_HOME, "root", { action: "failed", status: "warning", message: "Directory not empty" }),
+    ] }), "hermes_cleanup_incomplete"],
+    ["", "hermes_cleanup_result_invalid"],
+    [hermesInstallerStdout({ operation: "uninstall", targets: [] }), "hermes_cleanup_result_invalid"],
+  ]) {
+    const recorder = makeRecordingSpawn([
+      { code: 0 }, { code: 0, stdout: '{"ok":true,"identity":true}\n' },
+      { code: 0 }, { code: 0 }, { code: 0 }, { code: 0 },
+      { code: 0, stdout }, { code: 0 },
+    ]);
+    const result = await secureUninstallRemoteIntegrations({
+      profile: { ...secureFixture().profile, installId: "c".repeat(64), remoteHome: "/home/remote-user" },
+      runtime: makeRuntimeStub(),
+      deps: { spawn: recorder.spawn, nodeBin: "/usr/bin/node", randomBytes: () => Buffer.alloc(16, 0xcd) },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, reason);
+    if (stdout.includes("foreign.txt")) assert.ok(result.stderr.includes(conflictPath));
+    assert.equal(recorder.calls.length, 8, "only lease release follows the incomplete cleanup");
+    assert.match(lastArg(recorder.calls.at(-1)), /leaseId/);
+    assert.doesNotMatch(lastArg(recorder.calls.at(-1)), /rm -f.*hermes-install/);
+  }
+});
+
+test("ordinary SSH preserves a known Hermes failure when stage cleanup loses its result", async () => {
+  const recorder = secureHappySpawn({ hermes: {
+    present: true,
+    installer: { code: 1, stdout: hermesInstallerStdout({ status: "error", message: "Hermes enable failed" }) },
+    cleanupFailure: { code: 255, stderr: "Connection closed" },
+  } });
+  const result = await secureDeploy({
+    ...secureFixture(), runtime: makeRuntimeStub(), deps: { ...deployDeps(), spawn: recorder.spawn },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "hermes_install_failed");
+  assert.equal(result.message, "Hermes enable failed");
+  assert.equal(result.recoveryCode, "manual_lock_inspection_required");
+  assert.match(lastArg(recorder.calls.at(-1)), /rmdir.*-hermes/);
+});
+
+test("Hermes cleanup accepts diagnostic warnings and older deployments without an installer", async () => {
+  for (const result of [
+    { status: "warning", targets: [hermesResultTarget(HERMES_ROOT_HOME, "root", { action: "removed", status: "warning" })], warnings: ["Could not inspect gateway services"] },
+    { targets: [], skipped: "installer-absent" },
+  ]) {
+    const recorder = makeRecordingSpawn([
+      { code: 0 }, { code: 0, stdout: '{"ok":true,"identity":true}\n' },
+      { code: 0 }, { code: 0 }, { code: 0 }, { code: 0 },
+      { code: 0, stdout: hermesInstallerStdout({ operation: "uninstall", ...result }) },
+    ]);
+    const cleaned = await secureUninstallRemoteIntegrations({
+      profile: { ...secureFixture().profile, installId: "c".repeat(64), remoteHome: "/home/remote-user" },
+      runtime: makeRuntimeStub(),
+      deps: { spawn: recorder.spawn, nodeBin: "/usr/bin/node", randomBytes: () => Buffer.alloc(16, 0xcd) },
+    });
+    assert.equal(cleaned.ok, true);
+    assert.equal(cleaned.hermes.status, result.status || "ok");
+    assert.ok(recorder.calls.some((call) => /rm -f.*hermes-install/.test(lastArg(call))));
+  }
 });
 
 test("the Hermes phase changes neither the identity step list nor the persisted txn schema", () => {
@@ -1863,6 +1982,7 @@ test("isolated monitor and cleanup commands stay inside their layout and retain 
     .join("\n");
   assert.match(cleanupMutations, /\/home\/shared\/\.clawd\/profiles\/runtime_a/);
   assert.doesNotMatch(cleanupMutations, /\/home\/shared\/\.claude|\/home\/shared\/\.codex|\/home\/shared\/\.copilot/);
+  assert.doesNotMatch(cleanupMutations, /'--uninstall' '--remote' '--json'|HERMES_HOME=/);
   assert.doesNotMatch(cleanupMutations, /\.clawd-codex-monitor\.pid/);
   assert.doesNotMatch(cleanupMutations, /rm -rf '\/home\/shared\/\.clawd\/profiles\/runtime_a'/);
 });
@@ -1890,15 +2010,14 @@ test("ownerless lock and stale release are diagnosed without takeover or broad d
   assert.match(acquired.message, new RegExp(layout.deployLockDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 
   recorder = makeRecordingSpawn([{ code: 91 }]);
-  const released = await __test.releaseDeployLock({
+  await assert.rejects(__test.releaseDeployLock({
     profile: fixture.profile,
     layout,
     leaseId: "a".repeat(32),
     remoteNode: "/usr/bin/node",
     spawn: recorder.spawn,
     runtime: makeRuntimeStub(),
-  });
-  assert.equal(released.code, 91);
+  }), (err) => err.recoveryCode === "manual_lock_inspection_required");
   const releaseCommand = recorder.calls[0].args.at(-1);
   assert.match(releaseCommand, /leaseId/);
   assert.match(releaseCommand, /runtimeKey/);

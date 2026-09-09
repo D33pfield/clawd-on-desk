@@ -61,6 +61,7 @@ const {
 const { buildRemoteIdentityDocument } = require("./remote-ssh-identity");
 const { quoteForPosixShellArg } = require("./remote-ssh-quote");
 const {
+  HERMES_RESULT_SENTINEL,
   HERMES_PLUGIN_ASSET_FILES,
   parseHermesInstallerResult,
 } = require("./hermes-installer-result");
@@ -195,8 +196,11 @@ function spawnAndWait(spawn, command, args, opts = {}) {
           role,
           tool: command,
         });
-        if (managed && typeof runtime.invalidateManagedOperation === "function") {
-          try { runtime.invalidateManagedOperation(err); } catch {}
+        if (managed || mutation) {
+          if (mutation) err.recoveryCode = "manual_lock_inspection_required";
+          if (runtime && typeof runtime.invalidateManagedOperation === "function") {
+            try { runtime.invalidateManagedOperation(err); } catch {}
+          }
           done = true;
           clearTimeout(timer);
           reject(err);
@@ -255,6 +259,14 @@ function spawnAndWait(spawn, command, args, opts = {}) {
       exitSignal = signal;
     });
     child.on("close", (code, signal) => {
+      if (done) {
+        // An ordinary child retained after an undrained timeout may close
+        // later. Only its own close proves it can leave the auxiliary registry.
+        if (!managed && runtime && typeof runtime.unregisterChild === "function") {
+          runtime.unregisterChild(child);
+        }
+        return;
+      }
       const stdout = decodeShellBytes(stdoutChunks);
       const stderr = decodeShellBytes(stderrChunks);
       if (managed && timedOut) {
@@ -269,6 +281,7 @@ function spawnAndWait(spawn, command, args, opts = {}) {
           drainVerified: true,
           role,
           tool: command,
+          ...(mutation ? { recoveryCode: "manual_lock_inspection_required" } : {}),
         });
         if (runtime && typeof runtime.settleManagedTimeoutAfterClose === "function") {
           try { runtime.settleManagedTimeoutAfterClose(err); } catch {}
@@ -284,11 +297,16 @@ function spawnAndWait(spawn, command, args, opts = {}) {
         ...(processError ? { spawnError: true } : {}),
         ...(timedOut ? { timedOut: true, drainVerified: true } : {}),
       };
-      const ambiguousMutation = managed && mutation && payload.code !== 0 && (
-        payload.code === 255
-        || payload.signal != null
-        || /(?:^|\s)EOF(?:\s|$)|connection (?:closed|reset)|broken pipe/i.test(payload.stderr)
-      );
+      // A remote command can keep running after either kind of SSH transport
+      // loses its result. The ordinary path has no coordinator context, but
+      // must preserve the same lease/staging evidence as serialized transport.
+      const ambiguousMutation = mutation && (payload.timedOut === true || payload.signal != null || (
+        payload.code !== 0 && (
+          payload.code === 255
+          || (payload.code == null && !payload.spawnError)
+          || /(?:^|\s)EOF(?:\s|$)|connection (?:closed|reset)|broken pipe/i.test(payload.stderr)
+        )
+      ));
       if (ambiguousMutation) {
         if (done) return;
         done = true;
@@ -302,7 +320,12 @@ function spawnAndWait(spawn, command, args, opts = {}) {
           exitCode: payload.code,
           signal: payload.signal,
           drainVerified: true,
+          recoveryCode: "manual_lock_inspection_required",
+          ...(payload.timedOut ? { timedOut: true } : {}),
         });
+        if (!managed && runtime && typeof runtime.unregisterChild === "function") {
+          runtime.unregisterChild(child);
+        }
         if (runtime && typeof runtime.invalidateManagedOperation === "function") {
           try { runtime.invalidateManagedOperation(err); } catch {}
         }
@@ -322,6 +345,10 @@ function managedTransportIsActive(runtime) {
   } catch {
     return false;
   }
+}
+
+function requiresManualLockInspection(error) {
+  return !!error && error.recoveryCode === "manual_lock_inspection_required";
 }
 
 // ── Deploy ──
@@ -600,13 +627,14 @@ async function acquireDeployLock({
     }
     return { ok: true, owner };
   }
-  if ((result.code === 73 || result.code === 74)
-    && runtime && typeof runtime.setManagedLockStage === "function") {
+  if (result.code === 73 || result.code === 74) {
     // The remote command proved that this lease never acquired the lock.
     // Keep the transport usable even though the remote lock itself may need
     // another owner (73) or manual inspection (74).
-    runtime.setManagedLockStage("before-acquire");
-  } else if (runtime && typeof runtime.invalidateManagedOperation === "function") {
+    if (runtime && typeof runtime.setManagedLockStage === "function") {
+      runtime.setManagedLockStage("before-acquire");
+    }
+  } else {
     // Code 75 means mkdir may have succeeded but owner persistence/cleanup did
     // not. Any other unexpected result is likewise unsafe to treat as a
     // cleanly unowned lock.
@@ -616,7 +644,9 @@ async function acquireDeployLock({
       recoveryCode: "manual_lock_inspection_required",
       drainVerified: true,
     });
-    try { runtime.invalidateManagedOperation(err); } catch {}
+    if (runtime && typeof runtime.invalidateManagedOperation === "function") {
+      try { runtime.invalidateManagedOperation(err); } catch {}
+    }
     throw err;
   }
   const reason = result.code === 73
@@ -641,14 +671,16 @@ async function releaseDeployLock({ profile, layout, leaseId, remoteNode, spawn, 
     buildSshArgs(profile).concat([command]),
     { runtime, role: "deploy-lock-release", mutation: true },
   );
-  if (result.code !== 0 && runtime && typeof runtime.invalidateManagedOperation === "function") {
+  if (result.code !== 0) {
     const err = Object.assign(new Error("Remote deployment lock release requires manual inspection"), {
       name: "TransportRecoveryError",
       code: "manual_lock_inspection_required",
       recoveryCode: "manual_lock_inspection_required",
       drainVerified: true,
     });
-    try { runtime.invalidateManagedOperation(err); } catch {}
+    if (runtime && typeof runtime.invalidateManagedOperation === "function") {
+      try { runtime.invalidateManagedOperation(err); } catch {}
+    }
     throw err;
   }
   if (result.code === 0 && runtime && typeof runtime.setManagedLockStage === "function") {
@@ -1845,46 +1877,52 @@ async function secureDeploy({
       // spawnAndWait above instead: no cleanup mutation, no retry, the lock
       // stays quarantined and the staging evidence survives for recovery.
       // Exact files only — no recursive removal anywhere.
-      const hermesCleanup = await spawnAndWait(
-        spawn,
-        "ssh",
-        buildSshArgs(profile).concat([
-          fencedCommand(
-            layout,
-            leaseId,
-            remoteNode,
-            `rm -f ${HERMES_PLUGIN_ASSET_FILES
-              .map((name) => quoteForPosixShellArg(path.posix.join(hermesStage, name)))
-              .join(" ")} && rmdir ${hermesStageArg}`,
-          ),
-        ]),
-        { timeoutMs: 60000, runtime, role: "hermes-stage-cleanup", mutation: true },
-      );
+      const hermesParsed = parseHermesInstallerResult(hermesRun.stdout, "install");
+      const hermesResult = hermesParsed.ok ? hermesParsed.result : null;
+      const hermesResultTargets = hermesResult && Array.isArray(hermesResult.targets) ? hermesResult.targets : [];
+      const hermesFailedTargets = hermesResultTargets.filter((target) =>
+        target && (target.status === "error" || target.action === "failed"));
+      let hermesFailure = null;
+      if (!hermesParsed.ok) {
+        hermesFailure = await fail("install-hermes", hermesParsed.error, "hermes_install_result_invalid");
+      } else if (hermesRun.code !== 0 || hermesResult.status === "error" || hermesFailedTargets.length) {
+        const perTarget = hermesFailedTargets
+          .map((target) => `${target.home}: ${target.reason || target.message || target.status}`)
+          .join("; ");
+        hermesFailure = await fail("install-hermes", hermesResult.message || perTarget
+          || summarizeStderr(hermesRun.stderr), "hermes_install_failed");
+      }
+      let hermesCleanup;
+      try {
+        hermesCleanup = await spawnAndWait(
+          spawn,
+          "ssh",
+          buildSshArgs(profile).concat([
+            fencedCommand(
+              layout,
+              leaseId,
+              remoteNode,
+              `rm -f ${HERMES_PLUGIN_ASSET_FILES
+                .map((name) => quoteForPosixShellArg(path.posix.join(hermesStage, name)))
+                .join(" ")} && rmdir ${hermesStageArg}`,
+            ),
+          ]),
+          { timeoutMs: 60000, runtime, role: "hermes-stage-cleanup", mutation: true },
+        );
+      } catch (err) {
+        if (hermesFailure && requiresManualLockInspection(err)) {
+          return { ...hermesFailure, recoveryCode: err.recoveryCode, recoveryError: err.message };
+        }
+        throw err;
+      }
       const hermesCleanupWarning = hermesCleanup.code !== 0
         ? `staged assets could not be removed from ${hermesStage}`
         : null;
 
-      const hermesParsed = parseHermesInstallerResult(hermesRun.stdout, "install");
-      if (!hermesParsed.ok) {
-        return fail("install-hermes", hermesParsed.error, "hermes_install_result_invalid");
-      }
-      const hermesResult = hermesParsed.result;
-      const hermesResultTargets = Array.isArray(hermesResult.targets) ? hermesResult.targets : [];
       // Q2: a per-target error is a hard deploy failure even when the
       // aggregate status would only be a warning. Default-home success plus a
       // named-profile failure is a failed Remote SSH deploy.
-      const hermesFailedTargets = hermesResultTargets.filter((target) =>
-        target && (target.status === "error" || target.action === "failed"));
-      if (hermesRun.code !== 0 || hermesResult.status === "error" || hermesFailedTargets.length) {
-        const perTarget = hermesFailedTargets
-          .map((target) => `${target.home}: ${target.reason || target.message || target.status}`)
-          .join("; ");
-        return fail(
-          "install-hermes",
-          hermesResult.message || perTarget || summarizeStderr(hermesRun.stderr),
-          "hermes_install_failed",
-        );
-      }
+      if (hermesFailure) return hermesFailure;
       hermesSummary = {
         status: hermesResult.status,
         message: hermesResult.message || null,
@@ -1917,7 +1955,9 @@ async function secureDeploy({
   }
 
   let releaseError = null;
-  if (lockHeld && layout && remoteNode && managedTransportIsActive(runtime)) {
+  if (lockHeld && layout && remoteNode
+    && !requiresManualLockInspection(primaryError) && !requiresManualLockInspection(operationResult)
+    && managedTransportIsActive(runtime)) {
     try {
       const released = await releaseDeployLock({
         profile,
@@ -2034,6 +2074,7 @@ async function bootstrapIsolatedRuntime({
     now: deps.now,
   });
   if (!lock.ok) return { ok: false, skipped: true, reason: lock.reason, stderr: lock.message };
+  let operationError = null;
   try {
     const dirs = [
       isolatedLayout.runtimeRoot,
@@ -2094,8 +2135,11 @@ async function bootstrapIsolatedRuntime({
         source: resolved.source || null,
       },
     };
+  } catch (err) {
+    operationError = err;
+    throw err;
   } finally {
-    if (managedTransportIsActive(runtime)) {
+    if (!requiresManualLockInspection(operationError) && managedTransportIsActive(runtime)) {
       await releaseDeployLock({
         profile: accountProfile,
         layout: accountLayout,
@@ -2293,7 +2337,7 @@ async function withOwnedRemoteLease({ profile, runtime, deps = {}, operation }) 
   }
 
   let releaseError = null;
-  if (managedTransportIsActive(runtime)) {
+  if (!requiresManualLockInspection(primaryError) && managedTransportIsActive(runtime)) {
     try {
       const released = await releaseDeployLock({
         profile,
@@ -2408,10 +2452,15 @@ async function secureUninstallRemoteIntegrations({
     deps,
     operation: async ({ spawn, layout, remoteNode, leaseId }) => {
       const envPrefix = buildRemoteInstallerEnv(layout, profile.remotePermissionTransport);
-      const optionalInstaller = (script, argv) => {
+      const optionalInstaller = (script, argv, whenAbsent = "") => {
         const scriptPath = path.posix.join(layout.claudeHooksDir, script);
-        return `if [ -f ${quoteForPosixShellArg(scriptPath)} ]; then ${envPrefix} ${buildRemoteHookNodeCommand(remoteNode, script, argv, { hooksDir: layout.claudeHooksDir })}; fi`;
+        return `if [ -f ${quoteForPosixShellArg(scriptPath)} ]; then ${envPrefix} ${buildRemoteHookNodeCommand(remoteNode, script, argv, { hooksDir: layout.claudeHooksDir })};${whenAbsent ? ` else ${whenAbsent};` : ""} fi`;
       };
+      const hermesCommand = resolveRemoteHermesHome(layout)
+        ? optionalInstaller("hermes-install.js", ["--uninstall", "--remote", "--json"],
+          `printf '%s\\n' ${quoteForPosixShellArg(HERMES_RESULT_SENTINEL + JSON.stringify({ schemaVersion: 1, operation: "uninstall", status: "ok", remote: true, targets: [], skipped: "installer-absent" }))}`)
+        : null;
+      let hermes = null;
       const commands = [
         secureMonitorStopCommand(layout),
         optionalInstaller("uninstall.js", []),
@@ -2421,7 +2470,7 @@ async function secureUninstallRemoteIntegrations({
         // fence. The installer discovers its own targets from HERMES_HOME
         // (exported by buildRemoteInstallerEnv) and removes exactly the
         // managed leaves — never a recursive delete.
-        optionalInstaller("hermes-install.js", ["--uninstall", "--remote", "--json"]),
+        ...(hermesCommand ? [hermesCommand] : []),
         `rm -f ${[
           layout.hostPrefixFile,
           layout.statuslineSidecarFile,
@@ -2444,11 +2493,29 @@ async function secureUninstallRemoteIntegrations({
           ]),
           { timeoutMs: 30000, runtime, role: "remote-cleanup", mutation: true },
         );
+        if (command === hermesCommand) {
+          const parsed = parseHermesInstallerResult(result.stdout, "uninstall");
+          if (!parsed.ok || parsed.result.remote !== true || !Array.isArray(parsed.result.targets)
+            || (parsed.result.targets.length === 0 && parsed.result.skipped !== "installer-absent")) {
+            return { ok: false, reason: "hermes_cleanup_result_invalid", stderr: parsed.error || "Invalid remote Hermes cleanup targets", layout };
+          }
+          hermes = parsed.result;
+          const residual = hermes.targets.filter((target) => !target
+            || !["ok", "warning"].includes(target.status)
+            || !(target.action === "removed" || (target.action === "skipped" && target.plugin === "absent")));
+          if (result.code !== 0 || hermes.status === "error" || residual.length) {
+            const details = residual.map((target) => target && `${target.home}: ${target.message || target.reason || "Plugin cleanup incomplete"}`);
+            return {
+              ok: false, reason: "hermes_cleanup_incomplete", layout, hermes,
+              stderr: details.filter(Boolean).join("\n") || hermes.message || result.stderr || "Hermes cleanup incomplete",
+            };
+          }
+        }
         if (result.code !== 0) {
           return { ok: false, stderr: result.stderr, reason: "cleanup_step_failed", layout };
         }
       }
-      return { ok: true, layout };
+      return { ok: true, layout, ...(hermes ? { hermes } : {}) };
     },
   });
 }
@@ -2500,6 +2567,7 @@ async function finalizeRetiredRemoteLayout({
     now: deps.now,
   });
   if (!lock.ok) return { ok: false, skipped: true, reason: lock.reason, stderr: lock.message };
+  let operationError = null;
   try {
     const expected = {
       installId: profile.installId,
@@ -2538,8 +2606,11 @@ async function finalizeRetiredRemoteLayout({
       };
     }
     return { ok: true, layout };
+  } catch (err) {
+    operationError = err;
+    throw err;
   } finally {
-    if (managedTransportIsActive(runtime)) {
+    if (!requiresManualLockInspection(operationError) && managedTransportIsActive(runtime)) {
       await releaseDeployLock({
         profile,
         layout,

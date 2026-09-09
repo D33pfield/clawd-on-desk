@@ -797,6 +797,47 @@ describe("remote mode", () => {
     assert.deepStrictEqual(wire.targets, result.targets);
   });
 
+  it("retries a first install after a second-asset write failure without claiming foreign content", () => {
+    const sourcePluginDir = makeRemoteSourcePlugin();
+    const rootHome = makeTempDir();
+    const options = { sourcePluginDir, targetHomes: [rootHome], hermesCommand: "hermes", spawnSync: remoteSpawn(), env: {} };
+    const failed = registerHermesPluginRemote({
+      ...options,
+      renameSync: (from, to) => {
+        if (path.basename(to) === "__init__.py") throw Object.assign(new Error("injected write failure"), { code: "EIO" });
+        fs.renameSync(from, to);
+      },
+    });
+    assert.strictEqual(failed.status, "error");
+    assert.strictEqual(classifyManagedPluginDir(pluginDirFor(rootHome)), "absent");
+    assert.deepStrictEqual(fs.readdirSync(path.join(rootHome, "plugins")), []);
+    const retry = registerHermesPluginRemote(options);
+    assert.strictEqual(retry.status, "ok");
+    assert.strictEqual(retry.targets[0].action, "installed");
+    assert.strictEqual(classifyManagedPluginDir(pluginDirFor(rootHome)), "managed");
+  });
+
+  it("preserves unexpected staging content after a failed first install", () => {
+    const sourcePluginDir = makeRemoteSourcePlugin();
+    const rootHome = makeTempDir();
+    let stageDir;
+    const failed = registerHermesPluginRemote({
+      sourcePluginDir, targetHomes: [rootHome], hermesCommand: "hermes", spawnSync: remoteSpawn(), env: {},
+      renameSync: (from, to) => {
+        if (path.basename(to) === "__init__.py") {
+          stageDir = path.dirname(to);
+          fs.writeFileSync(path.join(stageDir, "foreign.txt"), "keep");
+          throw new Error("injected write failure");
+        }
+        fs.renameSync(from, to);
+      },
+    });
+    assert.strictEqual(failed.status, "error");
+    assert.ok(failed.targets[0].message.includes(stageDir));
+    assert.strictEqual(fs.readFileSync(path.join(stageDir, "foreign.txt"), "utf8"), "keep");
+    assert.strictEqual(classifyManagedPluginDir(pluginDirFor(rootHome)), "absent");
+  });
+
   it("treats one target enable failure as a hard remote failure", () => {
     const sourcePluginDir = makeRemoteSourcePlugin();
     const rootHome = makeTempDir();

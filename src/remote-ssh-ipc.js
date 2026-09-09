@@ -1033,6 +1033,7 @@ function registerRemoteSshIpc(options = {}) {
       let uninstalled = true;
       let attempted = 0;
       let shared = 0;
+      const cleanupWarnings = [];
       const orderedTargets = ownedTargets.slice().sort((a, b) =>
         remoteOwnershipDomainKey(a).localeCompare(remoteOwnershipDomainKey(b))
       );
@@ -1091,6 +1092,7 @@ function registerRemoteSshIpc(options = {}) {
           }
           const stderr = redactTransportDiagnostic(result && result.stderr, cleanupProfile);
           log("remote uninstall incomplete for", target.host, stderr.slice(0, 200));
+          if (stderr) cleanupWarnings.push(stderr);
         }
       }
       return {
@@ -1098,6 +1100,7 @@ function registerRemoteSshIpc(options = {}) {
         uninstalled,
         attempted,
         shared,
+        ...(cleanupWarnings.length ? { warnings: cleanupWarnings, message: cleanupWarnings.join("\n") } : {}),
         skipped: attempted === 0 ? "shared-owner" : undefined,
       };
     } catch (err) {
