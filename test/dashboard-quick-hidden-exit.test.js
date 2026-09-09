@@ -92,9 +92,16 @@ function harness(options = {}) {
     ensurePage: () => view,
     getNormalWindow: () => normal,
     getWebContents: () => pageAlive ? contents : null,
+    isPageDestroyed: Object.hasOwn(options, "isPageDestroyed") ? options.isPageDestroyed : () => !pageAlive,
     getSessionSnapshot: () => ({ sessions: [{ id: "s1", canFocus: true }], orderedIds: ["s1"] }),
     attachViewTo: (win) => {
-      if (win === normal && returnFails) return false;
+      if (!pageAlive) { events.push(["return-dead-page", win]); return false; }
+      if (win === normal && returnFails) {
+        if (options.emptyOnFailedReturn) {
+          for (const w of windows) w.contentView.children = w.contentView.children.filter(v => v !== view);
+        }
+        return false;
+      }
       for (const w of windows) w.contentView.children = w.contentView.children.filter(v => v !== view);
       win.contentView.children.push(view);
       events.push(["attach", win]);
@@ -111,7 +118,11 @@ function harness(options = {}) {
     minimizeSource: () => { sourceMinimized = true; },
     quit: () => { quitting = true; },
     failReturn: () => { returnFails = true; },
-    killPage: () => { pageAlive = false; },
+    killPage: () => {
+      pageAlive = false;
+      // Native page destruction removes its view; it cannot be re-parented.
+      for (const w of windows) w.contentView.children = w.contentView.children.filter(v => v !== view);
+    },
     borrow() {
       const offer = quick.show();
       assert.equal(quick.enter({ revision: offer.revision, busy: false }).status, "ok");
@@ -134,17 +145,53 @@ for (const reason of ["cancel", "close", "navigation", "load-failed", "page-gone
     assert.equal(shell.destroyCalls, 1);
     assert.equal(h.quick.getQuickWindow(), null);
     assert.notEqual(h.foreground(), shell);
-    assert.deepEqual(h.normal.contentView.children, [h.view]);
+    assert.deepEqual(h.normal.contentView.children, reason === "page-gone" ? [] : [h.view]);
     assert.equal(h.normal.visible, false);
     assert.equal(h.normal.showCalls, 0);
     assert.equal(h.normal.focusCalls, 0);
     assert.equal(h.quick.isActive(), false);
     assert.equal(h.quick.isShown(), false);
     assert.equal(h.quick.isSelfFocusing(), false);
-    const returned = h.events.findIndex(e => e[0] === "attach" && e[1] === h.normal);
+    const returned = h.events.findIndex(e => e[0] === (reason === "page-gone" ? "return-dead-page" : "attach") && e[1] === h.normal);
     const destroyed = h.events.findIndex(e => e[0] === "destroy");
     assert.ok(returned >= 0 && returned < destroyed);
     assert.equal(h.events.filter(e => e[0] === "dashboard:quick-dismissed").length, reason === "page-gone" ? 0 : 1);
+  });
+}
+
+test("a live page that failed return is not disposable even when the shell is empty", () => {
+  const h = harness({ emptyOnFailedReturn: true });
+  const revision = h.borrow();
+  const shell = h.quick.getQuickWindow();
+  h.minimizeSource();
+  h.failReturn();
+  h.quick.dismissFromRenderer({ revision });
+  assert.deepEqual(shell.contentView.children, []);
+  assert.equal(h.view.webContents.isDestroyed(), false);
+  assert.equal(shell.destroyCalls, 0, "empty alone does not prove the live page was returned safely");
+  assert.equal(h.quick.getQuickWindow(), shell);
+});
+
+for (const guard of ["missing-death-proof", "throwing-death-proof", "nonboolean-death-proof", "nonempty-shell", "hide-failed", "foreground-lost", "quit", "macOS"]) {
+  test(`destroyed page, ${guard}: keep the existing retirement safety gate`, () => {
+    const options = { platform: guard === "macOS" ? "darwin" : "win32" };
+    if (guard === "missing-death-proof") options.isPageDestroyed = undefined;
+    if (guard === "throwing-death-proof") options.isPageDestroyed = () => { throw Error("unavailable"); };
+    if (guard === "nonboolean-death-proof") options.isPageDestroyed = () => "true";
+    const h = harness(options);
+    h.borrow();
+    const shell = h.quick.getQuickWindow();
+    h.minimizeSource();
+    h.killPage();
+    if (guard === "nonempty-shell") shell.contentView.children.push({ unrelatedOwnedView: true });
+    if (guard === "hide-failed") shell.hide = () => { throw Error("hide failed"); };
+    if (guard === "foreground-lost") h.setForeground("external");
+    if (guard === "quit") h.quit();
+    h.quick.handlePageGone();
+    assert.equal(shell.destroyCalls, 0);
+    assert.equal(h.quick.getQuickWindow(), shell);
+    assert.equal(h.normal.focusCalls, 0);
+    if (guard === "foreground-lost") assert.equal(h.foreground(), "external");
   });
 }
 

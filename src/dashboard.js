@@ -823,6 +823,8 @@ module.exports = function initDashboard(ctx) {
     isAppQuitting: ctx.isAppQuitting,
     getNormalWindow: () => dashboardWindow,
     getWebContents,
+    // getWebContents() filters dead pages; null alone is not death proof.
+    isPageDestroyed: () => dashboardHost?.webContents?.isDestroyed() === true,
     ensurePage: ensurePageForQuickMode,
     getQuickHostBounds,
     attachViewTo,

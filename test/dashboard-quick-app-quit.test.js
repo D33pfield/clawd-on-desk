@@ -65,6 +65,7 @@ function harness(options = {}) {
   class FakeWebContents {
     constructor() {
       this.destroyed = false;
+      this.crashed = false;
       this.sent = [];
       this.onceCallbacks = new Map();
       this.onCallbacks = new Map();
@@ -72,12 +73,20 @@ function harness(options = {}) {
       this.focusCount = 0;
     }
     isDestroyed() { return this.destroyed; }
+    isCrashed() { return this.crashed; }
     send(channel, payload) { this.sent.push({ channel, payload }); }
     focus() { this.focusCount += 1; }
     insertCSS() { return Promise.resolve("key"); }
     setZoomFactor() {}
     loadFile() { return Promise.resolve(); }
-    close() { this.closeCount += 1; this.destroyed = true; this.emit("destroyed"); }
+    close() {
+      this.closeCount += 1;
+      this.destroyed = true;
+      for (const win of windows) {
+        win.contentView.children = win.contentView.children.filter(view => view.webContents !== this);
+      }
+      this.emit("destroyed");
+    }
     once(name, callback) { this.onceCallbacks.set(name, callback); }
     on(name, callback) {
       const list = this.onCallbacks.get(name) || [];
@@ -123,12 +132,18 @@ function harness(options = {}) {
       this.destroyCount = 0;
       this.addedViews = [];
       this.removedViews = [];
+      this.rejectedViews = [];
+      this.rejectAdds = false;
       this.onCallbacks = new Map();
       this.onceCallbacks = new Map();
       const self = this;
       this.contentView = {
         children: [],
         addChildView(view) {
+          if (view.webContents.isDestroyed() || self.rejectAdds) {
+            self.rejectedViews.push(view);
+            throw Error("view cannot be attached");
+          }
           self.addedViews.push(view);
           for (const win of windows) win.contentView.children = win.contentView.children.filter(child => child !== view);
           this.children.push(view);
@@ -308,6 +323,83 @@ test("a quit during a live borrow returns the page and un-parks before closing",
   assert.equal(ordinary.addedViews.length >= 2, true, "the page came back first");
   assert.equal(h.dashboard.quick.isActive(), false);
   assert.equal(h.page().closeCount, 1);
+});
+
+test("destroying the borrowed page retires the empty Windows shell through the real owner wiring", () => {
+  let nativeForeground = null;
+  const h = harness({ platform: "win32", originFocus: {
+    capture: () => "minimized-source",
+    restore: () => false,
+    holdsForeground: win => win === nativeForeground,
+  } });
+  h.borrow();
+  const shell = h.quickWindow();
+  const ordinary = h.ordinary();
+  const page = h.page();
+  nativeForeground = shell;
+  const focusedBefore = page.focusCount;
+  page.close(); // real dashboard destroyed listener, not a direct quick-mode call
+  assert.equal(page.isDestroyed(), true);
+  assert.equal(ordinary.rejectedViews.length, 2, "both native reattach and rollback rejected the dead view");
+  assert.deepEqual(shell.contentView.children, []);
+  assert.deepEqual(ordinary.contentView.children, []);
+  assert.equal(shell.destroyCount, 1, "pageReturned=false must not strand a proven-dead page's empty shell");
+  assert.equal(h.quickWindow(), null);
+  assert.equal(ordinary.isVisible(), false);
+  assert.equal(page.focusCount, focusedBefore, "there is no page left to focus");
+  page.emit("destroyed");
+  assert.equal(shell.destroyCount, 1, "a repeated destruction notification is harmless");
+  assert.equal(h.quitApp(), true);
+  assert.equal(page.closeCount, 1, "normal quit does not close the dead page again");
+});
+
+test("a crashed but live page cannot bypass a failed return through the real owner wiring", () => {
+  let nativeForeground = null;
+  const h = harness({ platform: "win32", originFocus: {
+    capture: () => "minimized-source",
+    restore: () => false,
+    holdsForeground: win => win === nativeForeground,
+  } });
+  h.borrow();
+  const shell = h.quickWindow();
+  const page = h.page();
+  nativeForeground = shell;
+  h.ordinary().rejectAdds = true;
+  page.crashed = true;
+  const focusedBefore = page.focusCount;
+  page.emit("render-process-gone");
+  assert.equal(page.isDestroyed(), false);
+  assert.equal(h.ordinary().rejectedViews.length, 2);
+  assert.deepEqual(shell.contentView.children, []);
+  assert.equal(shell.destroyCount, 0, "crashed is not destroyed; the live page still needs a safe return");
+  assert.equal(h.quickWindow(), shell);
+  assert.equal(page.focusCount, focusedBefore);
+  assert.equal(h.quitApp(), true);
+});
+
+test("a crashed but live page that returned safely still allows empty-shell retirement", () => {
+  let nativeForeground = null;
+  const h = harness({ platform: "win32", originFocus: {
+    capture: () => "minimized-source",
+    restore: () => false,
+    holdsForeground: win => win === nativeForeground,
+  } });
+  h.borrow();
+  const shell = h.quickWindow();
+  const page = h.page();
+  nativeForeground = shell;
+  page.crashed = true;
+  const focusedBefore = page.focusCount;
+  page.emit("render-process-gone");
+  assert.equal(page.isDestroyed(), false);
+  assert.equal(page.isCrashed(), true);
+  assert.equal(h.ordinary().rejectedViews.length, 0);
+  assert.equal(h.ordinary().contentView.children[0].webContents, page);
+  assert.deepEqual(shell.contentView.children, []);
+  assert.equal(shell.destroyCount, 1, "a successful return does not need the new death-proof exception");
+  assert.equal(h.quickWindow(), null);
+  assert.equal(page.focusCount, focusedBefore, "the crashed page is not focused");
+  assert.equal(h.quitApp(), true);
 });
 
 test("closing the ordinary owner during a borrow cannot poison later empty-shell retirement", () => {

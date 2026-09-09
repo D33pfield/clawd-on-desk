@@ -124,10 +124,12 @@ function harness(options = {}) {
     focusSession: () => ({ reason: "submitted" }),
     getNormalWindow: () => normal,
     getWebContents: () => (pageAlive ? webContents : null),
+    isPageDestroyed: () => !pageAlive,
     ensurePage: () => ({}),
     getQuickHostBounds: () => ({ x: 10, y: 20, width: 480, height: 600 }),
     attachViewTo: (win) => {
       attachments.push(win === normal ? "normal" : "quick");
+      if (!pageAlive) return false;
       for (const host of [normal, ...created]) {
         host.contentView.children = host.contentView.children.filter(child => child !== view);
       }
@@ -146,7 +148,12 @@ function harness(options = {}) {
     attachments,
     focusPageCalls,
     originFocus,
-    killPage: () => { pageAlive = false; },
+    killPage: () => {
+      pageAlive = false;
+      for (const host of [normal, ...created]) {
+        host.contentView.children = host.contentView.children.filter(child => child !== view);
+      }
+    },
     quickWindow: () => created[0] || null,
     borrow() {
       const started = quick.show();
@@ -291,6 +298,7 @@ test("a page that is gone is never focused as a blank window", () => {
 
   assert.equal(h.normal.focusCount, 0, "there is no page to hand the keyboard to");
   assert.equal(h.focusPageCalls.length, pageFocusBefore);
+  assert.deepEqual(h.normal.contentView.children, [], "the dead view was not reattached");
   assert.equal(h.quickWindow().destroyCount, 1, "the empty stranded shell still retires after page loss");
 });
 

@@ -304,11 +304,13 @@ function createDashboardQuickMode(ctx = {}) {
   // If neither return target can take the keyboard, hiding a Windows toolbar
   // can leave its empty HWND as native foreground. Retire only that shell and
   // let Windows choose the next window; never pick an unrelated app ourselves.
-  // The shared page must already be safe at home, and the native ownership
-  // check is deliberately last (even the ordinary fallback may change it).
+  // A live page must already be safe at home. A destroyed page cannot be
+  // re-parented; only the owner's explicit death proof can waive that return.
+  // The native ownership check stays last (the ordinary fallback may change it).
   function retireStrandedQuickHost(pageReturned) {
     const win = quickWindow;
-    if (platform !== "win32" || appQuitting() || !pageReturned || !isLiveWindow(win)) return false;
+    if (platform !== "win32" || appQuitting() || !isLiveWindow(win)) return false;
+    if (!pageReturned && callSafe(ctx, "isPageDestroyed") !== true) return false;
     if (callSafe(win, "isVisible") !== false) return false;
     try {
       if (win.contentView.children.length !== 0) return false;
