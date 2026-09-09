@@ -792,7 +792,17 @@ function attachStdinDiag(body, stdinRead) {
   return body;
 }
 
+function launchedByGrok() {
+  return Boolean(
+    (process.env.GROK_HOOK_EVENT && String(process.env.GROK_HOOK_EVENT).trim())
+    || (process.env.GROK_SESSION_ID && String(process.env.GROK_SESSION_ID).trim())
+  );
+}
+
 function main() {
+  // Grok scans ~/.claude/settings.json by default. Those Claude hooks must not
+  // report a phantom claude-code session; Grok events go through grok-hook.js.
+  if (launchedByGrok()) process.exit(0);
   const event = process.argv[2];
   if (!EVENT_TO_STATE[event]) process.exit(0);
   const eventAt = Date.now();

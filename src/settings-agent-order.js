@@ -12,6 +12,7 @@ function buildSettingsAgentOrderExports() {
     "mimocode",
     "codebuddy",
     "workbuddy",
+    "grok",
     "qoder",
     "qoderwork",
     "traecode",

@@ -428,6 +428,15 @@
       "sha256": "19cb901d7b64a630551e5b8adfc950367cab896fac29261275e7bcf97dfce773",
       "fallback": true,
       "exportMode": "passthrough"
+    },
+    "grok": {
+      "agentId": "grok",
+      "originalFilename": "grok.png",
+      "sourceFilename": "grok.png",
+      "sourceType": "png",
+      "sha256": "ee48e3693e99bbe94fc07adb6c93b7a7d477b232a18a461a3eb8776947626f7a",
+      "fallback": true,
+      "exportMode": "passthrough"
     }
   },
   "outputs": {
@@ -574,6 +583,12 @@
       "outputFilename": "traecode.png",
       "outputSha256": "19cb901d7b64a630551e5b8adfc950367cab896fac29261275e7bcf97dfce773",
       "generatedFromSourceSha256": "19cb901d7b64a630551e5b8adfc950367cab896fac29261275e7bcf97dfce773"
+    },
+    "grok": {
+      "agentId": "grok",
+      "outputFilename": "grok.png",
+      "outputSha256": "ee48e3693e99bbe94fc07adb6c93b7a7d477b232a18a461a3eb8776947626f7a",
+      "generatedFromSourceSha256": "ee48e3693e99bbe94fc07adb6c93b7a7d477b232a18a461a3eb8776947626f7a"
     }
   }
 }

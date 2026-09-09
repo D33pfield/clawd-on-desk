@@ -88,6 +88,13 @@ CodeBuddy 状态同步（Claude Code 兼容 hook，command）：
     → server-agent-id.js 只接受当前仍注册的 custom ID，enabled gate 决定是否进入状态机
   v1 不支持 /permission；已注册 custom 的权限请求返回 204 no-decision，删除/伪造的 custom- ID 直接拒绝，不能降级成 Claude Code subagent。
 
+Grok Build 状态与通知同步（Claude Code 兼容 hook，command，camelCase stdin）：
+  Grok 触发 SessionStart / SessionEnd / UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure / Stop / StopFailure / StopCancelled / Notification / SubagentStart / SubagentStop / PreCompact / PostCompact / PermissionDenied
+    → hooks/grok-hook.js（PascalCase `hook_event_name` 或 camelCase `hookEventName` / `sessionId` → agents/grok.js 映射 → HTTP POST）
+    → 同上状态机（agent_id: grok）
+  Hook 注册到 ~/.grok/hooks/clawd.json。集成为 state + Notification only：不注册 PermissionRequest HTTP hook。
+  Grok 默认扫描 ~/.claude/settings.json，因此 clawd-hook.js 在 GROK_HOOK_EVENT / GROK_SESSION_ID 下直接退出，避免假 Claude 会话。
+
 WorkBuddy 状态与通知同步（Claude Code 兼容 hook，command）：
   WorkBuddy 触发 SessionStart / SessionEnd / UserPromptSubmit / PreToolUse / PostToolUse / Stop / Notification / PreCompact
     → hooks/workbuddy-hook.js（PascalCase 事件 → agents/workbuddy.js 映射 → HTTP POST）

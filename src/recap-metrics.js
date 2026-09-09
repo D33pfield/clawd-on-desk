@@ -50,6 +50,7 @@ const AGENT_METRIC_POLICIES = Object.freeze({
   qwenwork: policy(null, STANDARD_COMPLETION, STANDARD_TOOL_START),
   workbuddy: policy(null, STANDARD_COMPLETION, STANDARD_TOOL_START),
   traecode: policy(null, STANDARD_COMPLETION, STANDARD_TOOL_START),
+  grok: policy(null, STANDARD_COMPLETION, STANDARD_TOOL_START),
 });
 
 function policy(sessionStart, turnCompleteEvents, toolCallEvents) {

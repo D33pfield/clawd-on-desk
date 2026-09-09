@@ -476,6 +476,9 @@ function detectInstallation(descriptor, paths, options) {
       }
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
       return notFound();
+    case "grok":
+      if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
+      return notFound();
     case "copilot-cli":
     case "cursor-agent":
     case "qwen-code":

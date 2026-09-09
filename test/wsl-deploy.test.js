@@ -65,6 +65,10 @@ describe("wsl-deploy", () => {
       assert.strictEqual(getAgentInstallScriptName("openclaw"), null);
     });
 
+    it("maps grok to grok-install.js", () => {
+      assert.strictEqual(getAgentInstallScriptName("grok"), "grok-install.js");
+    });
+
     it("excludes workbuddy (no standalone Linux/WSL runtime)", () => {
       // WorkBuddy ships only as a macOS/Windows Electron desktop app, so there
       // is no in-WSL settings.json to deploy hooks into. See AGENT_INSTALL_SCRIPT.

@@ -216,6 +216,21 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncGrokHooks() {
+    try {
+      if (typeof ctx.syncGrokHooksImpl === "function") return ctx.syncGrokHooksImpl();
+      const { registerGrokHooks } = require("../hooks/grok-install.js");
+      const result = registerGrokHooks({ silent: true });
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced Grok hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      return normalizeCountSyncResult(result, "Grok Build", "grok-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync Grok hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync Grok hooks" };
+    }
+  }
+
   function syncTraeCodeHooks() {
     try {
       if (typeof ctx.syncTraeCodeHooksImpl === "function") return ctx.syncTraeCodeHooksImpl();
@@ -591,6 +606,7 @@ function createIntegrationSyncRuntime(options = {}) {
     "copilot-cli": syncCopilotHooks,
     codebuddy: syncCodeBuddyHooks,
     workbuddy: syncWorkBuddyHooks,
+    grok: syncGrokHooks,
     "kiro-cli": syncKiroHooks,
     "kimi-cli": syncKimiHooks,
     "qwen-code": syncQwenHooks,

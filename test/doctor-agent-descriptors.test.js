@@ -21,6 +21,7 @@ describe("doctor agent descriptors", () => {
         "antigravity-cli",
         "codebuddy",
         "workbuddy",
+        "grok",
         "kiro-cli",
         "kimi-cli",
         "qwen-code",
@@ -89,6 +90,12 @@ describe("doctor agent descriptors", () => {
       getAgentDescriptor("workbuddy").configTargets.map((target) => target.configPath),
       [workbuddy.CURRENT_CONFIG_PATH, workbuddy.LEGACY_CONFIG_PATH]
     );
+
+    const grok = require("../hooks/grok-install");
+    assert.strictEqual(getAgentDescriptor("grok").parentDir, grok.DEFAULT_PARENT_DIR);
+    assert.strictEqual(getAgentDescriptor("grok").configPath, grok.DEFAULT_CONFIG_PATH);
+    assert.strictEqual(getAgentDescriptor("grok").marker, grok.MARKER);
+    assert.deepStrictEqual(getAgentDescriptor("grok").hookEvents, grok.GROK_HOOK_EVENTS);
 
     assert.strictEqual(getAgentDescriptor("kiro-cli").parentDir, kiro.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("kiro-cli").configPath, kiro.DEFAULT_AGENTS_DIR);
@@ -347,5 +354,17 @@ describe("doctor agent descriptors", () => {
       descriptor.configTargets.map((target) => target.configPath),
       [workbuddy.CURRENT_CONFIG_PATH, workbuddy.LEGACY_CONFIG_PATH]
     );
+  });
+
+  it("checks Grok Build hooks as a state-only nested settings file", () => {
+    const grok = require("../hooks/grok-install");
+    const descriptor = getAgentDescriptor("grok");
+
+    assert.strictEqual(descriptor.eventSource, "hook");
+    assert.strictEqual(descriptor.configMode, "file");
+    assert.strictEqual(descriptor.nested, true);
+    assert.strictEqual(descriptor.autoInstall, true);
+    assert.strictEqual(descriptor.marker, grok.MARKER);
+    assert.deepStrictEqual(descriptor.hookEvents, grok.GROK_HOOK_EVENTS);
   });
 });

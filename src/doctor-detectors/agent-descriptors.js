@@ -26,6 +26,7 @@ const reasonix = require("../../hooks/reasonix-install");
 const qoderwork = require("../../hooks/qoderwork-install");
 const qwenwork = require("../../hooks/qwenwork-install");
 const workbuddy = require("../../hooks/workbuddy-install");
+const grok = require("../../hooks/grok-install");
 const traecode = require("../../hooks/traecode-install");
 const dsh = require("../../hooks/dsh-install");
 
@@ -150,6 +151,18 @@ const AGENT_DESCRIPTORS = Object.freeze([
     marker: workbuddy.MARKER,
     nested: true,
     hookEvents: workbuddy.WORKBUDDY_HOOK_EVENTS,
+  }),
+  Object.freeze({
+    agentId: "grok",
+    agentName: agentName("grok"),
+    eventSource: agentEventSource("grok"),
+    parentDir: grok.DEFAULT_PARENT_DIR,
+    configPath: grok.DEFAULT_CONFIG_PATH,
+    configMode: "file",
+    autoInstall: true,
+    marker: grok.MARKER,
+    nested: true,
+    hookEvents: grok.GROK_HOOK_EVENTS,
   }),
   Object.freeze({
     agentId: "kiro-cli",

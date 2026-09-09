@@ -114,6 +114,7 @@ const SOURCE_PROVENANCE = Object.freeze({
   },
   zcode: { originalFilename: "zcode.png", fallback: true, exportMode: "passthrough" },
   traecode: { originalFilename: "traecode.png", fallback: true, exportMode: "passthrough" },
+  grok: { originalFilename: "grok.png", fallback: true, exportMode: "passthrough" },
 });
 
 function getSourceCandidatePath(agentId, extension) {
