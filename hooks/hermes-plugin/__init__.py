@@ -1301,7 +1301,7 @@ def _make_callback(event_name: str):
             if tool_name == "clarify":
                 return _handle_clarify_tool(**kwargs)
             if _PERMISSION_TOOLS and tool_name in _PERMISSION_TOOLS:
-                return _handle_permission_request(tool_name, **kwargs)
+                return _handle_permission_request(**kwargs)
             _handle_hook(event_name, **kwargs)
             return None
         callback.__name__ = "clawd_pre_tool_call"
@@ -1395,6 +1395,8 @@ def _handle_clarify_tool(**kwargs: Any):
 
 def _handle_permission_request(tool_name: str, **kwargs: Any):
     """Show permission bubble for tools that require user approval."""
+    # Python binds tool_name separately; retain it in the state hook payload too.
+    kwargs["tool_name"] = tool_name
     args = kwargs.get("args", {})
     tool_input = _safe_value(args) if args else {}
     session_id = _session_id("pre_tool_call", kwargs)

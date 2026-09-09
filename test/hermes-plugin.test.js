@@ -660,6 +660,52 @@ print(json.dumps({
     ]);
   });
 
+  it("routes registered permission callbacks without duplicating the tool name", () => {
+    const output = runPluginPython(String.raw`
+import importlib.util
+import json
+import sys
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("hermes_plugin", r"hooks/hermes-plugin/__init__.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod._PERMISSION_TOOLS = {"terminal"}
+mod._ensure_process_meta_resolver_started = lambda: None
+mod._append_log = lambda *args, **kwargs: None
+registered = {}
+class Context:
+    def register_hook(self, name, callback):
+        registered[name] = callback
+mod.register(Context())
+events = []
+calls = []
+mod._handle_hook = lambda event, **kwargs: events.append({"event": event, "kwargs": kwargs})
+responses = [{"decision": "allow"}, {"decision": "deny", "message": "Denied in Clawd"}, None]
+def permission(tool_name, tool_input, session_id, platform):
+    calls.append({"tool_name": tool_name, "tool_input": tool_input, "session_id": session_id})
+    return responses.pop(0)
+mod._post_permission = permission
+kwargs = {"tool_name": "terminal", "args": {"command": "printf test"}, "session_id": "callback-session", "task_id": "callback-task"}
+results = [registered["pre_tool_call"](**kwargs) for _ in range(3)]
+print(json.dumps({"results": results, "calls": calls, "events": events}))
+`);
+    const result = JSON.parse(output);
+    assert.strictEqual(result.results[0], null);
+    assert.deepStrictEqual(result.results[1], { action: "block", message: "Denied in Clawd" });
+    assert.strictEqual(result.results[2].action, "block");
+    assert.match(result.results[2].message, /did not return a permission decision/i);
+    assert.deepStrictEqual(result.calls, Array(3).fill({
+      tool_name: "terminal", tool_input: { command: "printf test" }, session_id: "callback-session",
+    }));
+    assert.strictEqual(result.events.length, 2);
+    for (const event of result.events) {
+      assert.strictEqual(event.event, "pre_tool_call");
+      assert.strictEqual(event.kwargs.tool_name, "terminal");
+      assert.strictEqual(event.kwargs.session_id, "callback-session");
+    }
+  });
+
   it("probes existing /state health route before the long blocking permission POST", () => {
     const output = runPluginPython(String.raw`
 import importlib.util
