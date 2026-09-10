@@ -11,7 +11,7 @@ This document holds the state machine, theme system, UI runtime, and platform ca
 
 输入事件流：`hitWin renderer → IPC → main → renderWin renderer`
 
-Windows 的 hit window 在原生 activation controller 可用时按前台全屏状态切换 `WS_EX_NOACTIVATE`：非全屏时清除该扩展样式，全屏时重新设置以避免点击和拖拽把前台切到 Clawd。Electron 内部保持 non-focusable；首次显示前安装的 `WM_MOUSEACTIVATE` hook 通过一次性 `Chrome.IgnoreMouseActivate` 属性让 Chromium 返回不激活窗口但仍投递 pointer 的 `MA_NOACTIVATE`，而不是吞点击的 `MA_NOACTIVATEANDEAT`。输入窗口仍和渲染窗口分离，并永久接收 mouse events。
+Windows 的 hit window 在原生 activation controller 可用时按前台全屏状态切换 `WS_EX_NOACTIVATE`：非全屏时清除该扩展样式，全屏时重新设置以避免点击和拖拽把前台切到 Clawd。Electron 内部保持 non-focusable；首次显示前安装的 `WM_MOUSEACTIVATE` hook 通过一次性 `Chrome.IgnoreMouseActivate` 属性让 Chromium 对该消息返回 `MA_NOACTIVATE`（不因这条消息激活窗口，也不丢弃鼠标输入），避免 `MA_NOACTIVATEANDEAT` 吞掉点击。该消息的返回值不保证普通桌面点击始终保持 OS 前台归属，相关限制见 Known Limits。输入窗口仍和渲染窗口分离，并永久接收 mouse events。
 
 ## State Machine
 
@@ -250,6 +250,7 @@ Mini 状态映射：
 ## Known Limits
 
 - Windows 原生 activation controller 依赖打包目标内的 Koffi；不可用时不调用会扰动前台的 Electron `setFocusable(false)`，而以旧的 focusable 输入窗降级，桌面交互仍可用但全屏点击可能短暂抢前台
+- Windows 非全屏态会清除输入窗的 `WS_EX_NOACTIVATE`；点击桌宠可能短暂把 OS 前台归属切到 Clawd，即使 Electron `win.isFocused()` 仍为 false。mouse-activation hook 不消除这项既有的普通桌面限制
 - 当前开发环境没有 macOS 手测机；所有 macOS 特定路径都只能做 code review + best-effort 推断，真正行为变化需要额外人工验证
 - 启动恢复依赖 `detectRunningClaudeProcesses()` 与后续 hook 事件
 - Windows 前台窗口锁通过 ALT trick + `koffi` FFI 绕过，仍有边缘失败可能
