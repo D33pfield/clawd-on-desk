@@ -329,14 +329,20 @@ function createQoderSessionTitleTracker(options = {}) {
     finally { if (entry.pending === pending) entry.pending = null; }
   }
 
-  function clear(sessionId = null) {
+  function clear(sessionId = null, { preserveExternalTitle = false } = {}) {
     if (sessionId === null || sessionId === undefined) {
       const count = entries.size;
       entries.clear();
       return count;
     }
     const normalized = normalizeQoderSessionId(sessionId);
-    return normalized && entries.delete(normalized) ? 1 : 0;
+    const entry = entries.get(normalized);
+    if (!entry) return 0;
+    entries.delete(normalized);
+    // Replace the entry to invalidate readers, while retaining a live
+    // session's explicit title across a same-id SessionStart.
+    if (preserveExternalTitle && entry.externalTitle) noteExternalTitle(normalized, entry.externalTitle);
+    return 1;
   }
 
   return {

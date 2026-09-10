@@ -104,7 +104,8 @@ Qoder 会话标题（本机、state-only）：
   结果通过既有 `updateSessionMetadata` 扇出到共享 snapshot，不改活动时间、状态、recentEvents 或 recap。
   显式生命周期标题和 metadata-only 标题均同步记入 tracker；未读取/轮转的基线或已排队的旧扫描
   不覆盖显式标题，之后观察到的新原生标题记录才可替代它（两个来源没有可比较的原生时间戳）。
-  每个会话串行读取；SessionStart / SessionEnd、禁用与退出使旧 entry 失效，完成时还需核对存活会话、
+  同 id 的 SessionStart 取消旧读取但保留显式标题；SessionEnd、禁用与退出完整清理缓存。
+  每个会话串行读取；完成时还需核对存活会话、
   本机身份、当前路径及标题，防止旧异步结果污染重开的会话。读取中断时逐 chunk 保持 offset 与 partial
   一致，重试可继续完整解析；FileHandle 始终在 finally 中关闭。
 

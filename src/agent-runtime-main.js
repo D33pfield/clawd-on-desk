@@ -216,11 +216,13 @@ function createAgentRuntimeMain(options = {}) {
   function enrichQoderSessionTitle(sessionId, event, opts) {
     if (opts.agentId !== "qoder" || (opts.profileId || "local") !== "local"
       || opts.host || opts.wslDistro) return;
-    const rawSessionId = opts.rawSessionId || sessionId;
-    // A new lifecycle must invalidate work from an earlier --resume of this id.
-    if (event === "SessionStart" || event === "SessionEnd") qoderSessionTitleTracker.clear(rawSessionId);
-    if (event === "SessionEnd") return;
     const session = localQoderSession(sessionId);
+    const rawSessionId = (session && session.rawSessionId) || opts.rawSessionId || sessionId;
+    // A new lifecycle must invalidate work from an earlier --resume of this id.
+    if (event === "SessionStart" || event === "SessionEnd") {
+      qoderSessionTitleTracker.clear(rawSessionId, { preserveExternalTitle: event === "SessionStart" });
+    }
+    if (event === "SessionEnd") return;
     if (!session) return;
     if (opts.sessionTitle) {
       noteQoderExternalTitle(sessionId, opts.sessionTitle);

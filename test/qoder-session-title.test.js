@@ -439,7 +439,9 @@ describe("Qoder session title tracker", () => {
       }) });
       const pending = tracker.resolve({ event: "Stop", sessionId: "s1", transcriptPath });
       await entered.promise;
-      tracker.clear("s1");
+      tracker.noteExternalTitle("s1", "Title before restart");
+      tracker.clear("s1", { preserveExternalTitle: true });
+      assert.strictEqual(tracker.getTitle("s1"), "Title before restart");
       tracker.noteExternalTitle("s1", "New lifecycle");
       release.resolve();
       assert.strictEqual(await pending, null);
@@ -543,6 +545,34 @@ describe("Qoder session title tracker", () => {
         }
         appendJsonLine(transcriptPath, { type: "custom-title", sessionId: "fixture-session", customTitle: "C" });
         await scanPost({ state: "thinking", event: "UserPromptSubmit" });
+        await waitForTitle(integration.state, "C");
+      } finally { integration.cleanup(); }
+    });
+  });
+
+  it("preserves an explicit title across a same-id start but clears it on session end", async () => {
+    await withTempTranscript(async (transcriptPath) => {
+      appendJsonLine(transcriptPath, { type: "custom-title", sessionId: "fixture-session", customTitle: "A" });
+      const integration = createIntegration();
+      const base = { agent_id: "qoder", session_id: "qoder:fixture-session", transcript_path: transcriptPath };
+      const scanPost = async (event) => {
+        const finished = integration.nextScan();
+        await integration.post({ ...base, state: "idle", event });
+        await finished; await nextTurn();
+      };
+      try {
+        await scanPost("SessionStart");
+        await integration.post({ ...base, state: "thinking", event: "UserPromptSubmit", session_title: "B" });
+        await scanPost("SessionStart");
+        assert.strictEqual(integration.tracker.getTitle(base.session_id), "B");
+        await waitForTitle(integration.state, "B");
+        appendJsonLine(transcriptPath, { type: "custom-title", sessionId: "fixture-session", customTitle: "C" });
+        await scanPost("Stop");
+        await waitForTitle(integration.state, "C");
+        await integration.post({ ...base, metadata_only: true, session_title: "D" });
+        await integration.post({ ...base, state: "sleeping", event: "SessionEnd" });
+        assert.strictEqual(integration.tracker.getTitle(base.session_id), null);
+        await scanPost("SessionStart");
         await waitForTitle(integration.state, "C");
       } finally { integration.cleanup(); }
     });
