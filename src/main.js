@@ -1826,11 +1826,8 @@ function moveWindowForDrag() { return petWindowRuntime.moveWindowForDrag(); }
 // with the inverse of the fullscreen state. The native controller toggles
 // WS_EX_NOACTIVATE without calling BrowserWindow.setFocusable(false), whose
 // Focus(false) side effect deactivates the user's fullscreen foreground app.
-// Leaving fullscreen removes the native style. When the native controller is
-// available, Electron itself remains non-focusable for the hit window's
-// lifetime so Chromium cannot explicitly activate Clawd on pointerdown. If
-// Koffi/user32 initialization failed, construction deliberately falls back to
-// the legacy focusable window so desktop click/drag remains available.
+// A WM_MOUSEACTIVATE hook keeps clicks deliverable while Electron remains
+// non-focusable. If setup fails, the window falls back before first show.
 const setHitWinFocusable = _hitWindowActivationRuntime.setHitWinFocusable;
 
 // ── Mini Mode — delegated to src/mini.js ──
@@ -4867,6 +4864,9 @@ function createWindow() {
     loadFilePath: path.join(__dirname, "hit.html"),
     hitThemeConfig: themeRuntime.getHitRendererConfig(),
     guardAlwaysOnTop,
+    prepareActivation: (createdHitWin) => (
+      _hitWindowActivationRuntime.controller.prepare(createdHitWin)
+    ),
     onDidFinishLoad: () => {
       sendToHitWin("theme-config", themeRuntime.getHitRendererConfig());
       if (themeRuntime.isReloadInProgress()) return;
@@ -5684,6 +5684,7 @@ if (!gotTheLock) {
     if (!_remoteSshRuntime || typeof _remoteSshRuntime.shutdown !== "function") {
       try { _remoteSshRuntime.cleanup(); } catch {}
     }
+    _hitWindowActivationRuntime.controller.dispose();
     if (hitWin && !hitWin.isDestroyed()) hitWin.destroy();
   });
 
