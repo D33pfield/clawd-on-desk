@@ -176,6 +176,10 @@ const {
 } = require("./mac-dock-icon-runtime");
 const createTopmostRuntime = require("./topmost-runtime");
 const { WIN_TOPMOST_LEVEL } = createTopmostRuntime;
+const {
+  createHitWindowActivationRuntime,
+} = require("./win-hit-window-activation");
+const { startMobilePreviewServerSafely } = require("./network/mobile-preview-lifecycle");
 const createThemeFadeSequencer = require("./theme-fade-sequencer");
 const createThemeRuntime = require("./theme-runtime");
 const createAgentRuntimeMain = require("./agent-runtime-main");
@@ -229,6 +233,11 @@ const { createForegroundFullscreenProbe } = require("./win-fullscreen-detect");
 const _isForegroundFullscreen = createForegroundFullscreenProbe({
   isWin,
   onError: (err) => console.warn("Clawd: win-fullscreen-detect not available:", err && err.message),
+});
+const _hitWindowActivationRuntime = createHitWindowActivationRuntime({
+  isWin,
+  getHitWindow: () => hitWin,
+  onError: (err) => console.warn("Clawd: win-hit-window-activation failed:", err && err.message),
 });
 
 // ── Windows: DWM cloak inspection + un-cloak (#525 self-heal) ──
@@ -476,6 +485,7 @@ let slackNotifyClient = null;
 let slackNotifyConfigRevision = 0;
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
+  quickSelectSession: () => showQuickSelect(),
 };
 const _settingsController = createSettingsController({
   prefsPath: PREFS_PATH,
@@ -887,6 +897,7 @@ roamFencePickerRuntime = createRoamFencePicker({
 shortcutRuntime = createShortcutRuntime({
   ipcMain,
   globalShortcut,
+  platform: process.platform,
   settingsController: _settingsController,
   getSettingsWindow,
   shortcutHandlers,
@@ -1037,6 +1048,7 @@ const petWindowRuntime = createPetWindowRuntime({
   isWin,
   isMac,
   isLinux,
+  windowsHitWindowFocusable: _hitWindowActivationRuntime.windowsHitWindowFocusable,
   linuxWindowType: LINUX_WINDOW_TYPE,
   topmostLevel: WIN_TOPMOST_LEVEL,
   getRenderWindow: () => win,
@@ -1068,12 +1080,19 @@ const petWindowRuntime = createPetWindowRuntime({
   repositionFloatingBubbles: () => repositionFloatingBubbles(),
   showFloatingSurfacesForPet: () => floatingWindowRuntime.showFloatingSurfacesForPet(),
   hideFloatingSurfacesForPet: () => floatingWindowRuntime.hideFloatingSurfacesForPet(),
+  setFloatingSurfacesFullscreenSuppressed: (suppressed) => (
+    floatingWindowRuntime.setFullscreenSuppressedForPet(suppressed)
+  ),
+  // Lazy-bound like isMiniAnimating below — topmostRuntime is constructed
+  // after petWindowRuntime, but this closure only fires on a user gesture,
+  // well after module load finishes. (#935 override latch)
+  noteManualPetShow: () => topmostRuntime.noteFullscreenAutoHideOverride(),
   syncSessionHudVisibilityAndBubbles: () => syncSessionHudVisibilityAndBubbles(),
   syncPermissionShortcuts: () => syncPermissionShortcuts(),
   buildTrayMenu: () => buildTrayMenu(),
   buildContextMenu: () => buildContextMenu(),
   reapplyMacVisibility: () => reapplyMacVisibility(),
-  reassertWinTopmost: () => reassertWinTopmost(),
+  reassertWinTopmost: (...args) => reassertWinTopmost(...args),
   scheduleHwndRecovery: () => scheduleHwndRecovery(),
   cloakInspector: _cloakInspector,
   isMiniAnimating: () => _mini.getIsAnimating(),
@@ -1241,6 +1260,7 @@ let allowEdgePinningCached = _settingsController.get("allowEdgePinning");
 let disableMiniModeCached = _settingsController.get("disableMiniMode");
 let keepSizeAcrossDisplaysCached = _settingsController.get("keepSizeAcrossDisplays");
 let fullscreenOverlayCached = _settingsController.get("fullscreenOverlay");
+let fullscreenAutoHideCached = _settingsController.get("fullscreenAutoHide");
 let textScale = _settingsController.get("textScale");
 let textScaleByDisplay = _settingsController.get("textScaleByDisplay");
 // Transient slider-drag override for ONE display — the one the settings
@@ -1364,6 +1384,14 @@ function prepManualPetVisibility() {
 function togglePetVisibility() {
   prepManualPetVisibility();
   return petWindowRuntime.togglePetVisibility();
+}
+// Explicit-direction variant for the menus: the Show/Hide Pet items apply the
+// intent their label carried when the menu was built, so a state change that
+// lands while the menu is open degrades to a no-op instead of inverting the
+// action (see menu.js).
+function setPetVisibility(visible) {
+  prepManualPetVisibility();
+  return petWindowRuntime.setPetHidden(!visible);
 }
 function bringPetToPrimaryDisplay() {
   prepManualPetVisibility();
@@ -1794,31 +1822,13 @@ function beginDragSnapshot() { return petWindowRuntime.beginDragSnapshot(); }
 function clearDragSnapshot() { return petWindowRuntime.clearDragSnapshot(); }
 function moveWindowForDrag() { return petWindowRuntime.moveWindowForDrag(); }
 
-// Windows-only (#538 drag focus-steal): the topmost watchdog calls this each
-// tick with the inverse of the fullscreen state. While a fullscreen app owns
-// the foreground we drop the hit window's activation so a click on the pet
-// can't steal focus from an exclusive-fullscreen game and minimize it; we
-// restore it when fullscreen ends because dragging needs activation (#545).
-// Idempotent via isFocusable() so the per-tick call is a no-op when unchanged.
-function setHitWinFocusable(focusable) {
-  if (!isWin) return;
-  if (!hitWin || hitWin.isDestroyed() || typeof hitWin.setFocusable !== "function") return;
-  const next = !!focusable;
-  if (typeof hitWin.isFocusable === "function" && hitWin.isFocusable() === next) return;
-  hitWin.setFocusable(next);
-  // Electron's NativeWindowViews::SetFocusable couples activation to the
-  // taskbar on Windows: SetFocusable(true) internally calls
-  // SetSkipTaskbar(false) → ITaskbarList::AddTab, so restoring activation
-  // after a fullscreen exit (or a screenshot overlay dismissing) flashes a
-  // taskbar button for the hit window (#586). Delete the tab again in the
-  // same turn, before the taskbar repaints.
-  // true-direction ONLY: SetFocusable(false) already deletes the tab
-  // internally, and re-deleting on that path broke cursor-drag while a
-  // fullscreen app was foreground (real-machine repro during #586 review;
-  // exact Windows-side mechanism unconfirmed). Do not "simplify" this into
-  // an unconditional call.
-  if (next) keepOutOfTaskbar(hitWin);
-}
+// Windows-only (#538/#562 drag focus-steal): the topmost runtime calls this
+// with the inverse of the fullscreen state. The native controller toggles
+// WS_EX_NOACTIVATE without calling BrowserWindow.setFocusable(false), whose
+// Focus(false) side effect deactivates the user's fullscreen foreground app.
+// A WM_MOUSEACTIVATE hook keeps clicks deliverable while Electron remains
+// non-focusable. If setup fails, the window falls back before first show.
+const setHitWinFocusable = _hitWindowActivationRuntime.setHitWinFocusable;
 
 // ── Mini Mode — delegated to src/mini.js ──
 // Initialized after state module (needs applyState, resolveDisplayState, etc.)
@@ -1852,7 +1862,14 @@ const topmostRuntime = createTopmostRuntime({
   isMiniAnimating: () => _mini.getIsAnimating(),
   isMiniTransitioning: () => _mini.getMiniTransitioning(),
   isForegroundFullscreen: () => _isForegroundFullscreen(),
+  getForegroundFullscreenObservation: () => _isForegroundFullscreen.getLastObservation(),
+  isFullscreenWindowAlive: (windowId) => _isForegroundFullscreen.isWindowIdAlive(windowId),
   getFullscreenOverlay: () => fullscreenOverlayCached,
+  // #935 fullscreen auto-hide: the pref gate plus pet-window-runtime's
+  // dedicated visibility layer (stacked on the user's manual hide).
+  getFullscreenAutoHide: () => fullscreenAutoHideCached,
+  setFullscreenAutoHidden: (...args) => petWindowRuntime.setFullscreenAutoHidden(...args),
+  isFullscreenAutoHidden: () => petWindowRuntime.isFullscreenAutoHidden(),
   setHitWinFocusable,
   keepOutOfTaskbar,
   setForceEyeResend,
@@ -1894,7 +1911,7 @@ const _permCtx = {
   get permDebugLog() { return permDebugLog; },
   get doNotDisturb() { return doNotDisturb; },
   get hideBubbles() { return getAllBubblesHidden(); },
-  get petHidden() { return petWindowRuntime.isPetHidden(); },
+  get petHidden() { return petWindowRuntime.isPetEffectivelyHidden(); },
   getBubblePolicy: getRuntimeBubblePolicy,
   getPetWindowBounds,
   getNearestWorkArea,
@@ -2028,7 +2045,7 @@ const _updateBubbleCtx = {
   get bubbleFollowPet() { return bubbleFollowPet; },
   get bubbleFollowPreference() { return bubbleFollowPreference; },
   get bubbleFixedCorner() { return bubbleFixedCorner; },
-  get petHidden() { return petWindowRuntime.isPetHidden(); },
+  get petHidden() { return petWindowRuntime.isPetEffectivelyHidden(); },
   getBubblePolicy: getRuntimeBubblePolicy,
   getPetWindowBounds,
   getNearestWorkArea,
@@ -2059,10 +2076,15 @@ floatingWindowRuntime = createFloatingWindowRuntime({
   repositionQuotaRing: () => repositionQuotaRing(),
   syncSessionHudVisibility: () => syncSessionHudVisibility(),
   syncUpdateBubbleVisibility: (hiddenOverride) => syncUpdateBubbleVisibility(hiddenOverride),
-  hideUpdateBubble: () => hideUpdateBubble(),
+  suspendUpdateBubbleForPet: () => _updateBubble.suspendForPetHidden(),
+  suspendUpdateBubbleForFullscreen: () => _updateBubble.suspendForFullscreen(),
+  resumeUpdateBubbleFromFullscreen: () => _updateBubble.resumeFromFullscreen(),
   keepOutOfTaskbar,
   showPermissionSurfacesForPet: () => _perm.showPermissionSurfacesForPet(),
   hidePermissionSurfacesForPet: () => _perm.hidePermissionSurfacesForPet(),
+  setPermissionSurfacesFullscreenSuppressed: (suppressed) => (
+    _perm.setPermissionSurfacesFullscreenSuppressed(suppressed)
+  ),
 });
 
 function repositionFloatingBubbles() {
@@ -2084,6 +2106,7 @@ function syncSessionHudVisibilityAndBubbles() {
 
 // ── State machine — delegated to src/state.js ──
 let showDashboard = () => {};
+let showQuickSelect = () => {};
 let broadcastDashboardSessionSnapshot = () => {};
 let sendDashboardI18n = () => {};
 
@@ -2540,6 +2563,8 @@ const _dashboard = require("./dashboard")({
   t: (key) => translate(key),
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
   getI18n: () => getDashboardI18nPayload(),
+  focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
+  isAppQuitting: () => isQuitting,
   getPetWindowBounds,
   getNearestWorkArea,
   getSettingsWindow: () => settingsWindowRuntime.getWindow(),
@@ -2553,8 +2578,24 @@ const _dashboard = require("./dashboard")({
   iconPath: settingsWindowRuntime.getIconPath(),
 });
 showDashboard = _dashboard.showDashboard;
-broadcastDashboardSessionSnapshot = _dashboard.broadcastSessionSnapshot;
-sendDashboardI18n = _dashboard.sendI18n;
+// The keyboard mode is a temporary state of the real Dashboard page, so it is
+// owned by the Dashboard rather than by a second window/renderer.
+showQuickSelect = () => _dashboard.quick.show();
+broadcastDashboardSessionSnapshot = (snapshot) => {
+  _dashboard.broadcastSessionSnapshot(snapshot);
+};
+sendDashboardI18n = () => {
+  _dashboard.sendI18n();
+};
+// The quick host is a real window whose own `close` handler refuses to close
+// (it is a borrow surface for the shared page, not something the user destroys).
+// Electron closes every window BEFORE `will-quit`, so disposing it only there
+// deadlocks a normal Quit: the close is refused, the window survives and
+// `will-quit` never arrives. Tear it down while the app is still deciding to
+// quit; the `will-quit` call stays as an idempotent backstop for a host created
+// after that point.
+app.on("before-quit", () => _dashboard.quick.dispose());
+app.on("will-quit", () => _dashboard.quick.dispose());
 
 // ── First-run onboarding tutorial ──
 // Buckets the installable agents for the tutorial's step 2. We call the
@@ -2586,7 +2627,10 @@ function buildTutorialAgentOnboardingState() {
 function buildTutorialShortcutsSummary() {
   const { SHORTCUT_ACTIONS, SHORTCUT_ACTION_IDS } = require("./shortcut-actions");
   const userShortcuts = _settingsController.get("shortcuts") || {};
-  return SHORTCUT_ACTION_IDS.map((id) => {
+  return SHORTCUT_ACTION_IDS.filter((id) => {
+    const action = SHORTCUT_ACTIONS[id] || {};
+    return action.showInTutorial !== false;
+  }).map((id) => {
     const action = SHORTCUT_ACTIONS[id] || {};
     const accelerator = Object.prototype.hasOwnProperty.call(userShortcuts, id)
       ? userShortcuts[id]
@@ -2672,7 +2716,7 @@ const _ringGeom = require("./quota-ring-geometry");
 
 const _sessionHud = require("./session-hud")({
   get win() { return win; },
-  get petHidden() { return petWindowRuntime.isPetHidden(); },
+  get petHidden() { return petWindowRuntime.isPetEffectivelyHidden(); },
   get sessionHudEnabled() { return sessionHudEnabled; },
   get sessionHudShowStateLabels() { return sessionHudShowStateLabels; },
   get sessionHudShowElapsed() { return sessionHudShowElapsed; },
@@ -4128,8 +4172,8 @@ const _menuCtx = {
   get soundVolume() { return soundVolume; },
   get pendingPermissions() { return pendingPermissions; },
   repositionBubbles: () => repositionFloatingBubbles(),
-  get petHidden() { return petWindowRuntime.isPetHidden(); },
-  togglePetVisibility: () => togglePetVisibility(),
+  get petHidden() { return petWindowRuntime.isPetEffectivelyHidden(); },
+  setPetVisibility: (visible) => setPetVisibility(visible),
   bringPetToPrimaryDisplay: () => bringPetToPrimaryDisplay(),
   get isQuitting() { return isQuitting; },
   set isQuitting(v) { isQuitting = v; },
@@ -4285,6 +4329,13 @@ const SETTINGS_MIRROR_SETTERS = {
   petTint: (v) => { petTint = v; },
   allowEdgePinning: (v) => { allowEdgePinningCached = v; }, disableMiniMode: (v) => { disableMiniModeCached = v; }, keepSizeAcrossDisplays: (v) => { keepSizeAcrossDisplaysCached = v; resetKeepSizeFrozen(); },
   fullscreenOverlay: (v) => { fullscreenOverlayCached = v; },
+  fullscreenAutoHide: (v) => {
+    fullscreenAutoHideCached = v;
+    if (!v) {
+      topmostRuntime.clearFullscreenAutoHideOverride();
+      petWindowRuntime.setFullscreenAutoHidden(false);
+    }
+  },
   freeRoam: (v) => { _roam.setEnabled(v); },
   textScale: (v) => { textScale = v; textScalePreview = null; },
   textScaleByDisplay: (v) => { textScaleByDisplay = v; textScalePreview = null; },
@@ -4430,7 +4481,7 @@ _settingsController.subscribeKey("slackNotify", () => {
   slackNotifyConfigRevision += 1;
   broadcastSlackNotifyStatus();
 });
-_settingsController.subscribeKey("mobilePreviewEnabled", async (enabled) => {
+_settingsController.subscribeKey("mobilePreviewEnabled", (enabled) => {
   if (enabled) {
     if (!_lanWss) {
       const { initMobilePreviewServer } = require("./network/mobile-preview-server");
@@ -4440,7 +4491,13 @@ _settingsController.subscribeKey("mobilePreviewEnabled", async (enabled) => {
         isEnabled: () => _settingsController.get("mobilePreviewEnabled") === true,
       });
     }
-    await _lanWss.start();
+    void startMobilePreviewServerSafely(_lanWss, {
+      source: "settings-enable",
+      onError: (err) => console.warn(
+        "Clawd mobile preview: settings start failed:",
+        err && err.message ? err.message : err,
+      ),
+    });
   } else if (_lanWss) {
     _lanWss.cleanup();
   }
@@ -4689,7 +4746,8 @@ registerSessionIpc({
   ipcMain,
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
   getI18n: () => getDashboardI18nPayload(),
-  getDashboardWindow: () => _dashboard.getWindow(),
+  getDashboardWebContents: () => _dashboard.getWebContents(),
+  quickMode: _dashboard.quick,
   getKimiQuotaStatus: () => _kimiQuotaRuntime.getStatus(),
   refreshKimiQuota: () => _kimiQuotaRuntime.refresh(),
   focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
@@ -4698,9 +4756,19 @@ registerSessionIpc({
   ackSessionCompletion: (sessionId) => _state.ackSessionCompletion(sessionId),
   setSessionAlias: (payload) => _settingsController.applyCommand("setSessionAlias", payload),
   setSessionAutomationOverride: (payload, context) => {
+    // The Dashboard page can live in a WebContentsView, where
+    // BrowserWindow.fromWebContents() returns null and the warning would fall
+    // back to the always-on-top pet — visible but not interactive on Windows.
+    // Resolve the owner instead, and make sure a quick round is ended so the
+    // modal parents onto a real ordinary window.
     let warningParent = null;
     try {
-      warningParent = BrowserWindow.fromWebContents(context && context.sender);
+      const sender = context && context.sender;
+      if (_dashboard.getHostForWebContents(sender)) {
+        warningParent = _dashboard.promoteToOrdinaryWindow();
+      } else {
+        warningParent = BrowserWindow.fromWebContents(sender);
+      }
     } catch {}
     return sessionAutomationCoordinator.setSessionAutomationOverride(payload, { warningParent });
   },
@@ -4797,6 +4865,9 @@ function createWindow() {
     loadFilePath: path.join(__dirname, "hit.html"),
     hitThemeConfig: themeRuntime.getHitRendererConfig(),
     guardAlwaysOnTop,
+    prepareActivation: (createdHitWin) => (
+      _hitWindowActivationRuntime.controller.prepare(createdHitWin)
+    ),
     onDidFinishLoad: () => {
       sendToHitWin("theme-config", themeRuntime.getHitRendererConfig());
       if (themeRuntime.isReloadInProgress()) return;
@@ -4942,7 +5013,15 @@ function createWindow() {
       console.warn("Clawd remote-ssh: connect-on-launch failed:", err && err.message);
     });
   }).catch(() => {});
-  if (_settingsController.get("mobilePreviewEnabled") === true) _lanWss.start();
+  if (_settingsController.get("mobilePreviewEnabled") === true) {
+    void startMobilePreviewServerSafely(_lanWss, {
+      source: "app-startup",
+      onError: (err) => console.warn(
+        "Clawd mobile preview: startup failed:",
+        err && err.message ? err.message : err,
+      ),
+    });
+  }
   startStaleCleanup();
   // Wait for renderer to be ready before sending initial state
   // If hooks arrived during startup, respect them instead of forcing idle
@@ -5125,7 +5204,7 @@ const _mini = require("./mini")(_miniCtx);
 const handleTestResult = createTestReactionHandler({
   getEnabled: () => _settingsController.get("testReactionsEnabled") === true,
   getDoNotDisturb: () => doNotDisturb,
-  isPetHidden: () => petWindowRuntime.isPetHidden(),
+  isPetHidden: () => petWindowRuntime.isPetEffectivelyHidden(),
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
   isDragging: () => petWindowRuntime.isDragLocked(),
@@ -5278,7 +5357,7 @@ if (!gotTheLock) {
   ) ? null : _initialPrefsLoad.snapshot;
   _syncCodexAutoStartGate(startupGateSnapshot, "startup");
   app.on("second-instance", (_event, commandLine) => {
-    if (petWindowRuntime.isPetHidden()) {
+    if (petWindowRuntime.isPetEffectivelyHidden()) {
       prepManualPetVisibility();
       petWindowRuntime.setPetHidden(false);
     } else {
@@ -5606,6 +5685,7 @@ if (!gotTheLock) {
     if (!_remoteSshRuntime || typeof _remoteSshRuntime.shutdown !== "function") {
       try { _remoteSshRuntime.cleanup(); } catch {}
     }
+    _hitWindowActivationRuntime.controller.dispose();
     if (hitWin && !hitWin.isDestroyed()) hitWin.destroy();
   });
 
