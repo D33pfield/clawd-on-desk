@@ -10,7 +10,7 @@ const { resolveSessionIdentity } = require("./session-key");
 const { digestCodexTurnId, normalizeCodexTurnId } = require("./codex-turn-id");
 const createCodexTurnFence = require("./codex-turn-fence");
 const createCodexOfficialActivity = require("./codex-official-activity");
-const { createQoderSessionTitleTracker } = require("./qoder-session-title");
+const { createQoderSessionTitleTracker, QODER_TITLE_EVENTS } = require("./qoder-session-title");
 
 const CODEX_OFFICIAL_LOG_SUPPRESS_TTL_MS = 10 * 60 * 1000;
 // Intentionally excludes response_item:web_search_call. Codex official hooks
@@ -84,6 +84,7 @@ function createAgentRuntimeMain(options = {}) {
   const clearCodexUserInputBubbles = options.clearCodexUserInputBubbles || (() => {});
 
   let codexMonitor = null;
+  let disposed = false;
   const codexTurnFence = createCodexTurnFence({ now, debugLog });
   const codexOfficialActivity = createCodexOfficialActivity({
     now,
@@ -185,12 +186,59 @@ function createAgentRuntimeMain(options = {}) {
     }
     const result = updateSession(sessionId, state, event, opts);
     maybeCaptureGhosttyTerminalId(sessionId, event, opts);
+    enrichQoderSessionTitle(sessionId, event, opts);
     return result;
   }
 
-  function resolveQoderSessionTitle(input) {
-    if (!qoderSessionTitleTracker || typeof qoderSessionTitleTracker.resolve !== "function") return null;
-    try { return qoderSessionTitleTracker.resolve(input); } catch { return null; }
+  function localQoderSession(sessionId) {
+    if (disposed || !isAgentEnabled("qoder")) return null;
+    const state = getStateRuntime();
+    const session = state && state.sessions && state.sessions.get(sessionId);
+    return session && session.agentId === "qoder"
+      && (session.profileId || "local") === "local"
+      && !session.host && !session.wslDistro ? session : null;
+  }
+
+  function noteQoderExternalTitle(sessionId, title) {
+    const session = localQoderSession(sessionId);
+    if (!session || !title) return;
+    qoderSessionTitleTracker.noteExternalTitle(session.rawSessionId || sessionId, title);
+  }
+
+  function updateSessionMetadataFromServer(sessionId, opts = {}) {
+    const state = getStateRuntime();
+    const accepted = !!(state && typeof state.updateSessionMetadata === "function"
+      && state.updateSessionMetadata(sessionId, opts));
+    if (accepted) noteQoderExternalTitle(sessionId, opts.sessionTitle);
+    return accepted;
+  }
+
+  function enrichQoderSessionTitle(sessionId, event, opts) {
+    if (opts.agentId !== "qoder" || (opts.profileId || "local") !== "local"
+      || opts.host || opts.wslDistro) return;
+    const rawSessionId = opts.rawSessionId || sessionId;
+    // A new lifecycle must invalidate work from an earlier --resume of this id.
+    if (event === "SessionStart" || event === "SessionEnd") qoderSessionTitleTracker.clear(rawSessionId);
+    if (event === "SessionEnd") return;
+    const session = localQoderSession(sessionId);
+    if (!session) return;
+    if (opts.sessionTitle) {
+      noteQoderExternalTitle(sessionId, opts.sessionTitle);
+      return;
+    }
+    if (!QODER_TITLE_EVENTS.has(event) || !session.transcriptPath) return;
+    const transcriptPath = session.transcriptPath;
+    // Lifecycle acceptance is already complete. This result only annotates a
+    // surviving local session and must not refresh activity or replay an event.
+    qoderSessionTitleTracker.resolve({ event, sessionId: rawSessionId, transcriptPath }).then((title) => {
+      const live = localQoderSession(sessionId);
+      if (!title || !live || live.transcriptPath !== transcriptPath
+        || qoderSessionTitleTracker.getTitle(rawSessionId) !== title) return;
+      const state = getStateRuntime();
+      if (state && typeof state.updateSessionMetadata === "function") {
+        state.updateSessionMetadata(sessionId, { sessionTitle: title });
+      }
+    }).catch(() => {});
   }
 
   function maybeCaptureGhosttyTerminalId(sessionId, event, opts = {}) {
@@ -412,6 +460,7 @@ function createAgentRuntimeMain(options = {}) {
   }
 
   function cleanup() {
+    disposed = true;
     if (codexMonitor && typeof codexMonitor.stop === "function") codexMonitor.stop();
     resetLocalCodexLifecycleTracking();
     if (qoderSessionTitleTracker && typeof qoderSessionTitleTracker.clear === "function") {
@@ -436,7 +485,7 @@ function createAgentRuntimeMain(options = {}) {
     clearSessionsByAgent,
     dismissPermissionsByAgent,
     updateSessionFromServer,
-    resolveQoderSessionTitle,
+    updateSessionMetadataFromServer,
     markCodexOfficialHookSession,
     shouldSuppressCodexLogEvent,
     resetLocalCodexLifecycleTracking,

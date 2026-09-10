@@ -1,6 +1,6 @@
 "use strict";
 
-const fs = require("fs");
+const fs = require("fs/promises");
 
 const QODER_TITLE_EVENTS = new Set([
   "SessionStart",
@@ -52,11 +52,17 @@ function createEntry(sessionId) {
     discardingLongLine: false,
     aiTitle: null,
     customTitle: null,
+    nativeTitle: null,
+    nativeVersion: 0,
+    baselinePending: true,
+    externalTitle: null,
+    externalRevision: 0,
+    pending: null,
   };
 }
 
 function effectiveTitle(entry) {
-  return entry.customTitle || entry.aiTitle || null;
+  return entry.externalTitle || entry.nativeTitle || null;
 }
 
 function updateAnchor(entry, bytes) {
@@ -90,12 +96,18 @@ function applyTitleLine(entry, line) {
 
   if (record.type === "custom-title") {
     const title = normalizeQoderSessionTitle(record.customTitle);
-    if (title) entry.customTitle = title;
+    if (title) {
+      entry.customTitle = title;
+      entry.nativeVersion++;
+    }
     return;
   }
   if (record.type === "ai-title") {
     const title = normalizeQoderSessionTitle(record.aiTitle);
-    if (title) entry.aiTitle = title;
+    if (title) {
+      entry.aiTitle = title;
+      if (!entry.customTitle) entry.nativeVersion++;
+    }
   }
 }
 
@@ -163,29 +175,32 @@ function createQoderSessionTitleTracker(options = {}) {
     entry.anchor = Buffer.alloc(0);
     entry.partial = Buffer.alloc(0);
     entry.discardingLongLine = false;
+    entry.baselinePending = true;
   }
 
-  function readInto(fd, buffer, position, metrics) {
-    const bytesRead = fsApi.readSync(fd, buffer, 0, buffer.length, position);
+  async function readInto(fd, buffer, position, metrics) {
+    const { bytesRead } = await fd.read(buffer, 0, buffer.length, position);
     metrics.readOps++;
     metrics.bytesRead += Math.max(0, bytesRead);
     return bytesRead;
   }
 
-  function anchorMatches(fd, entry, metrics) {
+  async function anchorMatches(fd, entry, metrics) {
     if (!entry.anchor.length || entry.offset < entry.anchor.length) return entry.offset === 0;
     const actual = Buffer.allocUnsafe(entry.anchor.length);
     let total = 0;
     while (total < actual.length) {
       const view = actual.subarray(total);
-      const bytesRead = readInto(fd, view, entry.offset - entry.anchor.length + total, metrics);
+      const bytesRead = await readInto(fd, view, entry.offset - entry.anchor.length + total, metrics);
       if (bytesRead <= 0) break;
       total += bytesRead;
     }
     return total === actual.length && actual.equals(entry.anchor);
   }
 
-  function scan(entry, filePath, event) {
+  async function scan(entry, filePath, event, externalRevision) {
+    const isCurrent = () => entries.get(entry.sessionId) === entry;
+    const nativeVersion = entry.nativeVersion;
     const startedAt = Date.now();
     const metrics = {
       event,
@@ -200,10 +215,22 @@ function createQoderSessionTitleTracker(options = {}) {
       durationMs: 0,
       ok: false,
     };
+    function publishTitle() {
+      if (!isCurrent() || (!metrics.ok && entry.baselinePending)) return;
+      // An external title wins over an unread/replaced transcript baseline
+      // and over an in-flight scan. A later native title record may replace
+      // it; the two sources have no shared timestamp or revision.
+      if (!entry.baselinePending && entry.nativeVersion !== nativeVersion
+        && entry.externalRevision === externalRevision) entry.externalTitle = null;
+      entry.nativeTitle = entry.customTitle || entry.aiTitle || null;
+      if (metrics.ok) entry.baselinePending = false;
+    }
     let fd;
     try {
-      fd = fsApi.openSync(filePath, "r");
-      const stat = fsApi.fstatSync(fd);
+      if (!isCurrent()) return null;
+      fd = await fsApi.open(filePath, "r");
+      const stat = await fd.stat();
+      if (!isCurrent()) return null;
       if (!stat || typeof stat.isFile !== "function" || !stat.isFile() || stat.size < 0) {
         return effectiveTitle(entry);
       }
@@ -213,13 +240,14 @@ function createQoderSessionTitleTracker(options = {}) {
         || entry.device !== stat.dev
         || entry.inode !== stat.ino
         || stat.size < entry.offset;
-      if (!reset && entry.offset > 0 && !anchorMatches(fd, entry, metrics)) reset = true;
+      if (!reset && entry.offset > 0 && !await anchorMatches(fd, entry, metrics)) reset = true;
       if (!reset && stat.size === entry.offset && (
         entry.modifiedTimeMs !== stat.mtimeMs
         || entry.changedTimeMs !== stat.ctimeMs
       )) {
         reset = true;
       }
+      if (!isCurrent()) return null;
       if (reset) {
         resetFileState(entry, filePath, stat);
         metrics.reset = true;
@@ -228,14 +256,18 @@ function createQoderSessionTitleTracker(options = {}) {
       metrics.startOffset = entry.offset;
       const buffer = Buffer.allocUnsafe(chunkBytes);
       let position = entry.offset;
-      while (position < stat.size) {
+      while (position < stat.size && isCurrent()) {
         const length = Math.min(buffer.length, stat.size - position);
-        const bytesRead = readInto(fd, buffer.subarray(0, length), position, metrics);
+        const bytesRead = await readInto(fd, buffer.subarray(0, length), position, metrics);
+        if (!isCurrent()) return null;
         if (bytesRead <= 0) break;
         const chunk = buffer.subarray(0, bytesRead);
         consumeChunk(entry, chunk, maxLineBytes);
         updateAnchor(entry, chunk);
         position += bytesRead;
+        // Keep the cursor aligned with partial/anchor even if the next read fails.
+        entry.offset = position;
+        metrics.endOffset = position;
         metrics.contentBytesRead += bytesRead;
       }
       entry.offset = position;
@@ -245,13 +277,15 @@ function createQoderSessionTitleTracker(options = {}) {
       entry.modifiedTimeMs = stat.mtimeMs;
       entry.changedTimeMs = stat.ctimeMs;
       metrics.endOffset = position;
-      metrics.ok = position === stat.size;
-      return effectiveTitle(entry);
+      metrics.ok = isCurrent() && position === stat.size;
+      publishTitle();
+      return isCurrent() ? effectiveTitle(entry) : null;
     } catch {
-      return effectiveTitle(entry);
+      publishTitle();
+      return isCurrent() ? effectiveTitle(entry) : null;
     } finally {
       if (fd !== undefined) {
-        try { fsApi.closeSync(fd); } catch {}
+        try { await fd.close(); } catch {}
       }
       metrics.durationMs = Math.max(0, Date.now() - startedAt);
       if (onScan) {
@@ -260,15 +294,39 @@ function createQoderSessionTitleTracker(options = {}) {
     }
   }
 
-  function resolve(input = {}) {
+  function noteExternalTitle(sessionId, value) {
+    const normalized = normalizeQoderSessionId(sessionId);
+    const title = normalizeQoderSessionTitle(value);
+    if (!normalized || !title) return null;
+    const entry = touchEntry(normalized);
+    entry.externalTitle = title;
+    entry.externalRevision++;
+    return title;
+  }
+
+  function getTitle(sessionId) {
+    const entry = entries.get(normalizeQoderSessionId(sessionId));
+    return entry ? effectiveTitle(entry) : null;
+  }
+
+  async function resolve(input = {}) {
     if (!QODER_TITLE_EVENTS.has(input.event)) return null;
     const sessionId = normalizeQoderSessionId(input.sessionId);
     if (!sessionId) return null;
+    if (input.event === "SessionEnd") {
+      clear(sessionId);
+      return null;
+    }
     const entry = touchEntry(sessionId);
     const filePath = typeof input.transcriptPath === "string" ? input.transcriptPath.trim() : "";
-    const title = filePath ? scan(entry, filePath, input.event) : effectiveTitle(entry);
-    if (input.event === "SessionEnd") entries.delete(sessionId);
-    return title;
+    if (!filePath) return effectiveTitle(entry);
+    // Each session has one reader. Later lifecycle requests retain their
+    // order and only scan the remainder once the preceding request finishes.
+    const externalRevision = entry.externalRevision;
+    const pending = (entry.pending || Promise.resolve()).then(() => scan(entry, filePath, input.event, externalRevision));
+    entry.pending = pending;
+    try { return await pending; }
+    finally { if (entry.pending === pending) entry.pending = null; }
   }
 
   function clear(sessionId = null) {
@@ -283,6 +341,8 @@ function createQoderSessionTitleTracker(options = {}) {
 
   return {
     resolve,
+    noteExternalTitle,
+    getTitle,
     clear,
     size: () => entries.size,
   };

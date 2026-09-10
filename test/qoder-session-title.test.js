@@ -6,7 +6,6 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { EventEmitter } = require("node:events");
-const { performance } = require("node:perf_hooks");
 const WebSocket = require("ws");
 const { handleStatePost } = require("../src/server-route-state");
 const createAgentRuntimeMain = require("../src/agent-runtime-main");
@@ -23,12 +22,12 @@ const {
 themeLoader.init(path.join(__dirname, "..", "src"));
 const integrationTheme = themeLoader.loadTheme("clawd");
 
-function withTempTranscript(run) {
+async function withTempTranscript(run) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-qoder-title-"));
   const transcriptPath = path.join(dir, "session.jsonl");
   try {
     fs.writeFileSync(transcriptPath, "");
-    return run(transcriptPath, dir);
+    return await run(transcriptPath, dir);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -51,15 +50,20 @@ function appendFiller(filePath, minimumBytes) {
   return written;
 }
 
-function recordingFs(ranges) {
+function recordingFs(ranges, beforeRead = async () => {}) {
   return {
-    openSync: (...args) => fs.openSync(...args),
-    fstatSync: (...args) => fs.fstatSync(...args),
-    closeSync: (...args) => fs.closeSync(...args),
-    readSync(fd, buffer, offset, length, position) {
-      const bytesRead = fs.readSync(fd, buffer, offset, length, position);
-      ranges.push({ position, requested: length, bytesRead });
-      return bytesRead;
+    async open(...args) {
+      const fd = await fs.promises.open(...args);
+      return {
+        stat: () => fd.stat(),
+        close: () => fd.close(),
+        async read(buffer, offset, length, position) {
+          await beforeRead({ position, length });
+          const result = await fd.read(buffer, offset, length, position);
+          ranges.push({ position, requested: length, bytesRead: result.bytesRead });
+          return result;
+        },
+      };
     },
   };
 }
@@ -94,6 +98,80 @@ function postState(ctx, payload) {
   });
 }
 
+async function waitForTitle(state, title, rawSessionId = "qoder:fixture-session") {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    const entry = state.buildSessionSnapshot().sessions.find((session) => session.rawSessionId === rawSessionId);
+    if (entry && entry.sessionTitle === title) return entry;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail(`Title did not arrive: ${title}`);
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
+
+function createIntegration({ beforeRead, isEnabled = () => true, aliases = {} } = {}) {
+  const scans = [];
+  const readers = [];
+  const tracker = createQoderSessionTitleTracker({
+    fs: recordingFs([], beforeRead),
+    onScan: (scan) => { scans.push(scan); readers.shift()?.(scan); },
+  });
+  const state = initState({
+    lang: "en",
+    theme: integrationTheme,
+    doNotDisturb: false,
+    miniTransitioning: false,
+    miniMode: false,
+    mouseOverPet: false,
+    idlePaused: false,
+    forceEyeResend: false,
+    eyePauseUntil: 0,
+    mouseStillSince: Date.now(),
+    playSound: () => {},
+    sendToRenderer: () => {},
+    syncHitWin: () => {},
+    sendToHitWin: () => {},
+    buildContextMenu: () => {},
+    buildTrayMenu: () => {},
+    pendingPermissions: [],
+    processKill: () => { const error = new Error("dead"); error.code = "ESRCH"; throw error; },
+    getCursorScreenPoint: () => ({ x: 0, y: 0 }),
+    getSessionAliases: () => aliases,
+  });
+  const runtime = createAgentRuntimeMain({
+    codexSubagentClassifier: {},
+    updateSession: state.updateSession,
+    getStateRuntime: () => state,
+    qoderSessionTitleTracker: tracker,
+    isAgentEnabled: isEnabled,
+  });
+  const ctx = {
+    STATE_SVGS: state.STATE_SVGS,
+    pendingPermissions: [],
+    sessions: state.sessions,
+    isAgentEnabled: isEnabled,
+    setState: state.setState,
+    updateSession: runtime.updateSessionFromServer,
+    updateSessionMetadata: runtime.updateSessionMetadataFromServer,
+    updateAccountQuota: state.updateAccountQuota,
+    resolvePermissionEntry: () => {},
+  };
+
+  return {
+    state, runtime, ctx, tracker, scans,
+    nextScan: () => new Promise((resolve) => readers.push(resolve)),
+    post: (payload) => postState(ctx, payload),
+    cleanup: () => { runtime.cleanup(); state.cleanup(); },
+  };
+}
+
 function waitForOpen(ws, timeoutMs = 3000) {
   return new Promise((resolve, reject) => {
     if (ws.readyState === WebSocket.OPEN) { resolve(); return; }
@@ -118,7 +196,7 @@ function waitForMessage(ws, type, timeoutMs = 5000) {
 }
 
 describe("Qoder session title tracker", () => {
-  it("normalizes qoder-prefixed ids and safe Unicode titles", () => {
+  it("normalizes qoder-prefixed ids and safe Unicode titles", async () => {
     assert.strictEqual(normalizeQoderSessionId("qoder:session-1"), "session-1");
     assert.strictEqual(normalizeQoderSessionId("session-1"), "session-1");
     assert.strictEqual(normalizeQoderSessionId(1), null);
@@ -127,18 +205,18 @@ describe("Qoder session title tracker", () => {
     assert.strictEqual(Array.from(normalizeQoderSessionTitle("修".repeat(90))).length, 80);
   });
 
-  it("reads the sanitized @qoder-ai/qodercli 1.1.9 fixture with custom-title precedence", () => {
+  it("reads the sanitized @qoder-ai/qodercli 1.1.9 fixture with custom-title precedence", async () => {
     const tracker = createQoderSessionTitleTracker({ chunkBytes: 37 });
     const fixture = path.join(__dirname, "fixtures", "qodercli-1.1.9-session-title.jsonl");
-    assert.strictEqual(tracker.resolve({
+    assert.strictEqual(await tracker.resolve({
       event: "SessionStart",
       sessionId: "qoder:fixture-session",
       transcriptPath: fixture,
     }), "Qoder native titles");
   });
 
-  it("requires native string sessionId/title shapes and exact session isolation", () => {
-    withTempTranscript((transcriptPath) => {
+  it("requires native string sessionId/title shapes and exact session isolation", async () => {
+    await withTempTranscript(async (transcriptPath) => {
       const lines = [
         { type: "ai-title", aiTitle: "Missing session" },
         { type: "ai-title", session_id: "s1", aiTitle: "Aliased session" },
@@ -150,7 +228,7 @@ describe("Qoder session title tracker", () => {
       ];
       fs.writeFileSync(transcriptPath, `${lines.map(JSON.stringify).join("\n")}\n{broken-json\n`);
       const tracker = createQoderSessionTitleTracker({ chunkBytes: 41 });
-      assert.strictEqual(tracker.resolve({
+      assert.strictEqual(await tracker.resolve({
         event: "UserPromptSubmit",
         sessionId: "qoder:s1",
         transcriptPath,
@@ -158,12 +236,12 @@ describe("Qoder session title tracker", () => {
     });
   });
 
-  it("does not treat an empty custom title as a supported clear operation", () => {
-    withTempTranscript((transcriptPath) => {
+  it("does not treat an empty custom title as a supported clear operation", async () => {
+    await withTempTranscript(async (transcriptPath) => {
       appendJsonLine(transcriptPath, { type: "ai-title", sessionId: "s1", aiTitle: "Generated" });
       appendJsonLine(transcriptPath, { type: "custom-title", sessionId: "s1", customTitle: "" });
       const tracker = createQoderSessionTitleTracker();
-      assert.strictEqual(tracker.resolve({
+      assert.strictEqual(await tracker.resolve({
         event: "Stop",
         sessionId: "s1",
         transcriptPath,
@@ -171,12 +249,12 @@ describe("Qoder session title tracker", () => {
     });
   });
 
-  it("keeps a middle rename monotonic after the transcript grows beyond 16 MiB", () => {
-    withTempTranscript((transcriptPath) => {
+  it("keeps a middle rename monotonic after the transcript grows beyond 16 MiB", async () => {
+    await withTempTranscript(async (transcriptPath) => {
       appendJsonLine(transcriptPath, { type: "ai-title", sessionId: "s1", aiTitle: "Old head title" });
       appendFiller(transcriptPath, 8.5 * 1024 * 1024);
       const tracker = createQoderSessionTitleTracker();
-      assert.strictEqual(tracker.resolve({
+      assert.strictEqual(await tracker.resolve({
         event: "Stop",
         sessionId: "s1",
         transcriptPath,
@@ -185,14 +263,14 @@ describe("Qoder session title tracker", () => {
       appendJsonLine(transcriptPath, { type: "custom-title", sessionId: "s1", customTitle: "Middle rename" });
       appendFiller(transcriptPath, 8.5 * 1024 * 1024);
       assert.ok(fs.statSync(transcriptPath).size > 16 * 1024 * 1024);
-      assert.strictEqual(tracker.resolve({
+      assert.strictEqual(await tracker.resolve({
         event: "UserPromptSubmit",
         sessionId: "qoder:s1",
         transcriptPath,
       }), "Middle rename");
 
       appendJsonLine(transcriptPath, { type: "ai-title", sessionId: "s1", aiTitle: "Late AI title" });
-      assert.strictEqual(tracker.resolve({
+      assert.strictEqual(await tracker.resolve({
         event: "Stop",
         sessionId: "s1",
         transcriptPath,
@@ -200,8 +278,8 @@ describe("Qoder session title tracker", () => {
     });
   });
 
-  it("tracks exact chunk ranges and carries a partial JSONL line across scans", () => {
-    withTempTranscript((transcriptPath) => {
+  it("tracks exact chunk ranges and carries a partial JSONL line across scans", async () => {
+    await withTempTranscript(async (transcriptPath) => {
       const ranges = [];
       const scans = [];
       const record = JSON.stringify({
@@ -217,7 +295,7 @@ describe("Qoder session title tracker", () => {
         onScan: (scan) => scans.push(scan),
       });
 
-      assert.strictEqual(tracker.resolve({
+      assert.strictEqual(await tracker.resolve({
         event: "SessionStart",
         sessionId: "s1",
         transcriptPath,
@@ -232,7 +310,7 @@ describe("Qoder session title tracker", () => {
 
       fs.appendFileSync(transcriptPath, "\n");
       const beforeSecondScan = ranges.length;
-      assert.strictEqual(tracker.resolve({
+      assert.strictEqual(await tracker.resolve({
         event: "UserPromptSubmit",
         sessionId: "s1",
         transcriptPath,
@@ -243,19 +321,35 @@ describe("Qoder session title tracker", () => {
     });
   });
 
-  it("rescans safely after truncation and inode replacement without AI rollback", () => {
-    withTempTranscript((transcriptPath, dir) => {
+  it("resumes a split title after a transient read failure without losing the line", async () => {
+    await withTempTranscript(async (transcriptPath) => {
+      appendJsonLine(transcriptPath, {
+        type: "custom-title", sessionId: "s1", customTitle: "Recovered title",
+      });
+      let reads = 0;
+      const fsApi = recordingFs([], async () => {
+        if (++reads === 2) throw Object.assign(new Error("Transient read failure"), { code: "EIO" });
+      });
+      const tracker = createQoderSessionTitleTracker({ fs: fsApi, chunkBytes: 32 });
+      const input = { event: "SessionStart", sessionId: "s1", transcriptPath };
+      assert.strictEqual(await tracker.resolve(input), null);
+      assert.strictEqual(await tracker.resolve({ ...input, event: "Stop" }), "Recovered title");
+    });
+  });
+
+  it("rescans safely after truncation and inode replacement without AI rollback", async () => {
+    await withTempTranscript(async (transcriptPath, dir) => {
       appendJsonLine(transcriptPath, { type: "ai-title", sessionId: "s1", aiTitle: "Generated" });
       const scans = [];
       const tracker = createQoderSessionTitleTracker({ onScan: (scan) => scans.push(scan) });
-      assert.strictEqual(tracker.resolve({ event: "Stop", sessionId: "s1", transcriptPath }), "Generated");
+      assert.strictEqual(await tracker.resolve({ event: "Stop", sessionId: "s1", transcriptPath }), "Generated");
 
       fs.writeFileSync(transcriptPath, `${JSON.stringify({
         type: "custom-title",
         sessionId: "s1",
         customTitle: "After truncation",
       })}\n`);
-      assert.strictEqual(tracker.resolve({ event: "Stop", sessionId: "s1", transcriptPath }), "After truncation");
+      assert.strictEqual(await tracker.resolve({ event: "Stop", sessionId: "s1", transcriptPath }), "After truncation");
       assert.strictEqual(scans.at(-1).reset, true);
 
       const replacement = path.join(dir, "replacement.jsonl");
@@ -265,13 +359,13 @@ describe("Qoder session title tracker", () => {
         customTitle: "After replacement",
       })}\n`);
       fs.renameSync(replacement, transcriptPath);
-      assert.strictEqual(tracker.resolve({ event: "Stop", sessionId: "s1", transcriptPath }), "After replacement");
+      assert.strictEqual(await tracker.resolve({ event: "Stop", sessionId: "s1", transcriptPath }), "After replacement");
       assert.strictEqual(scans.at(-1).reset, true);
     });
   });
 
-  it("performs zero scans for high-frequency tool, permission, and notification events", () => {
-    withTempTranscript((transcriptPath) => {
+  it("performs zero scans for high-frequency tool, permission, and notification events", async () => {
+    await withTempTranscript(async (transcriptPath) => {
       appendJsonLine(transcriptPath, { type: "ai-title", sessionId: "s1", aiTitle: "Generated" });
       const scans = [];
       const tracker = createQoderSessionTitleTracker({ onScan: (scan) => scans.push(scan) });
@@ -283,34 +377,214 @@ describe("Qoder session title tracker", () => {
         "PermissionDenied",
         "Notification",
       ]) {
-        assert.strictEqual(tracker.resolve({ event, sessionId: "s1", transcriptPath }), null);
+        assert.strictEqual(await tracker.resolve({ event, sessionId: "s1", transcriptPath }), null);
       }
       assert.strictEqual(scans.length, 0);
-      assert.strictEqual(tracker.resolve({ event: "Stop", sessionId: "s1", transcriptPath }), "Generated");
+      assert.strictEqual(await tracker.resolve({ event: "Stop", sessionId: "s1", transcriptPath }), "Generated");
       assert.strictEqual(scans.length, 1);
     });
   });
 
-  it("bounds wall time, heap growth, and I/O count for a 32 MiB cold scan", () => {
-    withTempTranscript((transcriptPath) => {
+  it("reads a complete 32 MiB transcript while yielding to the main event loop", async () => {
+    await withTempTranscript(async (transcriptPath) => {
       appendJsonLine(transcriptPath, { type: "ai-title", sessionId: "s1", aiTitle: "Large transcript" });
       appendFiller(transcriptPath, 32 * 1024 * 1024);
       const scans = [];
       const tracker = createQoderSessionTitleTracker({ onScan: (scan) => scans.push(scan) });
       const heapBefore = process.memoryUsage().heapUsed;
-      const startedAt = performance.now();
-      const title = tracker.resolve({ event: "SessionStart", sessionId: "s1", transcriptPath });
-      const elapsedMs = performance.now() - startedAt;
+      let completed = false;
+      const pending = tracker.resolve({ event: "SessionStart", sessionId: "s1", transcriptPath });
+      pending.then(() => { completed = true; });
+      await nextTurn();
+      assert.strictEqual(completed, false, "a cold scan must yield before completing");
+      const title = await pending;
       const heapGrowth = Math.max(0, process.memoryUsage().heapUsed - heapBefore);
       const fileSize = fs.statSync(transcriptPath).size;
 
       assert.strictEqual(title, "Large transcript");
-      assert.ok(elapsedMs < 10_000, `cold scan took ${elapsedMs.toFixed(1)}ms`);
       assert.ok(heapGrowth < 96 * 1024 * 1024, `heap grew by ${heapGrowth} bytes`);
       assert.strictEqual(scans[0].contentBytesRead, fileSize);
       assert.ok(scans[0].readOps <= Math.ceil(fileSize / (64 * 1024)) + 1);
     });
   });
+
+  it("keeps external titles over cold and unchanged baselines, then accepts fresh native records", async () => {
+    await withTempTranscript(async (transcriptPath) => {
+      appendJsonLine(transcriptPath, { type: "custom-title", sessionId: "s1", customTitle: "A" });
+      const ranges = [];
+      const tracker = createQoderSessionTitleTracker({ fs: recordingFs(ranges) });
+      assert.strictEqual(tracker.noteExternalTitle("qoder:s1", "  B\n "), "B");
+      assert.deepStrictEqual(ranges, []);
+      const input = { event: "Stop", sessionId: "s1", transcriptPath };
+      assert.strictEqual(await tracker.resolve(input), "B");
+      assert.strictEqual(await tracker.resolve(input), "B");
+      appendJsonLine(transcriptPath, { type: "custom-title", sessionId: "s1", customTitle: "C" });
+      assert.strictEqual(await tracker.resolve(input), "C");
+      tracker.noteExternalTitle("s1", "D");
+      appendJsonLine(transcriptPath, { type: "ai-title", sessionId: "s1", aiTitle: "Late AI" });
+      assert.strictEqual(await tracker.resolve(input), "D");
+      // A fresh rename back to an earlier value is still a new native record.
+      appendJsonLine(transcriptPath, { type: "custom-title", sessionId: "s1", customTitle: "C" });
+      assert.strictEqual(await tracker.resolve(input), "C");
+    });
+  });
+
+  it("cancels an old reader when the same id is cleared and recreated", async () => {
+    await withTempTranscript(async (transcriptPath) => {
+      appendJsonLine(transcriptPath, { type: "custom-title", sessionId: "s1", customTitle: "Old" });
+      const entered = deferred();
+      const release = deferred();
+      const tracker = createQoderSessionTitleTracker({ fs: recordingFs([], async () => {
+        entered.resolve(); await release.promise;
+      }) });
+      const pending = tracker.resolve({ event: "Stop", sessionId: "s1", transcriptPath });
+      await entered.promise;
+      tracker.clear("s1");
+      tracker.noteExternalTitle("s1", "New lifecycle");
+      release.resolve();
+      assert.strictEqual(await pending, null);
+      assert.strictEqual(tracker.getTitle("s1"), "New lifecycle");
+      const end = await tracker.resolve({ event: "SessionEnd", sessionId: "s1", transcriptPath });
+      assert.strictEqual(end, null);
+      assert.strictEqual(tracker.size(), 0);
+    });
+  });
+
+  it("serializes concurrent requests and shields explicit titles from already queued scans", async () => {
+    await withTempTranscript(async (transcriptPath) => {
+      appendJsonLine(transcriptPath, { type: "custom-title", sessionId: "s1", customTitle: "A" });
+      const entered = deferred();
+      const release = deferred();
+      let held = false;
+      let active = 0;
+      let peak = 0;
+      const fsApi = recordingFs([], async () => {
+        if (held) { entered.resolve(); await release.promise; }
+      });
+      const open = fsApi.open;
+      fsApi.open = async (...args) => {
+        const fd = await open(...args);
+        peak = Math.max(peak, ++active);
+        const close = fd.close;
+        fd.close = async () => { try { await close(); } finally { active--; } };
+        return fd;
+      };
+      const tracker = createQoderSessionTitleTracker({ fs: fsApi });
+      const input = { event: "Stop", sessionId: "s1", transcriptPath };
+      assert.strictEqual(await tracker.resolve(input), "A");
+      held = true;
+      const first = tracker.resolve(input);
+      await entered.promise;
+      const second = tracker.resolve(input);
+      tracker.noteExternalTitle("s1", "B");
+      appendJsonLine(transcriptPath, { type: "custom-title", sessionId: "s1", customTitle: "Older queued record" });
+      release.resolve();
+      assert.deepStrictEqual(await Promise.all([first, second]), ["B", "B"]);
+      assert.strictEqual(peak, 1);
+      assert.strictEqual(active, 0);
+    });
+  });
+
+  it("accepts lifecycle and other-agent traffic before a slow title read, then updates metadata only", async () => {
+    await withTempTranscript(async (transcriptPath) => {
+      appendJsonLine(transcriptPath, { type: "custom-title", sessionId: "fixture-session", customTitle: "Background title" });
+      const entered = deferred();
+      const release = deferred();
+      const integration = createIntegration({ beforeRead: async () => { entered.resolve(); await release.promise; } });
+      const finished = integration.nextScan();
+      try {
+        const response = await integration.post({ agent_id: "qoder", session_id: "qoder:fixture-session",
+          event: "UserPromptSubmit", state: "thinking", transcript_path: transcriptPath });
+        assert.strictEqual(response.statusCode, 200);
+        await entered.promise;
+        const [key, session] = [...integration.state.sessions.entries()][0];
+        assert.strictEqual(session.state, "thinking");
+        const activity = { updatedAt: session.updatedAt, recentEvents: session.recentEvents,
+          metadataUpdatedAt: session.metadataUpdatedAt };
+        const other = await integration.post({ agent_id: "claude-code", session_id: "other",
+          event: "PreToolUse", state: "working" });
+        assert.strictEqual(other.statusCode, 200);
+        assert.strictEqual(integration.scans.length, 0);
+        release.resolve();
+        await finished;
+        await nextTurn();
+        const live = integration.state.sessions.get(key);
+        assert.strictEqual(live.sessionTitle, "Background title");
+        assert.strictEqual(live.state, "thinking");
+        assert.deepStrictEqual({ updatedAt: live.updatedAt, recentEvents: live.recentEvents,
+          metadataUpdatedAt: live.metadataUpdatedAt }, activity);
+      } finally { release.resolve(); await finished; integration.cleanup(); }
+    });
+  });
+
+  it("preserves explicit lifecycle and metadata-only titles across later cache reads", async () => {
+    await withTempTranscript(async (transcriptPath) => {
+      appendJsonLine(transcriptPath, { type: "custom-title", sessionId: "fixture-session", customTitle: "A" });
+      const integration = createIntegration();
+      const base = { agent_id: "qoder", session_id: "qoder:fixture-session", transcript_path: transcriptPath };
+      const scanPost = async (extra) => {
+        const finished = integration.nextScan();
+        const response = await integration.post({ ...base, ...extra });
+        await finished; await nextTurn(); return response;
+      };
+      try {
+        await scanPost({ state: "idle", event: "SessionStart" });
+        await waitForTitle(integration.state, "A");
+        for (const extra of [
+          { state: "thinking", event: "UserPromptSubmit", session_title: "B" },
+          { metadata_only: true, session_title: "Metadata title" },
+        ]) {
+          const before = integration.scans.length;
+          const response = await integration.post({ ...base, ...extra });
+          assert.ok(response.statusCode === 200 || response.statusCode === 204);
+          assert.strictEqual(integration.scans.length, before);
+          await scanPost({ state: "attention", event: "Stop" });
+          await waitForTitle(integration.state, extra.session_title);
+        }
+        appendJsonLine(transcriptPath, { type: "custom-title", sessionId: "fixture-session", customTitle: "C" });
+        await scanPost({ state: "thinking", event: "UserPromptSubmit" });
+        await waitForTitle(integration.state, "C");
+      } finally { integration.cleanup(); }
+    });
+  });
+
+  for (const boundary of ["end", "disable", "cleanup", "restart", "path-change", "explicit"]) {
+    it(`drops a pending title across ${boundary}`, async () => {
+      await withTempTranscript(async (transcriptPath, dir) => {
+        appendJsonLine(transcriptPath, { type: "custom-title", sessionId: "fixture-session", customTitle: "Stale result" });
+        const entered = deferred();
+        const release = deferred();
+        let enabled = true;
+        const integration = createIntegration({ isEnabled: () => enabled,
+          beforeRead: async () => { entered.resolve(); await release.promise; } });
+        const base = { agent_id: "qoder", session_id: "qoder:fixture-session", transcript_path: transcriptPath };
+        const finished = integration.nextScan();
+        try {
+          await integration.post({ ...base, state: "thinking", event: "UserPromptSubmit" });
+          await entered.promise;
+          if (boundary === "end") await integration.post({ ...base, state: "sleeping", event: "SessionEnd" });
+          if (boundary === "disable") { enabled = false; integration.runtime.clearSessionsByAgent("qoder"); }
+          if (boundary === "cleanup") integration.runtime.cleanup();
+          if (boundary === "restart") {
+            await integration.post({ ...base, state: "sleeping", event: "SessionEnd" });
+            await integration.post({ ...base, state: "thinking", event: "SessionStart", session_title: "Fresh lifecycle" });
+          }
+          if (boundary === "path-change") {
+            await integration.post({ ...base, transcript_path: path.join(dir, "new.jsonl"),
+              state: "working", event: "PreToolUse" });
+          }
+          if (boundary === "explicit") {
+            await integration.post({ ...base, state: "working", event: "PreToolUse", session_title: "Fresh explicit" });
+          }
+          release.resolve(); await finished; await nextTurn();
+          const sessions = integration.state.buildSessionSnapshot().sessions;
+          assert.ok(sessions.every((session) => session.sessionTitle !== "Stale result"));
+          if (boundary === "restart") await waitForTitle(integration.state, "Fresh lifecycle");
+          if (boundary === "explicit") await waitForTitle(integration.state, "Fresh explicit");
+        } finally { release.resolve(); await finished; integration.cleanup(); }
+      });
+    });
+  }
 
   it("propagates set and rename through route, state, snapshot, alias, and mobile output", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-qoder-e2e-"));
@@ -327,45 +601,10 @@ describe("Qoder session title tracker", () => {
         sessionId: "fixture-session",
         aiTitle: "Generated fixture title",
       });
-      state = initState({
-        lang: "en",
-        theme: integrationTheme,
-        doNotDisturb: false,
-        miniTransitioning: false,
-        miniMode: false,
-        mouseOverPet: false,
-        idlePaused: false,
-        forceEyeResend: false,
-        eyePauseUntil: 0,
-        mouseStillSince: Date.now(),
-        playSound: () => {},
-        sendToRenderer: () => {},
-        syncHitWin: () => {},
-        sendToHitWin: () => {},
-        buildContextMenu: () => {},
-        buildTrayMenu: () => {},
-        pendingPermissions: [],
-        processKill: () => { const error = new Error("dead"); error.code = "ESRCH"; throw error; },
-        getCursorScreenPoint: () => ({ x: 0, y: 0 }),
-        getSessionAliases: () => aliases,
-      });
-      runtime = createAgentRuntimeMain({
-        codexSubagentClassifier: {},
-        updateSession: state.updateSession,
-        getStateRuntime: () => state,
-        qoderSessionTitleTracker: createQoderSessionTitleTracker(),
-      });
-      const ctx = {
-        STATE_SVGS: state.STATE_SVGS,
-        pendingPermissions: [],
-        sessions: state.sessions,
-        isAgentEnabled: () => true,
-        setState: state.setState,
-        updateSession: runtime.updateSessionFromServer,
-        resolveQoderSessionTitle: runtime.resolveQoderSessionTitle,
-        updateAccountQuota: state.updateAccountQuota,
-        resolvePermissionEntry: () => {},
-      };
+      const integration = createIntegration({ aliases });
+      state = integration.state;
+      runtime = integration.runtime;
+      const { ctx } = integration;
       const basePayload = {
         session_id: "qoder:fixture-session",
         agent_id: "qoder",
@@ -379,6 +618,7 @@ describe("Qoder session title tracker", () => {
         event: "SessionStart",
       });
       assert.strictEqual(started.statusCode, 200);
+      await waitForTitle(state, "Generated fixture title");
       let snapshot = state.buildSessionSnapshot();
       let entry = snapshot.sessions.find((session) => session.rawSessionId === "qoder:fixture-session");
       assert.strictEqual(entry.sessionTitle, "Generated fixture title");
@@ -395,6 +635,7 @@ describe("Qoder session title tracker", () => {
         event: "UserPromptSubmit",
       });
       assert.strictEqual(renamed.statusCode, 200);
+      await waitForTitle(state, "Renamed fixture title");
       snapshot = state.buildSessionSnapshot();
       entry = snapshot.sessions.find((session) => session.rawSessionId === "qoder:fixture-session");
       assert.strictEqual(entry.sessionTitle, "Renamed fixture title");
