@@ -2323,6 +2323,99 @@ test("native runner handles /status addressed to this bot and caches its usernam
   await runner.stop();
 });
 
+test("native runner bounds getMe so a status command cannot block later approvals or updates", async () => {
+  let releaseFirstPoll;
+  let updateBatchServed = false;
+  let identityStarted;
+  let identitySignal;
+  let approvalCallbackData = "";
+  const identityReady = new Promise((resolve) => { identityStarted = resolve; });
+  let sendCount = 0;
+  const answers = [];
+  const transport = ({ method, payload, signal }) => {
+    if (method === "getUpdates") {
+      if (!releaseFirstPoll) {
+        return new Promise((resolve) => { releaseFirstPoll = resolve; });
+      }
+      if (!updateBatchServed) {
+        updateBatchServed = true;
+        return Promise.resolve({
+          ok: true,
+          result: [
+            {
+              update_id: 1,
+              message: {
+                text: "/status@ClawdDeskBot blocked",
+                from: { id: 777 },
+                chat: { id: 123 },
+              },
+            },
+            {
+              update_id: 2,
+              callback_query: {
+                id: "allow-after-getMe-timeout",
+                from: { id: 777 },
+                message: { message_id: 11, chat: { id: 123 } },
+                data: approvalCallbackData,
+              },
+            },
+          ],
+        });
+      }
+      return new Promise(() => {});
+    }
+    if (method === "answerCallbackQuery") {
+      answers.push(payload);
+      return Promise.resolve({ ok: true, result: true });
+    }
+    if (method === "getMe") {
+      identitySignal = signal;
+      identityStarted();
+      // Deliberately ignore abort to prove the runner's race settles the
+      // command handler independently of a transport that misbehaves.
+      return new Promise(() => {});
+    }
+    if (method === "sendMessage") {
+      sendCount += 1;
+      const button = payload.reply_markup
+        && payload.reply_markup.inline_keyboard
+        && payload.reply_markup.inline_keyboard[0]
+        && payload.reply_markup.inline_keyboard[0][0];
+      if (button && typeof button.callback_data === "string") {
+        approvalCallbackData = button.callback_data;
+      }
+      return Promise.resolve({ ok: true, result: { message_id: 10 + sendCount } });
+    }
+    return Promise.resolve({ ok: true, result: true });
+  };
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+    commandIdentityTimeoutMs: 10,
+    onCommand: () => "status",
+  });
+
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestApproval({
+    title: "Run after identity lookup",
+    detail: "Allow this action",
+  });
+  await tick();
+  releaseFirstPoll({ ok: true, result: [] });
+  await identityReady;
+  await delay(30);
+
+  assert.equal(identitySignal.aborted, true);
+  assert.deepEqual(await decisionPromise, { action: "allow" });
+  assert.equal(answers.length, 1);
+  assert.equal(sendCount, 1);
+  await runner.stop();
+});
+
 test("native runner ignores an addressed /status when getMe fails and retries later", async () => {
   const server = createFakeTelegramServer();
   let releaseFirstPoll;

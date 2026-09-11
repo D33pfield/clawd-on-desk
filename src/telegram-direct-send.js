@@ -760,7 +760,7 @@ function createTelegramDirectSend({
     const allowsTarget = deliveryAdapterAllowsTarget(targetAdapter, entry);
     const requiresFocusableTarget = deliveryAdapterRequiresFocusableTarget(targetAdapter);
     const focusTarget = requiresFocusableTarget
-      ? getSessionFocusTarget(entry, { osPlatform })
+      ? getDirectSendFocusTarget(entry, { osPlatform })
       : null;
     if (!allowsTarget || (requiresFocusableTarget
       && (!isFocusableLocalHudSession(entry, { osPlatform }) || focusTarget.type !== "terminal"))) {

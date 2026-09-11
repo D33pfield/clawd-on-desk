@@ -63,6 +63,7 @@ const MAX_ELICITATION_OPTIONS = 5;
 // R1a notifications are fire-and-forget: a slow send must not pile up behind
 // the snapshot fanout that triggers it. Bound each send and drop on timeout.
 const DEFAULT_NOTIFY_TIMEOUT_MS = 10000;
+const DEFAULT_COMMAND_IDENTITY_TIMEOUT_MS = 5000;
 // Telegram 429s carry retry_after (seconds). Retry once, but never park a
 // notification longer than this — a stale "done" ping is worthless.
 const MAX_NOTIFY_RETRY_DELAY_MS = 30000;
@@ -388,6 +389,7 @@ function createTelegramNativeRunner({
   approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS,
   elicitationTimeoutMs = DEFAULT_ELICITATION_TIMEOUT_MS,
   notifyTimeoutMs = DEFAULT_NOTIFY_TIMEOUT_MS,
+  commandIdentityTimeoutMs = DEFAULT_COMMAND_IDENTITY_TIMEOUT_MS,
   pollRetryInitialMs = DEFAULT_POLL_RETRY_INITIAL_MS,
   pollRetryMaxMs = DEFAULT_POLL_RETRY_MAX_MS,
   sessionAutomationEditTimeoutMs = DEFAULT_SESSION_AUTOMATION_EDIT_TIMEOUT_MS,
@@ -866,7 +868,29 @@ function createTelegramNativeRunner({
 
     const signal = abortController && abortController.signal;
     const generation = botIdentityGeneration;
-    const lookup = client.getMe(signal ? { signal } : undefined).then((me) => {
+    const timeoutController = typeof AbortController === "function" ? new AbortController() : null;
+    const linked = linkAbortSignals([
+      timeoutController && timeoutController.signal,
+      signal,
+    ]);
+    const timeoutMs = Number.isFinite(commandIdentityTimeoutMs)
+      && commandIdentityTimeoutMs > 0
+      ? commandIdentityTimeoutMs
+      : DEFAULT_COMMAND_IDENTITY_TIMEOUT_MS;
+    let timer = null;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        if (timeoutController) {
+          try { timeoutController.abort(); } catch {}
+        }
+        const err = new Error("Telegram bot identity lookup deadline exceeded");
+        err.name = "AbortError";
+        reject(err);
+      }, timeoutMs);
+      if (timer && typeof timer.unref === "function") timer.unref();
+    });
+    const request = client.getMe(linked.signal ? { signal: linked.signal } : undefined);
+    const lookup = Promise.race([request, timeout]).then((me) => {
       const username = me && typeof me.username === "string" ? me.username.trim() : "";
       if (username && generation === botIdentityGeneration) botUsername = username;
       return username || null;
@@ -876,6 +900,8 @@ function createTelegramNativeRunner({
       safeLog("warn", "native bot identity lookup failed", { errorClass: cls });
       return null;
     }).finally(() => {
+      if (timer) clearTimeout(timer);
+      linked.cleanup();
       if (botUsernamePromise === lookup) botUsernamePromise = null;
     });
     botUsernamePromise = lookup;

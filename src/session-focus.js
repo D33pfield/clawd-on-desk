@@ -1,6 +1,7 @@
 "use strict";
 
 const { CODEX_THREAD_ID_RE, getCodexThreadId } = require("./codex-thread-id");
+const { isCodexDesktopOriginator } = require("../hooks/codex-originator");
 
 function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";

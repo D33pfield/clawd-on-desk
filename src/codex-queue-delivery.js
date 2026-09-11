@@ -94,10 +94,6 @@ function isWindowsPathWithExtension(value, extensions) {
   return extensions.has(path.win32.extname(text).toLowerCase());
 }
 
-function quotePowerShellLiteral(value) {
-  return `'${String(value).replace(/'/g, "''")}'`;
-}
-
 const CODEX_SHIM_SOURCE_MAX_BYTES = 64 * 1024;
 
 function readBoundedText(fsModule, filePath) {
@@ -146,7 +142,8 @@ function resolveShimPathToken(token, candidate, pathModule, fsModule) {
  * Node script. This avoids a second `%*` parse inside the shim, where cmd.exe
  * would expand percent sequences in a Telegram message even if the outer
  * invocation used an encoded PowerShell command. Unknown/custom PowerShell
- * shims use the encoded fallback below; unknown batch shims are skipped.
+ * shims are skipped because their argument forwarding semantics are not
+ * verifiably lossless.
  */
 function resolveNpmCodexShimInvocation(candidate, args, { fsModule = fs, pathModule = path.win32 } = {}) {
   const source = readBoundedText(fsModule, candidate);
@@ -178,53 +175,7 @@ function resolveNpmCodexShimInvocation(candidate, args, { fsModule = fs, pathMod
   };
 }
 
-/**
- * Build an invocation for a Windows PowerShell shim. The encoded command is
- * decoded before parsing and each value is a literal single-quoted token.
- * Generic .cmd/.bat wrappers are deliberately excluded by the resolver below:
- * PowerShell invokes them through cmd.exe, which expands percent sequences in
- * arguments such as `%PATH%`. Standard npm batch shims are instead resolved to
- * their underlying Node script and never enter cmd.exe.
- */
-function buildWindowsPowerShellShimInvocation(scriptPath, args, powerShellBin = "powershell.exe") {
-  const command = [
-    "$ErrorActionPreference = 'Stop';",
-    "$clawdExitCode = $null;",
-    "$clawdInvocationOk = $false;",
-    "try { &",
-    quotePowerShellLiteral(scriptPath),
-    ...(Array.isArray(args) ? args : []).map(quotePowerShellLiteral),
-    // A PowerShell shim reports native-child status through $LASTEXITCODE and
-    // may call `exit` itself, in which case the remaining code is not reached.
-    // Capture both forms before another statement can overwrite `$?`;
-    // invocation errors must never fall through as exit 0.
-    "; $clawdInvocationOk = $?; $clawdExitCode = $LASTEXITCODE }",
-    "catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 };",
-    "if ($null -ne $clawdExitCode) { exit [int]$clawdExitCode };",
-    "if (-not $clawdInvocationOk) { exit 1 };",
-    "exit 0",
-  ].join(" ");
-  return {
-    command: powerShellBin,
-    args: [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-EncodedCommand",
-      Buffer.from(command, "utf16le").toString("base64"),
-    ],
-    options: {
-      // The encoded payload is already a single safe argv token. Do not let
-      // Node add another Windows command-line quoting layer around it.
-      windowsVerbatimArguments: true,
-    },
-  };
-}
-
 function resolveWindowsShimInvocation(candidate, args, {
-  env = process.env,
   fsModule = fs,
   pathModule = path.win32,
 } = {}) {
@@ -239,15 +190,10 @@ function resolveWindowsShimInvocation(candidate, args, {
   if (isWindowsPathWithExtension(candidate, WINDOWS_POWERSHELL_EXTENSIONS)) {
     const direct = resolveNpmCodexShimInvocation(candidate, args, { fsModule, pathModule });
     if (direct) return direct;
-    const configuredPowerShell = normalizeExecutable(
-      readEnvValue(env, "CLAWD_POWERSHELL_PATH", { caseInsensitive: true })
-      || readEnvValue(env, "POWERSHELL_PATH", { caseInsensitive: true }),
-    );
-    return buildWindowsPowerShellShimInvocation(
-      candidate,
-      args,
-      configuredPowerShell || "powershell.exe",
-    );
+    // A generic .ps1 may invoke a native child through `$args`, which can
+    // remove quotes or split whitespace before Codex sees the message. Only
+    // the recognized npm shim is safe to invoke directly.
+    return null;
   }
   return { command: candidate, args, options: {} };
 }
@@ -551,7 +497,7 @@ function createCodexQueueDeliveryAdapter({
       return { status: "failed", delivered: false, errorClass: "empty_prompt" };
     }
 
-    const args = ["queue", "--thread", threadId, "--message", promptText];
+    const args = ["queue", `--thread=${threadId}`, `--message=${promptText}`];
     const failures = [];
     for (const candidate of candidates()) {
       if (payload.signal && payload.signal.aborted) {
@@ -560,7 +506,6 @@ function createCodexQueueDeliveryAdapter({
       try {
         const invocation = osPlatform === "win32"
           ? resolveWindowsShimInvocation(candidate, args, {
-            env: executionEnv,
             fsModule,
             pathModule: path.win32,
           })
@@ -569,6 +514,26 @@ function createCodexQueueDeliveryAdapter({
           failures.push({ candidate, errorClass: "codex_queue_unavailable" });
           if (candidate === cachedExecutable) cachedExecutable = null;
           continue;
+        }
+        if (typeof payload.validateBeforeInput === "function") {
+          let validation;
+          try {
+            validation = await payload.validateBeforeInput({ candidate, invocation });
+          } catch {
+            validation = { ok: false, errorClass: "target_validation_failed" };
+          }
+          if (!validation || validation.ok !== true) {
+            const errorClass = typeof validation?.errorClass === "string"
+              && validation.errorClass.trim()
+              ? validation.errorClass.trim().slice(0, 80)
+              : "target_validation_failed";
+            safeLog("info", "codex queue delivery stopped before candidate", {
+              executable: candidate,
+              threadId,
+              errorClass,
+            });
+            return { status: "failed", delivered: false, errorClass };
+          }
         }
         await execFileAsync(execFile, invocation.command, invocation.args, {
           windowsHide: osPlatform === "win32",
@@ -632,7 +597,6 @@ function createCodexQueueDeliveryAdapter({
 module.exports = {
   DEFAULT_TIMEOUT_MS,
   MAX_BUFFER_BYTES,
-  buildWindowsPowerShellShimInvocation,
   classifyQueueError,
   createCodexQueueDeliveryAdapter,
   getCodexThreadId,

@@ -5,7 +5,6 @@ const test = require("node:test");
 
 const { makeSessionKey } = require("../src/session-key");
 const {
-  buildWindowsPowerShellShimInvocation,
   classifyQueueError,
   createCodexQueueDeliveryAdapter,
   getCodexThreadId,
@@ -104,10 +103,8 @@ test("Codex queue adapter passes the exact thread and message arguments without 
   assert.equal(calls[0].command, "codex-desktop.exe");
   assert.deepEqual(calls[0].args, [
     "queue",
-    "--thread",
-    THREAD_ID,
-    "--message",
-    "reply from Telegram\nwith two lines",
+    `--thread=${THREAD_ID}`,
+    "--message=reply from Telegram\nwith two lines",
   ]);
   assert.equal(calls[0].options.shell, undefined);
   assert.equal(calls[0].options.windowsHide, true);
@@ -134,6 +131,40 @@ test("Codex queue adapter retries an old CLI after an unsupported queue command"
   const result = await adapter.deliver({ entry: desktopEntry(), promptText: "continue" });
   assert.equal(result.status, "queued");
   assert.deepEqual(calls, ["old-codex.exe", "desktop-codex.exe"]);
+});
+
+test("Codex queue adapter validates before every candidate invocation", async () => {
+  const calls = [];
+  let validationCount = 0;
+  const adapter = createCodexQueueDeliveryAdapter({
+    osPlatform: "win32",
+    executableCandidates: ["old-codex.exe", "desktop-codex.exe"],
+    execFile: (command, args, options, callback) => {
+      calls.push(command);
+      const error = new Error("error: unrecognized subcommand 'queue'");
+      error.code = 2;
+      callback(error, "", error.message);
+    },
+  });
+
+  const result = await adapter.deliver({
+    entry: desktopEntry(),
+    promptText: "continue",
+    validateBeforeInput: () => {
+      validationCount += 1;
+      return validationCount === 1
+        ? { ok: true }
+        : { ok: false, errorClass: "session_not_ready" };
+    },
+  });
+
+  assert.deepEqual(result, {
+    status: "failed",
+    delivered: false,
+    errorClass: "session_not_ready",
+  });
+  assert.equal(validationCount, 2);
+  assert.deepEqual(calls, ["old-codex.exe"]);
 });
 
 test("Codex queue adapter classifies unavailable and uncertain execution results", async () => {
@@ -262,12 +293,12 @@ test("Codex queue discovery lets a later Windows environment spelling override a
   assert.equal(candidates.includes("C:\\inherited\\bin\\codex.exe"), false);
 });
 
-test("Codex queue adapter invokes Windows script shims through an encoded PowerShell command", async () => {
+test("Codex queue adapter skips unknown PowerShell shims before trying a native binary", async () => {
   const calls = [];
   const message = "reply %PATH% & `quoted` 中文";
   const adapter = createCodexQueueDeliveryAdapter({
     osPlatform: "win32",
-    executableCandidates: ["C:\\Program Files\\Codex\\codex.ps1"],
+    executableCandidates: ["C:\\Program Files\\Codex\\codex.ps1", "C:\\native\\codex.exe"],
     env: {
       CODEX_HOME: "D:\\Codex State",
       CODEX_SQLITE_HOME: "D:\\Codex SQLite",
@@ -284,25 +315,11 @@ test("Codex queue adapter invokes Windows script shims through an encoded PowerS
   const result = await adapter.deliver({ entry: desktopEntry(), promptText: message });
   assert.equal(result.status, "queued");
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].command, "powershell.exe");
-  assert.equal(calls[0].options.windowsVerbatimArguments, true);
-  assert.equal(calls[0].options.env.CODEX_HOME, "D:\\Codex State");
-  assert.equal(calls[0].options.env.CODEX_SQLITE_HOME, "D:\\Codex SQLite");
-  const pathKeys = Object.keys(calls[0].options.env)
-    .filter((key) => key.toLowerCase() === "path");
-  assert.deepEqual(pathKeys, ["Path"]);
-  assert.equal(calls[0].options.env.Path, "D:\\override\\bin");
-  const encoded = calls[0].args[calls[0].args.length - 1];
-  const decoded = Buffer.from(encoded, "base64").toString("utf16le");
-  assert.match(decoded, /& 'C:\\Program Files\\Codex\\codex\.ps1'/);
-  assert.match(decoded, /'reply %PATH% & `quoted` 中文'/);
-  assert.deepEqual(calls[0].args.slice(0, -1), [
-    "-NoLogo",
-    "-NoProfile",
-    "-NonInteractive",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-EncodedCommand",
+  assert.equal(calls[0].command, "C:\\native\\codex.exe");
+  assert.deepEqual(calls[0].args, [
+    "queue",
+    `--thread=${THREAD_ID}`,
+    `--message=${message}`,
   ]);
 });
 
@@ -337,10 +354,8 @@ test("Codex queue adapter resolves the generated npm shim to Node directly", asy
   assert.deepEqual(calls[0].args, [
     script,
     "queue",
-    "--thread",
-    THREAD_ID,
-    "--message",
-    message,
+    `--thread=${THREAD_ID}`,
+    `--message=${message}`,
   ]);
   assert.equal(calls[0].options.windowsVerbatimArguments, undefined);
 });
@@ -362,7 +377,7 @@ test("Codex queue adapter skips unknown batch wrappers instead of reinterpreting
   assert.equal(result.status, "queued");
   assert.equal(calls.length, 1);
   assert.equal(calls[0].command, "C:\\native\\codex.exe");
-  assert.equal(calls[0].args.at(-1), message);
+  assert.equal(calls[0].args.at(-1), `--message=${message}`);
 });
 
 test("generated npm Codex shims are recognized for both cmd and PowerShell forms", () => {
@@ -397,17 +412,4 @@ test("generated PowerShell npm shim with $exe uses its sibling node binary", () 
   });
   assert.ok(result);
   assert.equal(result.command, "C:\\Tools\\node.exe");
-});
-
-test("encoded PowerShell shim invocation quotes embedded single quotes literally", () => {
-  const invocation = buildWindowsPowerShellShimInvocation(
-    "C:\\Tools\\codex.ps1",
-    ["queue", "--message", "it's 100% & safe"],
-  );
-  const command = Buffer.from(invocation.args.at(-1), "base64").toString("utf16le");
-  assert.match(command, /\$ErrorActionPreference = 'Stop'/);
-  assert.match(command, /try \{ & 'C:\\Tools\\codex\.ps1' 'queue' '--message' 'it''s 100% & safe'/);
-  assert.match(command, /catch \{ \[Console\]::Error\.WriteLine\(\$_\.Exception\.Message\); exit 1 \}/);
-  assert.match(command, /if \(\$null -ne \$clawdExitCode\) \{ exit \[int\]\$clawdExitCode \}/);
-  assert.match(command, /if \(-not \$clawdInvocationOk\) \{ exit 1 \}/);
 });

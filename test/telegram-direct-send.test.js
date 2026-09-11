@@ -12,6 +12,7 @@ const {
   normalizePromptText,
 } = require("../src/telegram-direct-send");
 const { buildSessionSnapshot } = require("../src/state-session-snapshot");
+const { createCodexQueueDeliveryAdapter } = require("../src/codex-queue-delivery");
 
 function localTerminalEntry(overrides = {}) {
   return {
@@ -2620,6 +2621,74 @@ test("direct send routes Codex Desktop replies through a focusless queue adapter
     sessionId: desktop.id,
     promptText: "Please continue from Telegram",
   }]);
+});
+
+test("direct send revalidates every Codex queue candidate before submission", async () => {
+  const expectedErrors = {
+    disabled: "direct_send_disabled",
+    working: "session_not_ready",
+    permission: "permission_pending",
+  };
+  for (const transition of ["disabled", "working", "permission"]) {
+    const calls = [];
+    let enabled = true;
+    let pendingPermission = false;
+    let state = "idle";
+    let badge = "done";
+    const threadId = "019e115a-4df2-7ed0-b90e-8e6345aca777";
+    const entry = localTerminalEntry({
+      id: `codex:${threadId}`,
+      rawSessionId: `codex:${threadId}`,
+      agentId: "codex",
+      codexOriginator: "codex_work_desktop",
+      sourcePid: null,
+      agentPid: 14220,
+    });
+    const adapter = createCodexQueueDeliveryAdapter({
+      osPlatform: "linux",
+      executableCandidates: ["old-codex", "desktop-codex"],
+      execFile: (command, args, options, callback) => {
+        calls.push(command);
+        if (command === "old-codex") {
+          if (transition === "disabled") enabled = false;
+          if (transition === "working") {
+            state = "working";
+            badge = "working";
+          }
+          if (transition === "permission") pendingPermission = true;
+          const error = new Error("error: unrecognized subcommand 'queue'");
+          error.code = 2;
+          callback(error, "", error.message);
+          return;
+        }
+        callback(null, "queued", "");
+      },
+    });
+    const direct = createTelegramDirectSend({
+      isEnabled: () => enabled,
+      getSessionSnapshot: () => ({ sessions: [{ ...entry, state, badge }] }),
+      getPendingPermissions: () => (pendingPermission ? [{ sessionId: entry.id }] : []),
+      getDeliveryAdapter: () => adapter,
+      osPlatform: "linux",
+    });
+
+    direct.registerCompletionNotification({
+      messageId: 9970,
+      sessionId: entry.id,
+      rawSessionId: entry.rawSessionId,
+      agentId: entry.agentId,
+      agentPid: entry.agentPid,
+      codexOriginator: entry.codexOriginator,
+    });
+    const result = await direct.handleTextMessage({
+      text: "continue",
+      replyToMessageId: 9970,
+    });
+
+    assert.deepEqual(calls, ["old-codex"], transition);
+    assert.equal(result.status, "failed", transition);
+    assert.equal(result.deliveryResult.errorClass, expectedErrors[transition], transition);
+  }
 });
 
 test("direct send does not apply Console PID ambiguity to Codex Desktop queue sessions", async () => {
