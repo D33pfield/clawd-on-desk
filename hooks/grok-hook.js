@@ -111,6 +111,59 @@ function pickSessionId(payload) {
   );
 }
 
+const STOP_TEARDOWN_REASONS = new Set([
+  "shutdown",
+  "channel_closed",
+  "session_end",
+  "abort",
+]);
+
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function compactSourceFromPayload(payload) {
+  return pickString(payload && payload.source, payload && payload.trigger);
+}
+
+function isStopHookActive(payload) {
+  return !!(payload && (payload.stopHookActive === true || payload.stop_hook_active === true));
+}
+
+function liveBackgroundCounts(payload) {
+  const tasks = asArray(payload && (payload.backgroundTasks || payload.background_tasks));
+  const crons = asArray(payload && (payload.sessionCrons || payload.session_crons));
+  return {
+    background_tasks_count: tasks.length,
+    session_crons_count: crons.length,
+  };
+}
+
+function resolveStopPresentation(payload) {
+  const reason = pickString(
+    payload && payload.reason,
+    payload && payload.stopReason,
+    payload && payload.stop_reason
+  ).toLowerCase();
+  if (STOP_TEARDOWN_REASONS.has(reason)) {
+    return { state: "idle", event: "SessionEnd", completion: false };
+  }
+  const counts = liveBackgroundCounts(payload);
+  const continuation = isStopHookActive(payload)
+    || counts.background_tasks_count > 0
+    || counts.session_crons_count > 0;
+  if (continuation) {
+    return {
+      state: "working",
+      event: "Stop",
+      completion: false,
+      stop_hook_active: isStopHookActive(payload),
+      ...counts,
+    };
+  }
+  return { state: "attention", event: "Stop", completion: true };
+}
+
 function deriveSessionTitle(hookName, payload) {
   const rawTitle = pickString(
     payload && payload.session_title,
@@ -176,8 +229,15 @@ function run() {
       }
 
       let { state, event } = mapped;
-      if (hookName === "PostCompact" && payload && payload.trigger === "manual") {
+      if (hookName === "PostCompact" && compactSourceFromPayload(payload) === "manual") {
         state = "idle";
+      }
+
+      let stopMeta = null;
+      if (hookName === "Stop") {
+        stopMeta = resolveStopPresentation(payload || {});
+        state = stopMeta.state;
+        event = stopMeta.event;
       }
 
       if (hookName === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
@@ -199,6 +259,11 @@ function run() {
       if (cwd) body.cwd = cwd;
       if (toolName) body.tool_name = toolName;
       if (toolUseId) body.tool_use_id = toolUseId;
+      if (stopMeta) {
+        if (stopMeta.stop_hook_active === true) body.stop_hook_active = true;
+        if (stopMeta.background_tasks_count > 0) body.background_tasks_count = stopMeta.background_tasks_count;
+        if (stopMeta.session_crons_count > 0) body.session_crons_count = stopMeta.session_crons_count;
+      }
 
       const sessionTitle = deriveSessionTitle(hookName, payload || {});
       if (sessionTitle) body.session_title = sessionTitle;
@@ -237,6 +302,8 @@ module.exports = {
   deriveSessionTitle,
   normalizeHookName,
   pickSessionId,
+  compactSourceFromPayload,
+  resolveStopPresentation,
   SESSION_TITLE_MAX,
   GROK_AGENT_NAMES,
   isGrokCommandLine,

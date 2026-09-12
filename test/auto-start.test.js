@@ -14,11 +14,34 @@ const {
   main,
 } = require("../hooks/auto-start");
 
+test("auto-start does not launch Clawd when invoked from a Grok hook", async () => {
+  const calls = [];
+
+  await new Promise((resolve) => {
+    main({
+      env: { GROK_HOOK_EVENT: "session_start", GROK_SESSION_ID: "sess-1" },
+      discoverClawdPort() {
+        calls.push(["discover"]);
+      },
+      launchApp() {
+        calls.push(["launch"]);
+      },
+      exit(code) {
+        calls.push(["exit", code]);
+        resolve();
+      },
+    });
+  });
+
+  assert.deepStrictEqual(calls, [["exit", 0]]);
+});
+
 test("auto-start exits without launching when Clawd is already listening", async () => {
   const calls = [];
 
   await new Promise((resolve) => {
     main({
+      env: {},
       discoverClawdPort(options, callback) {
         calls.push(["discover", options.timeoutMs]);
         callback(23333);
@@ -45,6 +68,7 @@ test("auto-start waits for the cold-launched app before exiting", async () => {
 
   await new Promise((resolve) => {
     main({
+      env: {},
       discoverClawdPort(options, callback) {
         calls.push(["discover", options.timeoutMs]);
         callback(ports.shift() || null);

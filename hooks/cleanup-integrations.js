@@ -29,7 +29,7 @@ const { resolveReasonixConfigTargets, unregisterReasonixHooks } = require("./rea
 const { unregisterQoderWorkHooks } = require("./qoderwork-install");
 const { unregisterQwenWorkHooks } = require("./qwenwork-install");
 const { unregisterWorkBuddyHooks } = require("./workbuddy-install");
-const { unregisterGrokHooks } = require("./grok-install");
+const { unregisterGrokHooks, resolveGrokConfigPath, resolveGrokHome } = require("./grok-install");
 const { unregisterTraeCodeHooks } = require("./traecode-install");
 const { unregisterDeepSeekHarness } = require("./dsh-install");
 
@@ -299,7 +299,10 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       },
       grok: {
         ...common,
-        configPath: path.join(homeDir, ".grok", "hooks", "clawd.json"),
+        env,
+        homeDir,
+        grokHome: resolveGrokHome({ homeDir, env }),
+        configPath: resolveGrokConfigPath({ homeDir, env }),
       },
       traecode: {
         ...common,

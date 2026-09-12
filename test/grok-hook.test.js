@@ -6,6 +6,8 @@ const {
   deriveSessionTitle,
   normalizeHookName,
   pickSessionId,
+  compactSourceFromPayload,
+  resolveStopPresentation,
   GROK_AGENT_NAMES,
   isGrokCommandLine,
 } = require("../hooks/grok-hook");
@@ -54,5 +56,49 @@ describe("Grok hook runtime", () => {
     assert.ok(GROK_AGENT_NAMES.mac.has("grok"));
     assert.ok(isGrokCommandLine("/Users/a1-6/.grok/bin/grok --yolo"));
     assert.strictEqual(isGrokCommandLine("/usr/bin/claude"), false);
+  });
+
+  it("does not treat teardown or continuation Stops as completions", () => {
+    assert.deepStrictEqual(resolveStopPresentation({ reason: "shutdown" }), {
+      state: "idle",
+      event: "SessionEnd",
+      completion: false,
+    });
+    assert.strictEqual(resolveStopPresentation({ reason: "channel_closed" }).completion, false);
+    const gated = resolveStopPresentation({ stopHookActive: true });
+    assert.strictEqual(gated.completion, false);
+    assert.strictEqual(gated.state, "working");
+    assert.strictEqual(gated.stop_hook_active, true);
+    const background = resolveStopPresentation({
+      backgroundTasks: [{ type: "shell" }],
+      sessionCrons: [{ id: "1" }],
+    });
+    assert.strictEqual(background.completion, false);
+    assert.strictEqual(background.background_tasks_count, 1);
+    assert.strictEqual(background.session_crons_count, 1);
+    assert.deepStrictEqual(resolveStopPresentation({}), {
+      state: "attention",
+      event: "Stop",
+      completion: true,
+    });
+  });
+
+  it("does not count Grok Stop as a recap completed turn", () => {
+    const { mapRecapMetrics, getMetricSupport } = require("../src/recap-metrics");
+    assert.strictEqual(getMetricSupport("grok").turnsCompleted, false);
+    assert.deepStrictEqual(
+      mapRecapMetrics({ agentId: "grok", event: "Stop", completionAccepted: true }),
+      ["activity"]
+    );
+    assert.deepStrictEqual(
+      mapRecapMetrics({ agentId: "grok", event: "PreToolUse" }),
+      ["activity", "tool-call"]
+    );
+  });
+
+  it("reads PostCompact source, with trigger as a fallback", () => {
+    assert.strictEqual(compactSourceFromPayload({ source: "manual" }), "manual");
+    assert.strictEqual(compactSourceFromPayload({ source: "auto" }), "auto");
+    assert.strictEqual(compactSourceFromPayload({ trigger: "manual" }), "manual");
   });
 });

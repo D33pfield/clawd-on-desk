@@ -13,6 +13,7 @@ const dsh = require("../hooks/dsh-install");
 const zcode = require("../hooks/zcode-install");
 const codebuddy = require("../hooks/codebuddy-install");
 const openclaw = require("../hooks/openclaw-install");
+const grok = require("../hooks/grok-install");
 const { commandMatchesMarker } = require("../hooks/json-utils");
 const { identifyCustomApplication } = require("./custom-applications");
 
@@ -206,6 +207,14 @@ function resolveAgentPaths(descriptor, options) {
       parentDir: dshHome,
       configPath: dsh.resolveDshProfileDir(dshHome),
       commandPaths: dsh.dshCommandPathsSync({ fs: options.fs, env, platform }),
+    }, options);
+  }
+
+  if (descriptor.agentId === "grok") {
+    const grokHome = grok.resolveGrokHome({ homeDir, env });
+    return finalizeAgentPaths(descriptor, {
+      parentDir: grokHome,
+      configPath: grok.resolveGrokConfigPath({ homeDir, env, grokHome }),
     }, options);
   }
 

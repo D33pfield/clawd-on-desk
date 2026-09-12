@@ -115,10 +115,26 @@ function spawnDetached(spawnProcess, command, args, options, onError) {
   return child;
 }
 
+function isGrokCompatibilityHookEnv(env = process.env) {
+  return Boolean(
+    (env.GROK_HOOK_EVENT && String(env.GROK_HOOK_EVENT).trim())
+    || (env.GROK_SESSION_ID && String(env.GROK_SESSION_ID).trim())
+  );
+}
+
 function main(deps = {}) {
+  const env = deps.env || process.env;
+  const exit = deps.exit || ((code) => process.exit(code));
+  // Grok scans Claude settings by default. SessionStart would otherwise cold-
+  // launch Clawd through the Claude auto-start hook even when Grok is not
+  // enabled in Settings.
+  if (isGrokCompatibilityHookEnv(env)) {
+    exit(0);
+    return;
+  }
+
   const discover = deps.discoverClawdPort || discoverClawdPort;
   const launch = deps.launchApp || launchApp;
-  const exit = deps.exit || ((code) => process.exit(code));
 
   discover({ timeoutMs: INITIAL_DISCOVER_TIMEOUT_MS }, (port) => {
     if (port) {
@@ -245,5 +261,6 @@ module.exports = {
   resolveAppImageExecutable,
   resolveMacBundleExecutable,
   launchApp,
+  isGrokCompatibilityHookEnv,
   main,
 };
