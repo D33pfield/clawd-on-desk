@@ -1902,6 +1902,10 @@ function createRemoteSshRuntime(deps = {}) {
     const reconnectGeneration = state.connectionGeneration;
     state.backoffTimer = setTimeoutFn(async () => {
       state.backoffTimer = null;
+      // The scheduled retry is starting; drop the stale deadline so the
+      // reconnecting badge doesn't advertise a "retry at" time in the past
+      // while the new connect/probe attempt is in flight.
+      state.nextRetryAt = null;
       if (state.stopped || state.connectionGeneration !== reconnectGeneration) return;
       if (!state.serializedTransport && state.transportInspection) {
         try {
