@@ -22,6 +22,7 @@ const {
 const { unregisterOpencodePlugin } = require("./opencode-install");
 const { unregisterMimocodePlugin } = require("./mimocode-install");
 const { unregisterPiExtension } = require("./pi-install");
+const { unregisterOmpExtension } = require("./omp-install");
 const { unregisterOpenClawPlugin } = require("./openclaw-install");
 const { resolveHermesHome, unregisterHermesPlugin } = require("./hermes-install");
 const { unregisterQoderHooks } = require("./qoder-install");
@@ -51,6 +52,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "opencode",
   "mimocode",
   "pi",
+  "omp",
   "openclaw",
   "hermes",
   "qoder",
@@ -79,6 +81,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   opencode: "opencode",
   mimocode: "MiMo Code",
   pi: "Pi",
+  omp: "OMP",
   openclaw: "OpenClaw",
   hermes: "Hermes Agent",
   qoder: "Qoder",
@@ -251,6 +254,10 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
         ...common,
         parentDir: path.join(homeDir, ".pi", "agent"),
       },
+      omp: {
+        ...common,
+        parentDir: path.join(homeDir, ".omp", "agent"),
+      },
       openclaw: {
         ...common,
         env,
@@ -353,6 +360,7 @@ const AGENT_CLEANERS = Object.freeze({
   opencode: unregisterOpencodePlugin,
   mimocode: unregisterMimocodePlugin,
   pi: unregisterPiExtension,
+  omp: unregisterOmpExtension,
   openclaw: unregisterOpenClawPlugin,
   hermes: unregisterHermesPlugin,
   qoder: unregisterQoderHooks,

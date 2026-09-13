@@ -24,6 +24,7 @@ function buildSettingsAgentOrderExports() {
     "copilot-cli",
     "kiro-cli",
     "pi",
+    "omp",
     "openclaw",
     "hermes",
     "reasonix",

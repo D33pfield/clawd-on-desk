@@ -114,6 +114,10 @@ const SOURCE_PROVENANCE = Object.freeze({
   },
   zcode: { originalFilename: "zcode.png", fallback: true, exportMode: "passthrough" },
   traecode: { originalFilename: "traecode.png", fallback: true, exportMode: "passthrough" },
+  // Placeholder mark, not OMP brand artwork: a neutral pi glyph on a tile,
+  // in the fallback style the README sanctions until an official source
+  // exists. Replace with licensed artwork when one is available.
+  omp: { originalFilename: "omp.png", fallback: true, exportMode: "passthrough" },
 });
 
 function getSourceCandidatePath(agentId, extension) {

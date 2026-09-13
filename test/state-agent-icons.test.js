@@ -240,7 +240,7 @@ describe("state agent icons", () => {
         .filter(([, record]) => record.fallback)
         .map(([agentId]) => agentId)
         .sort(),
-      ["codewhale", "kimi-cli", "qoderwork", "qwenwork", "reasonix", "traecode", "zcode"]
+      ["codewhale", "kimi-cli", "omp", "qoderwork", "qwenwork", "reasonix", "traecode", "zcode"]
     );
   });
 

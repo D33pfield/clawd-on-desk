@@ -29,6 +29,7 @@ describe("doctor agent descriptors", () => {
         "opencode",
         "mimocode",
         "pi",
+        "omp",
         "openclaw",
         "hermes",
         "qoder",

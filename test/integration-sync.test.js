@@ -76,6 +76,7 @@ function makeRuntime(overrides = {}) {
     syncOpencodePluginImpl: () => calls.push({ name: "opencode" }),
     syncMimocodePluginImpl: () => calls.push({ name: "mimocode" }),
     syncPiExtensionImpl: () => calls.push({ name: "pi" }),
+    syncOmpExtensionImpl: () => calls.push({ name: "omp" }),
     syncOpenClawPluginImpl: () => calls.push({ name: "openclaw" }),
     repairOpenClawPluginImpl: () => {
       calls.push({ name: "openclaw-repair" });
@@ -288,6 +289,7 @@ describe("integration sync runtime", () => {
       "deepseek-harness",
       "mimocode",
       "pi",
+      "omp",
       "openclaw",
       "hermes",
       "qoder",
@@ -322,6 +324,7 @@ describe("integration sync runtime", () => {
       "deepseek-harness",
       "opencode",
       "mimocode",
+      "omp",
       "openclaw",
       "hermes",
       "qoder",
@@ -569,6 +572,13 @@ describe("integration sync runtime", () => {
         modulePath: "../hooks/pi-install.js",
         exportName: "registerPiExtension",
         reason: "pi-not-found",
+      },
+      {
+        agentId: "omp",
+        ctxKey: "syncOmpExtensionImpl",
+        modulePath: "../hooks/omp-install.js",
+        exportName: "registerOmpExtension",
+        reason: "omp-not-found",
       },
       {
         agentId: "openclaw",
