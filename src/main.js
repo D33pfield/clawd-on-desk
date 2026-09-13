@@ -2789,6 +2789,10 @@ agentRuntime = createAgentRuntimeMain({
   clearCodexNotifyBubbles: (...args) => clearCodexNotifyBubbles(...args),
   showCodexUserInputBubble: (...args) => showCodexUserInputBubble(...args),
   clearCodexUserInputBubbles: (...args) => clearCodexUserInputBubbles(...args),
+  loadCodexArchiveTracker: () => require("./codex-archive-tracker"),
+  onCodexArchiveLifecycleEnd: (payload) => {
+    if (sessionAutomationCoordinator) sessionAutomationCoordinator.onSessionLifecycleEnd(payload);
+  },
 });
 
 // ── HTTP server — delegated to src/server.js ──
@@ -2836,6 +2840,8 @@ const _serverCtx = {
   setState,
   updateSession: agentRuntime.updateSessionFromServer,
   updateSessionMetadata: agentRuntime.updateSessionMetadataFromServer,
+  shouldSuppressCodexArchive: (rawSessionId, opts) =>
+    agentRuntime.shouldSuppressCodexArchive(rawSessionId, opts),
   clearClaudeStatuslineAuthority: (profileId) => _state.clearClaudeStatuslineAuthority(profileId),
   clearLocalClaudeQuota: () => _state.clearLocalClaudeQuota(),
   updateAccountQuota: (host, quotas) => _state.updateAccountQuota(host, quotas),
