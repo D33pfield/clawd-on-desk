@@ -116,10 +116,11 @@ function spawnDetached(spawnProcess, command, args, options, onError) {
 }
 
 function isGrokCompatibilityHookEnv(env = process.env) {
-  return Boolean(
-    (env.GROK_HOOK_EVENT && String(env.GROK_HOOK_EVENT).trim())
-    || (env.GROK_SESSION_ID && String(env.GROK_SESSION_ID).trim())
-  );
+  // Only the runner-injected official GROK_HOOK_EVENT activates the guard.
+  // GROK_HOME, an unrelated GROK_* variable, or the user's shell config must
+  // not suppress the Claude auto-start hook, and GROK_SESSION_ID alone is not
+  // official evidence that Grok invoked this process.
+  return Boolean(env && env.GROK_HOOK_EVENT && String(env.GROK_HOOK_EVENT).trim());
 }
 
 function main(deps = {}) {
@@ -127,8 +128,11 @@ function main(deps = {}) {
   const exit = deps.exit || ((code) => process.exit(code));
   // Grok scans Claude settings by default. SessionStart would otherwise cold-
   // launch Clawd through the Claude auto-start hook even when Grok is not
-  // enabled in Settings.
+  // enabled in Settings. Emit the host-required passive stdout and exit
+  // without discovering a port or launching anything.
   if (isGrokCompatibilityHookEnv(env)) {
+    const writeStdout = deps.writeStdout || ((text) => process.stdout.write(text));
+    writeStdout("{}\n");
     exit(0);
     return;
   }

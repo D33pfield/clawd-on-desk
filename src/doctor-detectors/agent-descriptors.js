@@ -153,12 +153,15 @@ const AGENT_DESCRIPTORS = Object.freeze([
     hookEvents: workbuddy.WORKBUDDY_HOOK_EVENTS,
   }),
   Object.freeze({
-    agentId: "grok",
-    agentName: agentName("grok"),
-    eventSource: agentEventSource("grok"),
+    agentId: "grok-build",
+    agentName: agentName("grok-build"),
+    eventSource: agentEventSource("grok-build"),
     parentDir: grok.DEFAULT_PARENT_DIR,
     configPath: grok.DEFAULT_CONFIG_PATH,
-    configMode: "file",
+    // Dedicated mode: the inspected path is dynamic (GROK_HOME), and ownership
+    // is the structured handler marker, not a filename substring. Doctor and
+    // the installation detector both call inspectGrokHookFile().
+    configMode: "grok-hooks",
     autoInstall: true,
     marker: grok.MARKER,
     nested: true,

@@ -793,17 +793,20 @@ function attachStdinDiag(body, stdinRead) {
   return body;
 }
 
-function launchedByGrok() {
-  return Boolean(
-    (process.env.GROK_HOOK_EVENT && String(process.env.GROK_HOOK_EVENT).trim())
-    || (process.env.GROK_SESSION_ID && String(process.env.GROK_SESSION_ID).trim())
-  );
+function launchedByGrok(env = process.env) {
+  // Only the runner-injected official GROK_HOOK_EVENT activates the guard.
+  // GROK_HOME, an unrelated GROK_* variable, or the user's shell config must
+  // not suppress the Claude hook, and GROK_SESSION_ID alone is not official.
+  return Boolean(env && env.GROK_HOOK_EVENT && String(env.GROK_HOOK_EVENT).trim());
 }
 
 function main() {
   // Grok scans ~/.claude/settings.json by default. Those Claude hooks must not
   // report a phantom claude-code session; Grok events go through grok-hook.js.
-  if (launchedByGrok()) process.exit(0);
+  if (launchedByGrok()) {
+    process.stdout.write("{}\n");
+    process.exit(0);
+  }
   const event = process.argv[2];
   if (!EVENT_TO_STATE[event]) process.exit(0);
   const eventAt = Date.now();
@@ -867,6 +870,7 @@ module.exports = {
   isRecognizedTestCommand,
   isClaudeHeadlessCommandLine,
   attachStdinDiag,
+  launchedByGrok,
   STDIN_READ_TIMEOUT_MS,
   extractSessionTitleFromTranscript,
   extractApiErrorFromEntries,

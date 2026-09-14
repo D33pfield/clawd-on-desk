@@ -65,8 +65,8 @@ describe("wsl-deploy", () => {
       assert.strictEqual(getAgentInstallScriptName("openclaw"), null);
     });
 
-    it("maps grok to grok-install.js", () => {
-      assert.strictEqual(getAgentInstallScriptName("grok"), "grok-install.js");
+    it("excludes grok-build (Phase 1 has no WSL support)", () => {
+      assert.strictEqual(getAgentInstallScriptName("grok-build"), null);
     });
 
     it("excludes workbuddy (no standalone Linux/WSL runtime)", () => {

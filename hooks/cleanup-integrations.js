@@ -59,7 +59,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "qoderwork",
   "qwenwork",
   "workbuddy",
-  "grok",
+  "grok-build",
   "traecode",
 ]);
 
@@ -72,7 +72,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   "copilot-cli": "GitHub Copilot CLI",
   codebuddy: "CodeBuddy",
   workbuddy: "WorkBuddy",
-  grok: "Grok Build",
+  "grok-build": "Grok Build",
   "kiro-cli": "Kiro CLI",
   "kimi-cli": "Kimi Code",
   "qwen-code": "Qwen Code",
@@ -297,7 +297,7 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
           path.join(homeDir, ".workbuddy", "settings.json"),
         ],
       },
-      grok: {
+      "grok-build": {
         ...common,
         env,
         homeDir,
@@ -370,7 +370,7 @@ const AGENT_CLEANERS = Object.freeze({
   qoderwork: unregisterQoderWorkHooks,
   qwenwork: unregisterQwenWorkHooks,
   workbuddy: unregisterWorkBuddyHooks,
-  grok: unregisterGrokHooks,
+  "grok-build": unregisterGrokHooks,
   traecode: unregisterTraeCodeHooks,
 });
 

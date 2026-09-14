@@ -44,7 +44,7 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 - **CodeBuddy** — 可选 Claude Code 兼容 command hook + HTTP 权限 hook，写入 `~/.codebuddy/settings.json`（从 Settings → Agents 安装，或执行 `node hooks/codebuddy-install.js`）
 - **自定义 HTTP Agent** — 在 Settings 注册其他本机可执行文件，再由应用或 adapter 主动向 Clawd 的动态 `/state` 地址上报生命周期事件。“注册”不会安装 hook，也不会让普通应用自动上报；v1 仅支持状态，权限决定留在应用自己的界面中。详见[自定义 HTTP Agent 指南](docs/guides/custom-agent-http.md)。
 - **WorkBuddy** — 可选 Claude Code 兼容 command hook，当前写入 `~/.workbuddy-ai/settings.json`，旧版使用 `~/.workbuddy/settings.json`（从 Settings → Agents 安装，或执行 `node hooks/workbuddy-install.js`）。仅状态 + 通知：桌面应用在其原生沙箱与 GUI 中处理权限，因此 Clawd 不为它注册权限 hook
-- **Grok Build** — 可选 Claude Code 兼容 command hook，写入 `~/.grok/hooks/clawd.json`（从 Settings → Agents 安装，或执行 `node hooks/grok-install.js`）。仅状态 + 通知：Grok 没有阻塞式 `PermissionRequest`，允许/拒绝仍在 Grok 终端里完成
+- **Grok Build** — 可选 Claude Code 兼容 command hook，写入 `~/.grok/hooks/clawd-on-desk.json`（从 Settings → Agents 安装，或执行 `node hooks/grok-install.js`）。仅状态 + 通知：Grok 没有阻塞式 `PermissionRequest`，允许/拒绝仍在 Grok 终端里完成
 - **Kiro CLI** — 可选 command hooks，注入到 `~/.kiro/agents/` 下的自定义 agent 配置中，并自动创建一个 `clawd` agent；安装集成后 Clawd 会继续从内置 `kiro_default` 同步它，尽量保持与默认 agent 一致。macOS 与 Windows 上状态动效已验证可用；需要时可用 `kiro-cli --agent clawd` 或在会话内执行 `/agent swap clawd` 启用 hooks
 - **Kimi Code CLI（Kimi-CLI）** — 可选 command hooks，写入 `~/.kimi/config.toml`（`[[hooks]]` 条目）（从 Settings → Agents 安装，或执行 `npm run install:kimi-hooks`）
 - **Qwen Code** — 可选 command hooks，写入 `~/.qwen/settings.json`（从 Settings → Agents 安装，或执行 `npm run install:qwen-hooks`）；支持状态追踪和 Qwen `PermissionRequest` 桌面权限气泡

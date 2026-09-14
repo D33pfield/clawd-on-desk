@@ -446,7 +446,7 @@ const SCHEMA = {
       // Grok Build is state + Notification only: it has no PermissionRequest
       // hook, so permission bubbles default off. Opt-in like other non-default
       // agents — agent-gate fail-opens missing entries.
-      "grok": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      "grok-build": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
     }),
     normalize: normalizeAgents,
   },

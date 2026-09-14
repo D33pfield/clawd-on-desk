@@ -31,7 +31,7 @@ describe("Agent Registry", () => {
       "qwenwork",
       "workbuddy",
       "traecode",
-      "grok",
+      "grok-build",
     ]);
   });
 
@@ -56,7 +56,7 @@ describe("Agent Registry", () => {
     assert.strictEqual(registry.getAgent("qwenwork").name, "QwenWork");
     assert.strictEqual(registry.getAgent("workbuddy").name, "WorkBuddy");
     assert.strictEqual(registry.getAgent("traecode").name, "TraeCode");
-    assert.strictEqual(registry.getAgent("grok").name, "Grok Build");
+    assert.strictEqual(registry.getAgent("grok-build").name, "Grok Build");
     assert.strictEqual(registry.getAgent("nonexistent"), undefined);
   });
 
@@ -115,7 +115,7 @@ describe("Agent Registry", () => {
       "WorkBuddy AI Helper (Renderer)",
     ]);
 
-    const grok = registry.getAgent("grok");
+    const grok = registry.getAgent("grok-build");
     assert.deepStrictEqual(grok.processNames.win, ["grok.exe"]);
     assert.deepStrictEqual(grok.processNames.mac, ["grok"]);
 
@@ -181,7 +181,7 @@ describe("Agent Registry", () => {
     const workbuddy = registry.getAgent("workbuddy");
     assert.deepStrictEqual(workbuddy.processNames.linux, ["workbuddy", "WorkBuddy"]);
 
-    const grokLinux = registry.getAgent("grok");
+    const grokLinux = registry.getAgent("grok-build");
     assert.deepStrictEqual(grokLinux.processNames.linux, ["grok"]);
   });
 
@@ -417,13 +417,13 @@ describe("Agent Registry", () => {
     assert.strictEqual(workbuddy.capabilities.sessionEnd, true);
     assert.strictEqual(workbuddy.capabilities.subagent, false);
 
-    const grokCaps = registry.getAgent("grok");
+    const grokCaps = registry.getAgent("grok-build");
     assert.strictEqual(grokCaps.capabilities.httpHook, false);
     assert.strictEqual(grokCaps.capabilities.permissionApproval, false);
     assert.strictEqual(grokCaps.capabilities.interactiveBubble, false);
     assert.strictEqual(grokCaps.capabilities.notificationHook, true);
     assert.strictEqual(grokCaps.capabilities.sessionEnd, true);
-    assert.strictEqual(grokCaps.capabilities.subagent, true);
+    assert.strictEqual(grokCaps.capabilities.subagent, false);
 
     const traecode = registry.getAgent("traecode");
     // State-only: TraeCode has no PermissionRequest or SessionEnd event, so no
@@ -555,14 +555,14 @@ describe("Agent Registry", () => {
     assert.strictEqual(workbuddy.eventMap.PreCompact, "sweeping");
     assert.strictEqual(workbuddy.eventMap.SessionEnd, "sleeping");
 
-    const grokEvents = registry.getAgent("grok");
+    const grokEvents = registry.getAgent("grok-build");
     assert.strictEqual(grokEvents.eventSource, "hook");
     assert.strictEqual(grokEvents.eventMap.SessionStart, "idle");
     assert.strictEqual(grokEvents.eventMap.UserPromptSubmit, "thinking");
     assert.strictEqual(grokEvents.eventMap.PreToolUse, "working");
     assert.strictEqual(grokEvents.eventMap.PostToolUse, "working");
     assert.strictEqual(grokEvents.eventMap.Stop, "attention");
-    assert.strictEqual(grokEvents.eventMap.SubagentStart, "juggling");
+    assert.strictEqual(grokEvents.eventMap.SubagentStart, undefined);
     assert.strictEqual(grokEvents.eventMap.PermissionRequest, undefined);
     assert.strictEqual(grokEvents.eventMap.Notification, "notification");
     assert.strictEqual(grokEvents.eventMap.SessionEnd, "sleeping");

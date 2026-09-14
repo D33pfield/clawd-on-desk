@@ -25,7 +25,7 @@ const qoderwork = require("./qoderwork");
 const qwenwork = require("./qwenwork");
 const workbuddy = require("./workbuddy");
 const traecode = require("./traecode");
-const grok = require("./grok");
+const grokBuild = require("./grok-build");
 
 const AGENTS = [
   claudeCode,
@@ -52,7 +52,7 @@ const AGENTS = [
   qwenwork,
   workbuddy,
   traecode,
-  grok,
+  grokBuild,
 ];
 const AGENT_MAP = new Map(AGENTS.map((a) => [a.id, a]));
 

@@ -1,12 +1,47 @@
 #!/usr/bin/env node
-// Clawd — Grok Build hook (stdin JSON; stdout JSON for gating hooks)
-// Registered in ~/.grok/hooks/clawd.json by hooks/grok-install.js
-// Grok uses Claude-compatible event names but camelCase field names.
+// Clawd — Grok Build state hook (Phase 1, state-only).
+// Registered in $GROK_HOME/hooks/clawd-on-desk.json by hooks/grok-install.js.
+//
+// Contract pinned to the official upstream source
+// xai-org/grok-build@37949780c144e37df692e3d669051a21fec24f20
+// (RawHandler = type/command/url/timeout/env; no per-handler `shell`).
+//
+// Grok uses Claude-compatible event names but camelCase field names:
+//   `hookEventName` is the camelCase key carrying Grok's snake_case value;
+//   `hook_event_name` is the snake_case compatibility key carrying the
+//   PascalCase value. The runner may also inject `GROK_HOOK_EVENT`.
+//
+// Contract:
+//   - Grok keeps every permission decision. This adapter never calls
+//     /permission and never emits allow/deny/ask/block output.
+//   - stdout is ALWAYS exactly `{}` followed by a newline, exit code 0, for
+//     every input: parse failure, missing identity, unsupported event,
+//     disabled/offline Clawd, and intentionally ignored events.
+//   - The local state POST is best-effort and short-bounded.
+//   - No prompt, tool input/result, error detail, assistant output, task
+//     description, cron prompt, session title, PID chain, or free-form
+//     Notification message is ever forwarded.
+//   - No subagent events reach the state runtime (`subagentType` => drop).
+//
+// Stop disposition is resolved here, from `reason`, the array lengths of
+// `backgroundTasks` / `sessionCrons`, and the boolean `stopHookActive`; the
+// raw arrays and their content never leave this process.
 
-const { postStateToRunningServer, readHostPrefix } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
+"use strict";
 
-const HOOK_MAP = {
+const { postStateToRunningServer } = require("./server-config");
+
+const MAX_SESSION_ID_LENGTH = 200;
+const MAX_CWD_LENGTH = 512;
+const MAX_TOOL_NAME_LENGTH = 128;
+const MAX_PROMPT_ID_LENGTH = 128;
+const STDIN_TIMEOUT_MS = 1500;
+const SAFETY_TIMEOUT_MS = 1800;
+const POST_TIMEOUT_MS = 150;
+
+const AGENT_ID = "grok-build";
+
+const HOOK_MAP = Object.freeze({
   SessionStart: { state: "idle", event: "SessionStart" },
   SessionEnd: { state: "sleeping", event: "SessionEnd" },
   UserPromptSubmit: { state: "thinking", event: "UserPromptSubmit" },
@@ -17,20 +52,12 @@ const HOOK_MAP = {
   StopFailure: { state: "error", event: "StopFailure" },
   StopCancelled: { state: "idle", event: "StopCancelled" },
   Notification: { state: "notification", event: "Notification" },
-  SubagentStart: { state: "juggling", event: "SubagentStart" },
-  SubagentStop: { state: "working", event: "SubagentStop" },
   PreCompact: { state: "sweeping", event: "PreCompact" },
   PostCompact: { state: "thinking", event: "PostCompact" },
   PermissionDenied: { state: "notification", event: "Notification" },
-};
+});
 
-const EVENT_TO_LIFECYCLE = {
-  SessionStart: "start",
-  UserPromptSubmit: "prompt",
-  SessionEnd: "end",
-};
-
-const SNAKE_TO_PASCAL = {
+const SNAKE_TO_PASCAL = Object.freeze({
   session_start: "SessionStart",
   session_end: "SessionEnd",
   user_prompt_submit: "UserPromptSubmit",
@@ -41,47 +68,26 @@ const SNAKE_TO_PASCAL = {
   stop_failure: "StopFailure",
   stop_cancelled: "StopCancelled",
   notification: "Notification",
-  subagent_start: "SubagentStart",
-  subagent_stop: "SubagentStop",
   pre_compact: "PreCompact",
   post_compact: "PostCompact",
   permission_denied: "PermissionDenied",
-};
-
-const config = getPlatformConfig({
-  extraTerminals: { win: ["grok.exe"] },
-  extraEditors: {
-    win: { "grok.exe": "grok" },
-    mac: { grok: "grok" },
-    linux: { grok: "grok" },
-  },
-  extraEditorPathChecks: [["grok", "grok"]],
 });
 
-const GROK_AGENT_NAMES = Object.freeze({
-  win: new Set(["grok.exe"]),
-  mac: new Set(["grok"]),
-  linux: new Set(["grok"]),
-});
+const TOOL_EVENTS = new Set(["PreToolUse", "PostToolUse", "PostToolUseFailure"]);
 
-function isGrokCommandLine(commandLine) {
-  const normalized = String(commandLine || "").replace(/\\/g, "/").toLowerCase();
-  if (!normalized) return false;
-  if (/\bgrok(?:\.exe)?\b/.test(normalized)) return true;
-  return normalized.includes("grok-shell") || normalized.includes("@xai");
-}
-
-const resolve = createPidResolver({
-  agentNames: GROK_AGENT_NAMES,
-  agentCmdlineCheck: isGrokCommandLine,
-  platformConfig: config,
-});
-
-function stdoutForEvent() {
-  return "{}";
-}
-
-const SESSION_TITLE_MAX = 60;
+// Events that establish or end a turn must carry a valid bounded promptId.
+// Grok Build 1.0.30 emits the real promptId only on UserPromptSubmit and the
+// turn-end reports, so tool events are NOT listed here and may be reported
+// prompt-less; the server-side turn fence binds them to the session's active
+// turn (and drops them when no such turn exists). Session-scoped presentation/
+// settle events (SessionStart, SessionEnd, Notification, PreCompact,
+// PostCompact, PermissionDenied) may also omit it.
+const TURN_SCOPED_EVENTS = new Set([
+  "UserPromptSubmit",
+  "Stop",
+  "StopFailure",
+  "StopCancelled",
+]);
 
 function pickString(...values) {
   for (const value of values) {
@@ -90,221 +96,276 @@ function pickString(...values) {
   return "";
 }
 
-function normalizeHookName(payload) {
-  const fromArgv = typeof process.argv[2] === "string" ? process.argv[2].trim() : "";
-  if (fromArgv && HOOK_MAP[fromArgv]) return fromArgv;
-  const pascal = pickString(payload && payload.hook_event_name);
-  if (pascal && HOOK_MAP[pascal]) return pascal;
-  const snake = pickString(
-    process.env.GROK_HOOK_EVENT,
-    payload && payload.hookEventName
-  );
-  if (SNAKE_TO_PASCAL[snake]) return SNAKE_TO_PASCAL[snake];
-  return pascal || fromArgv;
+// Only the documented wire pairs are accepted:
+//   - `hook_event_name` (snake_case key) carries the PascalCase value;
+//   - `hookEventName` (camelCase key) carries the snake_case value;
+//   - the runner-injected `GROK_HOOK_EVENT` is snake_case.
+// Speculative casing (e.g. `hookEventName:"PreToolUse"`) is rejected, and two
+// present-but-disagreeing identities are rejected rather than silently picked.
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
 }
 
-function pickSessionId(payload) {
-  return pickString(
-    payload && payload.session_id,
-    payload && payload.sessionId,
-    process.env.GROK_SESSION_ID
-  );
-}
+function normalizeHookName(payload, env = process.env) {
+  if (!payload || typeof payload !== "object") payload = {};
+  const identities = [];
 
-const STOP_TEARDOWN_REASONS = new Set([
-  "shutdown",
-  "channel_closed",
-  "session_end",
-  "abort",
-]);
-
-function asArray(value) {
-  return Array.isArray(value) ? value : [];
-}
-
-function compactSourceFromPayload(payload) {
-  return pickString(payload && payload.source, payload && payload.trigger);
-}
-
-function isStopHookActive(payload) {
-  return !!(payload && (payload.stopHookActive === true || payload.stop_hook_active === true));
-}
-
-function liveBackgroundCounts(payload) {
-  const tasks = asArray(payload && (payload.backgroundTasks || payload.background_tasks));
-  const crons = asArray(payload && (payload.sessionCrons || payload.session_crons));
-  return {
-    background_tasks_count: tasks.length,
-    session_crons_count: crons.length,
-  };
-}
-
-function resolveStopPresentation(payload) {
-  const reason = pickString(
-    payload && payload.reason,
-    payload && payload.stopReason,
-    payload && payload.stop_reason
-  ).toLowerCase();
-  if (STOP_TEARDOWN_REASONS.has(reason)) {
-    return { state: "idle", event: "SessionEnd", completion: false };
+  const compat = pickString(payload.hook_event_name);
+  if (compat) {
+    // Own-property only: `constructor`, `toString`, `__proto__`, etc. must never
+    // resolve through Object.prototype into a bogus event identity.
+    if (!hasOwn(HOOK_MAP, compat)) return "";
+    identities.push(compat);
   }
-  const counts = liveBackgroundCounts(payload);
-  const continuation = isStopHookActive(payload)
-    || counts.background_tasks_count > 0
-    || counts.session_crons_count > 0;
-  if (continuation) {
-    return {
-      state: "working",
-      event: "Stop",
-      completion: false,
-      stop_hook_active: isStopHookActive(payload),
-      ...counts,
-    };
+
+  const camel = pickString(payload.hookEventName);
+  if (camel) {
+    if (!hasOwn(SNAKE_TO_PASCAL, camel)) return "";
+    identities.push(SNAKE_TO_PASCAL[camel]);
   }
-  return { state: "attention", event: "Stop", completion: true };
+
+  const runner = pickString(env.GROK_HOOK_EVENT);
+  if (runner) {
+    if (!hasOwn(SNAKE_TO_PASCAL, runner)) return "";
+    identities.push(SNAKE_TO_PASCAL[runner]);
+  }
+
+  if (identities.length === 0) return "";
+  const [first] = identities;
+  if (identities.some((identity) => identity !== first)) return "";
+  return first;
 }
 
-function deriveSessionTitle(hookName, payload) {
-  const rawTitle = pickString(
-    payload && payload.session_title,
-    payload && payload.sessionTitle,
-    payload && payload.session_name,
-    payload && payload.sessionName
-  );
-  if (rawTitle) {
-    return rawTitle.length > SESSION_TITLE_MAX
-      ? `${rawTitle.slice(0, SESSION_TITLE_MAX - 1)}\u2026`
-      : rawTitle;
+function isValidSessionId(value) {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > MAX_SESSION_ID_LENGTH) return false;
+  return !/[\u0000-\u001f\u007f\r\n]/.test(trimmed);
+}
+
+function pickSessionId(payload, env = process.env) {
+  if (!payload || typeof payload !== "object") payload = {};
+  const raw = pickString(payload.sessionId, payload.session_id, env.GROK_SESSION_ID);
+  return isValidSessionId(raw) ? raw : "";
+}
+
+function buildSessionId(rawSessionId) {
+  return rawSessionId ? `${AGENT_ID}:${rawSessionId}` : "";
+}
+
+function pickSubagentType(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  return pickString(payload.subagentType, payload.subagent_type);
+}
+
+function boundString(value, maxLength) {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) return "";
+  return trimmed.length > maxLength ? trimmed.slice(0, maxLength) : trimmed;
+}
+
+// The prompt id is an opaque ordering key. Reject an overlong or
+// control-character id instead of truncating it (a truncated id could collide
+// with another live turn).
+function normalizePromptId(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (trimmed.length > MAX_PROMPT_ID_LENGTH) return "";
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) return "";
+  return trimmed;
+}
+
+function notificationIsIdlePrompt(payload) {
+  if (!payload || typeof payload !== "object") return false;
+  return pickString(payload.notificationType, payload.notification_type).toLowerCase() === "idle_prompt";
+}
+
+function compactSource(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  return pickString(payload.source, payload.trigger).toLowerCase();
+}
+
+// Stop disposition is adapter-local. Only an exact `end_turn` with no live
+// background work may become a normal completion. Everything else is either a
+// non-terminal continuation or a session-end-shaped drop.
+function resolveStopDisposition(payload) {
+  if (!payload || typeof payload !== "object") return { action: "drop", reason: "missing-reason" };
+  const reason = pickString(payload.reason).toLowerCase();
+  if (reason !== "end_turn") {
+    return { action: "drop", reason: reason || "missing-reason" };
   }
-  if (hookName === "UserPromptSubmit" && payload && typeof payload.prompt === "string") {
-    for (const line of payload.prompt.split(/\r?\n/)) {
-      const candidate = line.trim();
-      if (candidate) {
-        return candidate.length > SESSION_TITLE_MAX
-          ? `${candidate.slice(0, SESSION_TITLE_MAX - 1)}\u2026`
-          : candidate;
-      }
+  const backgroundTasks = Array.isArray(payload.backgroundTasks) ? payload.backgroundTasks : [];
+  const sessionCrons = Array.isArray(payload.sessionCrons) ? payload.sessionCrons : [];
+  const stopHookActive = payload.stopHookActive === true;
+  if (stopHookActive || backgroundTasks.length > 0 || sessionCrons.length > 0) {
+    return { action: "continuation" };
+  }
+  return { action: "terminal" };
+}
+
+// Pure: derive the POST decision from a parsed payload. Returning `{ post:
+// false }` means stdout stays `{}` and no HTTP request is made.
+function buildHookDecision(payload, env = process.env) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { post: false, reason: "malformed-payload" };
+  }
+  const eventName = normalizeHookName(payload, env);
+  const mapped = hasOwn(HOOK_MAP, eventName) ? HOOK_MAP[eventName] : null;
+  if (!mapped) return { post: false, reason: "unsupported-event" };
+
+  const rawSessionId = pickSessionId(payload, env);
+  if (!rawSessionId) return { post: false, reason: "missing-session" };
+
+  // Phase 1 ignores every subagent event before it can reach the state runtime.
+  if (pickSubagentType(payload)) return { post: false, reason: "subagent" };
+
+  // Reject (never truncate) an invalid opaque prompt id so a collision-prone id
+  // can never clear or overwrite a live turn. Turn-scoped events fail closed
+  // when the id is missing/invalid.
+  const promptId = normalizePromptId(payload.promptId || payload.prompt_id);
+  if (TURN_SCOPED_EVENTS.has(eventName) && !promptId) {
+    return { post: false, reason: "missing-prompt-id" };
+  }
+
+  let state = mapped.state;
+  let event = mapped.event;
+  let notificationType = "";
+
+  if (eventName === "Stop") {
+    const disposition = resolveStopDisposition(payload);
+    if (disposition.action === "drop") return { post: false, reason: `stop-${disposition.reason}` };
+    if (disposition.action === "continuation") {
+      // Non-terminal: stay working with no event so the state runtime does not
+      // append a Stop tail and the turn fence cannot latch.
+      state = "working";
+      event = null;
     }
+  } else if (eventName === "PostCompact") {
+    state = compactSource(payload) === "manual" ? "idle" : "thinking";
+  } else if (eventName === "Notification" && notificationIsIdlePrompt(payload)) {
+    notificationType = "idle_prompt";
   }
-  return null;
+
+  const body = {
+    agent_id: AGENT_ID,
+    session_id: buildSessionId(rawSessionId),
+    state,
+    event,
+  };
+
+  const cwd = boundString(payload.cwd, MAX_CWD_LENGTH);
+  if (cwd) body.cwd = cwd;
+
+  if (TOOL_EVENTS.has(eventName)) {
+    const toolName = boundString(payload.toolName || payload.tool_name, MAX_TOOL_NAME_LENGTH);
+    if (toolName) body.tool_name = toolName;
+  }
+
+  // Opaque ordering key for the turn fence only; never rendered or persisted.
+  if (promptId) body.prompt_id = promptId;
+
+  // Closed enum required by the fence contract so the route can tell a
+  // session-settle `idle_prompt` Notification from a presentation-only one.
+  // Only ever the single value below — never free-form Notification content.
+  if (notificationType) body.notification_type = notificationType;
+
+  return { post: true, body };
 }
 
-const SAFETY_TIMEOUT_MS = 800;
+function readStdinJson(timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let data = "";
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    try {
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => {
+        data += chunk;
+        if (data.length > 4 * 1024 * 1024) finish(null);
+      });
+      process.stdin.on("error", () => finish(null));
+      process.stdin.on("end", () => {
+        if (!data.trim()) return finish(null);
+        try {
+          finish(JSON.parse(data));
+        } catch {
+          finish(null);
+        }
+      });
+      process.stdin.resume();
+    } catch {
+      finish(null);
+    }
+  });
+}
+
 let _wrote = false;
 let _exited = false;
-let safetyTimer = null;
+let _safetyTimer = null;
 
-function writeStdoutOnce(outLine) {
+function writePassiveOutput() {
   if (_wrote) return;
   _wrote = true;
-  process.stdout.write(outLine + "\n");
+  process.stdout.write("{}\n");
 }
 
-function finish(outLine) {
-  writeStdoutOnce(outLine);
+function finish() {
+  writePassiveOutput();
   if (_exited) return;
   _exited = true;
-  if (safetyTimer) clearTimeout(safetyTimer);
+  if (_safetyTimer) clearTimeout(_safetyTimer);
   process.exit(0);
 }
 
-safetyTimer = setTimeout(() => finish("{}"), SAFETY_TIMEOUT_MS);
-
 function run() {
-  readStdinJson()
+  _safetyTimer = setTimeout(() => finish(), SAFETY_TIMEOUT_MS);
+  readStdinJson(STDIN_TIMEOUT_MS)
     .then((payload) => {
-      const hookName = normalizeHookName(payload || {});
-      const mapped = HOOK_MAP[hookName];
-      const outLine = stdoutForEvent(hookName);
-
-      if (!mapped) {
-        finish(outLine);
+      let decision = { post: false, reason: "malformed-payload" };
+      try {
+        decision = buildHookDecision(payload, process.env);
+      } catch {
+        decision = { post: false, reason: "adapter-error" };
+      }
+      // stdout is written before the best-effort POST so a slow or offline
+      // Clawd can never delay the host command hook.
+      writePassiveOutput();
+      if (!decision.post) {
+        finish();
         return;
       }
-
-      const sessionId = pickSessionId(payload || {});
-      if (!sessionId) {
-        finish(outLine);
-        return;
-      }
-
-      let { state, event } = mapped;
-      if (hookName === "PostCompact" && compactSourceFromPayload(payload) === "manual") {
-        state = "idle";
-      }
-
-      let stopMeta = null;
-      if (hookName === "Stop") {
-        stopMeta = resolveStopPresentation(payload || {});
-        state = stopMeta.state;
-        event = stopMeta.event;
-      }
-
-      if (hookName === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
-
-      const cwd = pickString(payload && payload.cwd, process.env.GROK_WORKSPACE_ROOT);
-      const toolName = pickString(payload && payload.tool_name, payload && payload.toolName);
-      const toolUseId = pickString(payload && payload.tool_use_id, payload && payload.toolUseId);
-
-      const resolved = resolve({
-        namespace: "grok",
-        sessionId,
-        cacheCwd: cwd,
-        lifecycle: EVENT_TO_LIFECYCLE[hookName] || "event",
-        cacheable: sessionId !== "default" && !!cwd,
-      });
-
-      const body = { state, session_id: sessionId, event };
-      body.agent_id = "grok";
-      if (cwd) body.cwd = cwd;
-      if (toolName) body.tool_name = toolName;
-      if (toolUseId) body.tool_use_id = toolUseId;
-      if (stopMeta) {
-        if (stopMeta.stop_hook_active === true) body.stop_hook_active = true;
-        if (stopMeta.background_tasks_count > 0) body.background_tasks_count = stopMeta.background_tasks_count;
-        if (stopMeta.session_crons_count > 0) body.session_crons_count = stopMeta.session_crons_count;
-      }
-
-      const sessionTitle = deriveSessionTitle(hookName, payload || {});
-      if (sessionTitle) body.session_title = sessionTitle;
-
-      if (process.env.CLAWD_REMOTE) {
-        body.host = readHostPrefix();
-        applyOrcaPaneKey(body);
-      } else {
-        if (resolved.stablePid) body.source_pid = resolved.stablePid;
-        if (resolved.detectedEditor) body.editor = resolved.detectedEditor;
-        if (resolved.agentPid) body.agent_pid = resolved.agentPid;
-        if (resolved.pidChain && resolved.pidChain.length) body.pid_chain = resolved.pidChain;
-        if (resolved.tmuxSocket) body.tmux_socket = resolved.tmuxSocket;
-        if (resolved.tmuxClient) body.tmux_client = resolved.tmuxClient;
-        applyOrcaPaneKey(body);
-      }
-
-      writeStdoutOnce(outLine);
-      postStateToRunningServer(JSON.stringify(body), { timeoutMs: 100 }, () => {
-        finish(outLine);
+      postStateToRunningServer(JSON.stringify(decision.body), { timeoutMs: POST_TIMEOUT_MS }, () => {
+        finish();
       });
     })
-    .catch(() => finish("{}"));
+    .catch(() => finish());
 }
 
 if (require.main === module) {
   run();
 } else {
-  if (safetyTimer) clearTimeout(safetyTimer);
+  if (_safetyTimer) clearTimeout(_safetyTimer);
   _exited = true;
 }
 
 module.exports = {
+  AGENT_ID,
   HOOK_MAP,
-  stdoutForEvent,
-  deriveSessionTitle,
+  SNAKE_TO_PASCAL,
+  TURN_SCOPED_EVENTS,
+  normalizePromptId,
   normalizeHookName,
   pickSessionId,
-  compactSourceFromPayload,
-  resolveStopPresentation,
-  SESSION_TITLE_MAX,
-  GROK_AGENT_NAMES,
-  isGrokCommandLine,
+  buildSessionId,
+  isValidSessionId,
+  resolveStopDisposition,
+  notificationIsIdlePrompt,
+  buildHookDecision,
 };

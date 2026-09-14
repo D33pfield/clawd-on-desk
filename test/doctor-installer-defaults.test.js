@@ -46,7 +46,7 @@ describe("installer default path exports", () => {
     assert.strictEqual(workbuddy.LEGACY_CONFIG_PATH, path.join(home, ".workbuddy", "settings.json"));
 
     assert.strictEqual(grok.DEFAULT_PARENT_DIR, path.join(home, ".grok"));
-    assert.strictEqual(grok.DEFAULT_CONFIG_PATH, path.join(home, ".grok", "hooks", "clawd.json"));
+    assert.strictEqual(grok.DEFAULT_CONFIG_PATH, path.join(home, ".grok", "hooks", "clawd-on-desk.json"));
 
     assert.strictEqual(kiro.DEFAULT_PARENT_DIR, path.join(home, ".kiro"));
     assert.strictEqual(kiro.DEFAULT_AGENTS_DIR, path.join(home, ".kiro", "agents"));

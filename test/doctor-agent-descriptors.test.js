@@ -21,7 +21,7 @@ describe("doctor agent descriptors", () => {
         "antigravity-cli",
         "codebuddy",
         "workbuddy",
-        "grok",
+        "grok-build",
         "kiro-cli",
         "kimi-cli",
         "qwen-code",
@@ -92,10 +92,10 @@ describe("doctor agent descriptors", () => {
     );
 
     const grok = require("../hooks/grok-install");
-    assert.strictEqual(getAgentDescriptor("grok").parentDir, grok.DEFAULT_PARENT_DIR);
-    assert.strictEqual(getAgentDescriptor("grok").configPath, grok.DEFAULT_CONFIG_PATH);
-    assert.strictEqual(getAgentDescriptor("grok").marker, grok.MARKER);
-    assert.deepStrictEqual(getAgentDescriptor("grok").hookEvents, grok.GROK_HOOK_EVENTS);
+    assert.strictEqual(getAgentDescriptor("grok-build").parentDir, grok.DEFAULT_PARENT_DIR);
+    assert.strictEqual(getAgentDescriptor("grok-build").configPath, grok.DEFAULT_CONFIG_PATH);
+    assert.strictEqual(getAgentDescriptor("grok-build").marker, grok.MARKER);
+    assert.deepStrictEqual(getAgentDescriptor("grok-build").hookEvents, grok.GROK_HOOK_EVENTS);
 
     assert.strictEqual(getAgentDescriptor("kiro-cli").parentDir, kiro.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("kiro-cli").configPath, kiro.DEFAULT_AGENTS_DIR);
@@ -358,10 +358,10 @@ describe("doctor agent descriptors", () => {
 
   it("checks Grok Build hooks as a state-only nested settings file", () => {
     const grok = require("../hooks/grok-install");
-    const descriptor = getAgentDescriptor("grok");
+    const descriptor = getAgentDescriptor("grok-build");
 
     assert.strictEqual(descriptor.eventSource, "hook");
-    assert.strictEqual(descriptor.configMode, "file");
+    assert.strictEqual(descriptor.configMode, "grok-hooks");
     assert.strictEqual(descriptor.nested, true);
     assert.strictEqual(descriptor.autoInstall, true);
     assert.strictEqual(descriptor.marker, grok.MARKER);
