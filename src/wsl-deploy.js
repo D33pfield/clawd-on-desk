@@ -113,6 +113,7 @@ const AGENT_INSTALL_SCRIPT = {
   "gemini-cli": "gemini-install.js",
   "antigravity-cli": "antigravity-install.js",
   codebuddy: "codebuddy-install.js",
+  // Grok Build has no WSL support in Phase 1 (local state-only).
   // WorkBuddy has no standalone Linux/WSL runtime.
   "kiro-cli": "kiro-install.js",
   "kimi-cli": "kimi-install.js",

@@ -15,6 +15,7 @@ const AGENT_LABELS = {
   mimocode: "MiMo Code",
   codebuddy: "CodeBuddy",
   workbuddy: "WorkBuddy",
+  "grok-build": "Grok Build",
   pi: "Pi",
   openclaw: "OpenClaw",
 };

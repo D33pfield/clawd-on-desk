@@ -17,6 +17,20 @@ const {
 } = require("./shared-process");
 const { resolveSessionTitle } = require("./cursor-session-title");
 
+// Grok scans Claude-compatible settings by default and must never produce a
+// phantom cursor-agent session. Only the runner-injected official
+// GROK_HOOK_EVENT activates this guard; GROK_HOME / an unrelated GROK_*
+// variable must not. Cursor hooks execute at require time, so the passive
+// response and exit happen before any resolver or POST work.
+function launchedByGrok(env = process.env) {
+  return Boolean(env && env.GROK_HOOK_EVENT && String(env.GROK_HOOK_EVENT).trim());
+}
+
+if (launchedByGrok()) {
+  process.stdout.write("{}\n");
+  process.exit(0);
+}
+
 const HOOK_TO_STATE = {
   sessionStart: { state: "idle", event: "SessionStart" },
   sessionEnd: { state: "sleeping", event: "SessionEnd" },
