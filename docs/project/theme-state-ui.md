@@ -11,7 +11,7 @@ This document holds the state machine, theme system, UI runtime, and platform ca
 
 输入事件流：`hitWin renderer → IPC → main → renderWin renderer`
 
-Windows 的 hit window 在原生 activation controller 可用时按前台全屏状态切换 `WS_EX_NOACTIVATE`：非全屏时清除样式以恢复普通 activation 语义，全屏时设置样式以避免点击和拖拽把前台切到 Clawd。Electron 内部保持 non-focusable，避免 Chromium 在 pointerdown 时绕过原生样式主动激活窗口。真实合成点击已确认样式置位和清除时 pointer 都能到达 renderer，因此不能把 pointer 路由归因于清除样式。输入窗口仍和渲染窗口分离，并永久接收 mouse events，避免旧单窗口 alpha hit-test 路径的拖拽失效。
+Windows 的 hit window 在原生 activation controller 可用时按前台全屏状态切换 `WS_EX_NOACTIVATE`：非全屏时清除该扩展样式，全屏时重新设置以避免点击和拖拽把前台切到 Clawd。Electron 内部保持 non-focusable；首次显示前安装的 `WM_MOUSEACTIVATE` hook 通过一次性 `Chrome.IgnoreMouseActivate` 属性让 Chromium 对该消息返回 `MA_NOACTIVATE`（不因这条消息激活窗口，也不丢弃鼠标输入），避免 `MA_NOACTIVATEANDEAT` 吞掉点击。该消息的返回值不保证普通桌面点击始终保持 OS 前台归属，相关限制见 Known Limits。输入窗口仍和渲染窗口分离，并永久接收 mouse events。
 
 ## State Machine
 
@@ -156,6 +156,12 @@ Mini 状态映射：
 
 ## Runtime UI Systems
 
+### Session History（本机 Claude 手动继续）
+
+- 普通 Dashboard 在 live cards 下方展示独立历史区，最多 25 条；历史不参与 quick-select 数字映射。显示标题 / session ID、目录 basename、最近时间与可选中断 / transcript 缺失提示，不展示完整路径或对话内容。有历史但无 live 会话时空状态改为紧凑布局，不能占满整屏把恢复按钮推到首屏之外。
+- 恢复中禁点由 main 持有，页面缓存只负责显示；提交终端后继续等待真实 live snapshot，不立即移除卡片或声称成功。30 秒未观察到会话时提示先检查终端，并允许手动重试；已知启动失败立即显示错误且保留原卡。
+- 历史在初始加载和 live 集合变化时重读，1 秒 UI tick 不读磁盘。加载期间的新失效通知必须排队重读；渲染时再次过滤当前本机 live ID，避免迟到历史回包让已恢复的卡片复活。存储、隐私与运行时边界见 `agent-runtime-architecture.md` 的 Local Claude Session History。
+
 ### Session Quick Select（Dashboard 临时键盘模式）
 
 平台范围：**macOS / Windows only。Linux 本轮 NOT SUPPORTED**——不是“未验证”，而是明确不开放；Linux 保留原有桌宠、普通 Dashboard 和既有快捷键。
@@ -238,7 +244,7 @@ Mini 状态映射：
 ## Electron And Platform Notes
 
 - `win.setFocusable(false)`：渲染窗口永不抢焦点
-- Windows `hitWin`：原生 activation controller 可用时 Electron 始终 non-focusable；仅在非全屏前台时清除 `WS_EX_NOACTIVATE`，全屏时重新设置。controller / Koffi 不可用时回退到旧的 Electron focusable 构造，优先保住桌面点击与拖拽，但不承诺全屏防抢焦点
+- Windows `hitWin`：原生 activation controller 可用时 Electron 始终 non-focusable；仅在非全屏前台时清除 `WS_EX_NOACTIVATE`，全屏时重新设置。生命周期内的 mouse-activation hook 防止 Chromium 返回 `MA_NOACTIVATEANDEAT`。controller / Koffi 或首次 hook 准备不可用时回退到旧的 Electron focusable 路径，优先保住桌面点击与拖拽，但不承诺全屏防抢焦点
 - `win.showInactive()`：显示时不打断用户输入
 - 渲染 / 输入窗口都依赖 `backgroundThrottling: false`；unfocused 节流会放大眼球追踪和输入恢复的时序问题
 - 路径统一用 `path.join(__dirname, ...)`
@@ -250,7 +256,7 @@ Mini 状态映射：
 ## Known Limits
 
 - Windows 原生 activation controller 依赖打包目标内的 Koffi；不可用时不调用会扰动前台的 Electron `setFocusable(false)`，而以旧的 focusable 输入窗降级，桌面交互仍可用但全屏点击可能短暂抢前台
-- Windows 非全屏态为恢复普通 activation 语义会清除输入窗的 `WS_EX_NOACTIVATE`；点击桌宠可能短暂把 OS 前台归属切到 Clawd，即使 Electron `win.isFocused()` 仍为 false
+- Windows 非全屏态会清除输入窗的 `WS_EX_NOACTIVATE`；点击桌宠可能短暂把 OS 前台归属切到 Clawd，即使 Electron `win.isFocused()` 仍为 false。mouse-activation hook 不消除这项既有的普通桌面限制
 - 当前开发环境没有 macOS 手测机；所有 macOS 特定路径都只能做 code review + best-effort 推断，真正行为变化需要额外人工验证
 - 启动恢复依赖 `detectRunningClaudeProcesses()` 与后续 hook 事件
 - Windows 前台窗口锁通过 ALT trick + `koffi` FFI 绕过，仍有边缘失败可能

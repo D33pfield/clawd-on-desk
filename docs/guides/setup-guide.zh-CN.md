@@ -50,6 +50,8 @@ Claude Code 只有一个用户级 statusline 槽位，因此 Clawd 绝不会静�
 
 **Cursor Agent** — hooks 配置在 `~/.cursor/hooks.json`。需要本机 Cursor Agent 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步 hooks。也可以手动执行 `npm run install:cursor-hooks`。
 
+Clawd 可以在 Node 的 SQLite 模块可用时读取 Cursor 标准桌面配置中的聊天名称（Node 22.13+、23.4+ 或 24+；Node 22.12 需开启实验性 SQLite 模块）。名称不可用时会使用经过敏感信息过滤的 prompt 首行；疑似含密钥的首行不显示。标题读取失败不影响状态追踪。使用自定义 `--user-data-dir` 的 Cursor 同样采用首行回退。
+
 **CodeBuddy** — 使用与 Claude Code 兼容的 hooks，配置写入 `~/.codebuddy/settings.json`。需要本机 CodeBuddy 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步 hooks。PermissionRequest 条目使用版本化 marker `clawd-on-desk.permission.v1`；注册和卸载不会碰其他 HTTP hook，包括仅仅叫 `clawd` 的第三方条目。裸跑 `node hooks/codebuddy-install.js` 会保留已有、由该 marker 管理的自定义权限 URL；用 `--permission-url local` 可明确恢复本机 Clawd 地址，用 `--permission-url https://example/permission` 可明确设置自定义 HTTP(S) 地址。
 
 **Grok Build** — 使用与 Claude Code 兼容的 hooks，写入 `~/.grok/hooks/clawd.json`（或 `$GROK_HOME/hooks/clawd.json`）。需要本机 Grok 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步 hooks。也可以手动执行 `node hooks/grok-install.js`。集成为**仅状态 + 通知**：Grok 没有阻塞式 `PermissionRequest`，因此 Clawd 不会注册 `/permission`。允许/拒绝始终留在 Grok 终端里。权限询问仍可通过 Notification 让桌宠响铃。

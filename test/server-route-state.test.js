@@ -725,6 +725,28 @@ describe("server-route-state POST", () => {
     ]]);
   });
 
+  it("forwards Qoder title inputs for runtime enrichment after accepting the lifecycle", async () => {
+    for (const sessionTitle of [null, "Explicit Qoder title"]) {
+      const res = await callStatePost(JSON.stringify({
+        state: "thinking", event: "UserPromptSubmit", session_id: "qoder:s1",
+        agent_id: "qoder", transcript_path: "/tmp/qoder-session.jsonl",
+        ...(sessionTitle ? { session_title: sessionTitle } : {}),
+      }));
+      assert.strictEqual(res.statusCode, 200);
+      assert.strictEqual(res.calls.updateSession[0][3].sessionTitle, sessionTitle);
+      assert.strictEqual(res.calls.updateSession[0][3].transcriptPath, "/tmp/qoder-session.jsonl");
+    }
+  });
+
+  it("does not forward disabled Qoder events for title enrichment", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "attention", event: "Stop", session_id: "qoder:s1",
+      agent_id: "qoder", transcript_path: "/tmp/qoder-session.jsonl",
+    }), { ctx: { isAgentEnabled: () => false } });
+    assert.strictEqual(res.statusCode, 204);
+    assert.deepStrictEqual(res.calls.updateSession, []);
+  });
+
   it("strips remote process metadata from state updates on the profile-bound ingress", async () => {
     const body = JSON.stringify({
       state: "working",
@@ -825,6 +847,61 @@ describe("server-route-state POST", () => {
     const local = await callStatePost(body);
     assert.strictEqual(local.calls.userInputShown[0].sourcePid, 4242);
     assert.strictEqual(local.calls.userInputShown[0].agentPid, 4243);
+  });
+
+  it("drops archived local Codex lifecycle and passive user-input while keeping quota (#655)", async () => {
+    const suppressedRaw = "codex:archived-1";
+    const isArchived = (raw) => raw === suppressedRaw;
+    const base = {
+      state: "working",
+      session_id: suppressedRaw,
+      event: "PreToolUse",
+      agent_id: "codex",
+      codex_quota: { codexFiveHour: { usedPercent: 5 } },
+    };
+
+    const dropped = await callStatePost(JSON.stringify(base), {
+      ctx: { shouldSuppressCodexArchive: isArchived },
+    });
+    assert.strictEqual(dropped.statusCode, 204);
+    assert.deepStrictEqual(dropped.calls.updateSession, []);
+    assert.strictEqual(dropped.calls.updateAccountQuota.length, 1);
+    assert.deepStrictEqual(
+      dropped.calls.recorder.map((entry) => entry.outcome).filter(Boolean),
+      ["unsupported"]
+    );
+
+    const userInput = await callStatePost(JSON.stringify({
+      state: "notification",
+      session_id: suppressedRaw,
+      event: "CodexUserInputRequest",
+      agent_id: "codex",
+      codex_user_input: {
+        phase: "request",
+        call_id: "call_archived",
+        questions: [{ id: "q", header: "H", question: "Q?", options: [] }],
+      },
+    }), { ctx: { shouldSuppressCodexArchive: isArchived } });
+    assert.strictEqual(userInput.statusCode, 204);
+    assert.deepStrictEqual(userInput.calls.userInputShown, []);
+    assert.deepStrictEqual(userInput.calls.updateSession, []);
+
+    const remote = await callStatePost(JSON.stringify(base), {
+      ctx: { shouldSuppressCodexArchive: isArchived },
+      options: { remoteProfile: { profileId: "ssh-work", displayHost: "workbox" } },
+    });
+    assert.strictEqual(remote.statusCode, 200);
+    assert.strictEqual(remote.calls.updateSession.length, 1);
+
+    const metadata = await callStatePost(JSON.stringify({
+      agent_id: "codex",
+      session_id: suppressedRaw,
+      event: "SessionStart",
+      state: "idle",
+      metadata_only: true,
+    }), { ctx: { shouldSuppressCodexArchive: isArchived } });
+    assert.strictEqual(metadata.statusCode, 204);
+    assert.strictEqual(metadata.calls.updateSession.length, 0);
   });
 
   it("preserves absent versus authoritative zero for typed Claude background subagents (#952)", async () => {
