@@ -542,24 +542,12 @@ describe("repository asset audit", () => {
     assert.ok(stableJson(value).endsWith("\n"));
   });
 
-  it("evaluates the prospective working tree, not just the committed HEAD", () => {
+  it("keeps the prospective repository tree under the hard budget", () => {
     const root = path.resolve(__dirname, "..");
     const policy = JSON.parse(
       fs.readFileSync(path.join(root, "tools", "repository-asset-policy.json"), "utf8")
     );
-    const committed = readTrackedTree(root);
     const prospective = readProspectiveTrackedTree(root);
-
-    const committedPaths = new Set(committed.map((file) => file.path));
-    const prospectivePaths = new Set(prospective.map((file) => file.path));
-
-    // The prospective view must reflect working-tree renames/deletions that HEAD
-    // still reports: `agents/grok.js` is renamed to `agents/grok-build.js`.
-    if (!fs.existsSync(path.join(root, "agents", "grok.js"))) {
-      assert.ok(!prospectivePaths.has("agents/grok.js"), "prospective tree must drop the deleted path");
-      assert.ok(prospectivePaths.has("agents/grok-build.js"), "prospective tree must include the rename target");
-      assert.ok(committedPaths.has("agents/grok.js"), "committed HEAD still has the pre-rename path");
-    }
 
     const prospectiveBytes = prospective.reduce((sum, file) => sum + file.bytes, 0);
     const headroom = policy.thresholds.trackedTreeHardBytes - prospectiveBytes;
@@ -624,7 +612,7 @@ describe("repository asset audit", () => {
     assert.deepStrictEqual(parseIndexRecords(raw).map((record) => record.path), ["a.txt", "dir/b.txt"]);
   });
 
-  it("retains a legitimately tracked node_modules path in the prospective tree", () => {
+  it("evaluates every working-tree change without dropping a tracked node_modules path", () => {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-prospective-repo-"));
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-git-fixture-"));
     const hooksDir = path.join(fixture, "hooks");
@@ -646,13 +634,29 @@ describe("repository asset audit", () => {
         git("config", "user.email", "test@example.com");
         git("config", "user.name", "test");
         fs.writeFileSync(path.join(repo, "node_modules"), "tracked dependency file\n");
-        git("add", "node_modules");
+        fs.writeFileSync(path.join(repo, "old.txt"), "rename me\n");
+        fs.writeFileSync(path.join(repo, "delete.txt"), "delete me\n");
+        fs.writeFileSync(path.join(repo, "edit.txt"), "before\n");
+        git("add", ".");
         git("commit", "-q", "-m", "seed");
-        const prospective = readProspectiveTrackedTree(repo);
-        assert.ok(
-          prospective.some((file) => file.path === "node_modules"),
-          "a tracked node_modules path must never be dropped from the prospective tree"
+
+        fs.renameSync(path.join(repo, "old.txt"), path.join(repo, "new.txt"));
+        fs.rmSync(path.join(repo, "delete.txt"));
+        fs.writeFileSync(path.join(repo, "edit.txt"), "after edit\n");
+        fs.writeFileSync(path.join(repo, "added.txt"), "new file\n");
+
+        const committed = new Map(readTrackedTree(repo).map((file) => [file.path, file]));
+        const prospective = new Map(readProspectiveTrackedTree(repo).map((file) => [file.path, file]));
+        assert.deepStrictEqual(
+          [...committed.keys()].sort(),
+          ["delete.txt", "edit.txt", "node_modules", "old.txt"]
         );
+        assert.deepStrictEqual(
+          [...prospective.keys()].sort(),
+          ["added.txt", "edit.txt", "new.txt", "node_modules"]
+        );
+        assert.strictEqual(committed.get("edit.txt").bytes, Buffer.byteLength("before\n"));
+        assert.strictEqual(prospective.get("edit.txt").bytes, Buffer.byteLength("after edit\n"));
       });
     } finally {
       fs.rmSync(repo, { recursive: true, force: true });
