@@ -492,6 +492,16 @@ If `miniMode.supported` is `true`, the validator expects all 8 mini states shown
 
 `mini-working` is optional. If you provide `miniMode.states["mini-working"]`, Clawd can show a compact working animation while the pet is in mini mode. If you omit it, working/thinking/juggling events do not break mini mode; Clawd keeps the current mini visual.
 
+`miniMode.leftEdgeFiles` is optional. On the left screen edge Clawd mirrors the whole mini pet, so raster art with legible text or glyphs (a scroll, a talisman) would read backwards there. Map each such file to a left-edge variant whose glyphs are pre-mirrored; while mini mode sits on the left edge Clawd shows the variant instead, and the mirror turns its text the right way round:
+
+```json
+"miniMode": {
+  "leftEdgeFiles": { "mini-happy.apng": "mini-happy-left.apng" }
+}
+```
+
+Keep the variant pixel-identical to the original outside the glyphs. It reuses the original file's hit box, while per-file layout entries (`fileViewBoxes`, `objectScale.fileScales` / `fileOffsets`) are looked up by the file actually shown, so repeat any you set for the original.
+
 ### Timings
 
 All values in milliseconds. Omit any to use defaults:

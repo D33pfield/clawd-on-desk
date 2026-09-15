@@ -188,6 +188,7 @@ const createPetWindowRuntime = require("./pet-window-runtime");
 const { collectRequiredAssetFiles } = require("./theme-schema");
 const { describeGeometrySync } = require("./pet-accessory-state");
 const { createDisplayedVisualProjection } = require("./displayed-visual-projection");
+const { resolveMiniEdgeFile } = require("./mini-edge-files");
 const { createTestReactionHandler } = require("./test-reaction");
 const createMacHideController = require("./mac-hide");
 const {
@@ -1441,11 +1442,18 @@ function inferVisualSource(displayState, file) {
 function requestDisplayedVisual(displayState, file, options = {}) {
   if (!displayedVisualProjection) return null;
   const activeTheme = getActiveTheme();
+  // The left mini edge mirrors the whole pet; a theme may show a variant with
+  // pre-mirrored glyphs there. It shares the original's silhouette, so the hit
+  // box still comes from the original file.
+  const visualFile = resolveMiniEdgeFile(activeTheme, file, {
+    miniMode: _mini.getMiniMode(),
+    edge: _mini.getMiniEdge(),
+  });
   return displayedVisualProjection.request({
     themeId: activeTheme && activeTheme._id,
     logicalState: options.logicalState || _state.getCurrentState(),
     displayState,
-    file,
+    file: visualFile,
     hitBox: _state.resolveHitBoxForSvg(file),
     source: options.source || inferVisualSource(displayState, file),
     deliver: options.deliver || ((payload) => sendRawToRenderer("state-change", payload)),

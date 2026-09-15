@@ -226,6 +226,10 @@ function validateTheme(cfg) {
     errors.push(`roamFlipAssets must be a boolean, got ${JSON.stringify(cfg.roamFlipAssets)}`);
   }
 
+  if (isPlainObject(cfg.miniMode) && cfg.miniMode.leftEdgeFiles !== undefined) {
+    errors.push(...validateMiniLeftEdgeFiles(cfg.miniMode.leftEdgeFiles));
+  }
+
   const fallbackStateKeys = Object.keys(normalizedStates);
   for (const stateKey of fallbackStateKeys) {
     const entry = normalizedStates[stateKey];
@@ -1193,6 +1197,35 @@ function buildCapabilities(cfg, options = {}) {
   };
 }
 
+// miniMode.leftEdgeFiles: { "<mini file>": "<left-edge variant>" }. Mini mode
+// mirrors the whole pet on the left edge; the variant carries pre-mirrored
+// glyphs so text reads the right way round there (src/mini-edge-files.js).
+function validateMiniLeftEdgeFiles(value) {
+  if (!isPlainObject(value)) {
+    return [`miniMode.leftEdgeFiles must be an object mapping a mini file to its left-edge variant, got ${JSON.stringify(value)}`];
+  }
+  const errors = [];
+  for (const [from, to] of Object.entries(value)) {
+    if (typeof to !== "string" || !basenameOnly(to)) {
+      errors.push(`miniMode.leftEdgeFiles["${from}"] must be a file name, got ${JSON.stringify(to)}`);
+    } else if (basenameOnly(to) === basenameOnly(from)) {
+      errors.push(`miniMode.leftEdgeFiles["${from}"] must name a different file`);
+    }
+  }
+  return errors;
+}
+
+function normalizeMiniLeftEdgeFiles(value) {
+  const out = {};
+  if (!isPlainObject(value)) return out;
+  for (const [from, to] of Object.entries(value)) {
+    const source = basenameOnly(from);
+    const target = typeof to === "string" ? basenameOnly(to) : "";
+    if (source && target && source !== target) out[source] = target;
+  }
+  return out;
+}
+
 function addThemeAssetFile(out, filename) {
   if (typeof filename !== "string") return;
   const safe = basenameOnly(filename);
@@ -1215,6 +1248,10 @@ function collectRequiredAssetFiles(theme) {
   }
   const objectChannelFiles = theme && theme.rendering && theme.rendering.objectChannelFiles;
   for (const file of Array.isArray(objectChannelFiles) ? objectChannelFiles : []) {
+    addThemeAssetFile(files, file);
+  }
+  const leftEdgeFiles = theme && theme.miniMode && theme.miniMode.leftEdgeFiles;
+  for (const file of Object.values(isPlainObject(leftEdgeFiles) ? leftEdgeFiles : {})) {
     addThemeAssetFile(files, file);
   }
   return [...files];
@@ -1474,9 +1511,10 @@ function mergeDefaults(raw, themeId, isBuiltin) {
         ...(raw.miniMode.timings || {}),
       },
       glyphFlips: raw.miniMode.glyphFlips || {},
+      leftEdgeFiles: normalizeMiniLeftEdgeFiles(raw.miniMode.leftEdgeFiles),
     };
   } else {
-    theme.miniMode = { supported: false, states: {}, viewBox: null, timings: { minDisplay: {}, autoReturn: {} }, glyphFlips: {} };
+    theme.miniMode = { supported: false, states: {}, viewBox: null, timings: { minDisplay: {}, autoReturn: {} }, glyphFlips: {}, leftEdgeFiles: {} };
   }
 
   theme.customization.accessories = normalizeAccessoryAttachments(
