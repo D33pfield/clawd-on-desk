@@ -53,6 +53,7 @@ const {
   resolveCodexOfficialHookState,
 } = require("./server-codex-official-turns");
 const { createDshStateSequenceFence } = require("./dsh-state-sequence");
+const createGrokTurnFence = require("./grok-turn-fence");
 const {
   HOOK_EVENT_RING_SIZE_PER_AGENT,
   createSingleRequestHookEventRecorder,
@@ -154,6 +155,8 @@ let lastClaudeHookGuardNotice = null;
 let claudeStatuslineIngressSuppressed = false;
 const codexOfficialTurns = new Map();
 const dshStateSequenceFence = createDshStateSequenceFence();
+// Grok Build turn-order fence: bounded, in-memory, injected into /state.
+const grokTurnFence = createGrokTurnFence();
 const recentHookEvents = new Map();
 
 function isClaudeStatuslineMetadataAllowed() {
@@ -785,6 +788,7 @@ function routeHttpRequest(req, res, remoteProfile = null) {
         shouldDropForDnd,
         codexOfficialTurns,
         dshStateSequenceFence,
+        grokTurnFence,
         captureForegroundWindowsTerminal: ctx.captureForegroundWindowsTerminal,
         isWinHost: isWindowsHost,
         windowsProcessChainRuntime,

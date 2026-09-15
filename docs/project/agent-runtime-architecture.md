@@ -34,6 +34,44 @@ Codex CLI 状态同步（official hooks primary + JSONL fallback）：
     → agents/codex-log-monitor.js（fallback：hook 未覆盖事件、hook 禁用/不可用、历史兼容）
     → src/agent-runtime-main.js 对 hook-active session 做事件级 suppression，避免重复状态/重复气泡；本地 JSONL 路径不经过 HTTP server
 
+Local Codex archive lifecycle (#655)：Codex 归档会把该 thread 的 rollout 从
+`sessions/` 移入扁平的 `<CODEX_HOME>/archived_sessions/`（文件名不变，`codex archive` /
+`unarchive` 已验证于 0.154.0）。`src/codex-archive-tracker.js` 由
+`src/agent-runtime-main.js` 与本地 Codex runtime 同启同停，独立于 JSONL 内容解析：
+它只在本地 `CODEX_HOME` 的 `archived_sessions` 里寻找 regular `rollout-*.jsonl`，
+用文件名推导出的 canonical UUID 与文件头部有界 `session_meta`（`payload.id` /
+`payload.session_id`，两者同时存在必须一致且等于文件名 id）校验，再对同一 path 做
+读后快照复核。归档文件消失是 unarchive 证据；截断/损坏/冲突或 id 不匹配的元数据从不构成
+归档证据，不会据此退役；目录不可列、stat/read 的 EACCES/EPERM/EIO 等 I/O 错误与被中断的
+扫描只算 UNKNOWN：保留既有 suppression、绝不据此退役，也不会清缓存把晚到 hook 放进来。
+已确认的归档文件若内容变化会完整重验：重验遇 I/O 错误仍保留 suppression；重验确认已无效
+（元数据损坏/冲突、不再是该任务或文件已消失）则丢弃该缓存并解除 suppression。
+正向证据确认后，`agent-runtime-main` 先经由窄的 archive 生命周期入口（复用 session
+automation coordinator 的 `onSessionLifecycleEnd`/`clearIdentity`）撤销该 session 的
+automation grant 并取消待决 trust candidate；再复用 `state.dismissSession` 移除该
+local Codex session 的 live card/focus 条目，只对该 session 清 owned passive 气泡、把
+owned 交互审批交还 no-decision（不播放完成音效、不计 recap、不伪造 allow/deny、不伪造
+SessionEnd 统计）。归档证据有效期间，迟到的 official hook / JSONL / passive user-input
+回调被拦截（account quota/context 仍照常摄入）；本地归档任务的 `/permission` 在
+bubble/状态/automation 之前直接 no-decision，交还 Codex 原生审批。归档文件消失
+（unarchive）即解除抑制，恢复正常审批与建卡。remote SSH profile、WSL 与其它 agent
+即使 raw id 相同也不匹配。
+每轮只做一次异步 readdir（names/Set 临时 O(N)，不是恒定开销）并据此检测 unarchive；
+**只对当前 live 候选读 metadata**，每轮至多一个 batch，不为无关历史归档预先索引——当没有
+live 候选且没有已确认 suppression 时 metadata reads 为 0。evidence 与失败指纹缓存都有
+LRU 上限，未变化的坏 live 指纹按指数退避跳过读取、指纹变化立即重验；多个 live 超过
+batch 时用游标跨轮公平推进，避免固定顺序的坏头部饿死尾部；LRU 淘汰只意味着稍后作为 live
+候选重新匹配，不是永久漏项。在应用退役前会对该 live 候选的当前文件再做一次 stat（内容
+变化则完整重验，I/O 错误则保留 suppression），因此等待其它候选校验期间发生的
+unarchive/替换不会被过时缓存误删。无同步热路径扫描；disable/cleanup/根代际变化会作废
+在途异步结果。冷缓存取舍（只索引 live）：本进程尚未确认的已归档会话若收到迟到事件，可能
+先短暂建卡，再由后续扫描移除；轮询基准是 5s，但 batch 积压或文件 I/O 都会增加延迟，因此
+不宣称普遍 ≤5s。已知边界：unarchive 同样依赖普通轮询（默认 5s，I/O 失败会延后识别）；在下一轮
+扫描确认归档文件消失之前，该任务到达的 official hook、JSONL 与 passive user-input 事件仍被
+丢弃（审批请求仍无决定返回），一个很短的 turn 可能整轮都落在这个窗口内，需要窗口之后的
+后续活动才能重建卡片——本次范围不引入事件重放队列，也不宣称立即恢复。`CODEX_HOME` 在
+tracker 实例生命周期内按启动时解析，运行时改动需重启生效。
+
 本机 Codex 注册使用每个 `CODEX_HOME` 下固定的分平台入口。Windows 的固定
 `commandWindows` 使用 PowerShell call-operator 直连：
 `& "node" "codex-hook.js" --clawd-windows-stable`；
@@ -87,6 +125,15 @@ CodeBuddy 状态同步（Claude Code 兼容 hook，command）：
     → HTTP POST 127.0.0.1:<runtime-port>/state { agent_id, session_id, state, event }
     → server-agent-id.js 只接受当前仍注册的 custom ID，enabled gate 决定是否进入状态机
   v1 不支持 /permission；已注册 custom 的权限请求返回 204 no-decision，删除/伪造的 custom- ID 直接拒绝，不能降级成 Claude Code subagent。
+
+Grok Build 状态与通知同步（Claude Code 兼容 hook，command，camelCase stdin，Phase 1 local / main-session / state-only）：
+  Grok 触发 SessionStart / SessionEnd / UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure / Stop / StopFailure / StopCancelled / Notification / PreCompact / PostCompact / PermissionDenied
+    → hooks/grok-hook.js（`hook_event_name` PascalCase 或 `hookEventName` snake_case / `sessionId`；Stop 由 adapter 本地按 reason / backgroundTasks / sessionCrons / stopHookActive 判定 → agents/grok-build.js 映射 → HTTP POST）
+    → src/grok-turn-fence.js bounded in-memory turn fence 仲裁后进入状态机（agent_id: grok-build）
+  Hook 注册到 <GROK_HOME 或 ~/.grok>/hooks/clawd-on-desk.json；所有权是 handler `env.CLAWD_GROK_HOOK=v1`，文件名只做告警。
+  集成为 state + Notification only：不注册 PermissionRequest HTTP hook，adapter 恒输出 `{}`；subagentType 事件直接丢弃。
+  Grok 默认扫描 ~/.claude/settings.json，因此 clawd-hook.js / cursor-hook.js / auto-start.js 只在非空 GROK_HOOK_EVENT 下直接退出，避免假会话。
+  未发布的 PR preview 路径 ~/.grok/hooks/clawd.json 只产生 warning，不自动接管或删除。
 
 WorkBuddy 状态与通知同步（Claude Code 兼容 hook，command）：
   WorkBuddy 触发 SessionStart / SessionEnd / UserPromptSubmit / PreToolUse / PostToolUse / Stop / Notification / PreCompact
@@ -371,6 +418,7 @@ CodeBuddy direct HTTP `PermissionRequest` 不经过 Clawd command hook，因此�
 - `agents/hermes.js` — Hermes Agent plugin 事件映射 + 能力（session、SessionEnd、terminal focus、permission；无 subagent）
 - `agents/registry.js` — agent 注册表：按 ID 或进程名查找 agent 配置
 - `agents/codex-log-monitor.js` — Codex JSONL fallback 增量轮询器（文件监视 + 增量读取 + 状态 / metadata fallback，不再做审批猜测）
+- `src/codex-archive-tracker.js` — 本地 Codex `archived_sessions` 正向归档证据 tracker（有界异步扫描、读后快照复核、generation 作废；无同步热路径）
 - `agents/gemini-log-monitor.js` — legacy Gemini session JSON 轮询器；当前 hook-only 路径不启动
 
 运行时的 agent 安装意图 / 启停 / 权限气泡开关通过 `src/agent-gate.js` 读 `prefs.agents[id].integrationInstalled` / `.enabled` / `.permissionsEnabled`。`enabled` 仍然只表示是否处理该 agent 的事件：关闭会让 `state.js` / `server.js` 停止处理事件、清理 session / bubble；`integrationInstalled` 才表示本机 hook/plugin/extension 是否由 Clawd 维护。snapshot 缺字段时 gate 保守默认 true 以兼容旧版；新安装的 schema 会显式把 Claude Code / Codex 设为已安装且启用，其余 agent 设为未安装且未启用。Claude Code 额外有 `.subagentPermissionsEnabled` 子开关（#451，仅 claude-code 默认条目携带该 flag），控制 Task 子 agent 发起的 PermissionRequest 是否弹泡泡。

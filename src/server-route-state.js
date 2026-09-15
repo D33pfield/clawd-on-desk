@@ -185,6 +185,7 @@ function handleStatePost(req, res, options) {
     shouldDropForDnd,
     codexOfficialTurns,
     dshStateSequenceFence = null,
+    grokTurnFence = null,
     pathApi = path,
     // #627 residual: injectable so unit tests never load the real koffi FFI.
     // Defaults to the real host OS check / a probe that never samples.
@@ -490,6 +491,30 @@ function handleStatePost(req, res, options) {
           ...(trustedProfileId === "local" ? {} : { displayHost: host }),
         });
       }
+      // Local Codex archive lifecycle (#655): once the local task's rollout is
+      // confirmed archived, a late lifecycle hook or passive user-input request
+      // must not recreate its card/focus entry. Quota/context above already
+      // landed, so this only drops session lifecycle. Remote SSH and WSL
+      // sessions are excluded even when their raw id collides.
+      const codexArchiveSuppressed = agentId === "codex"
+        && trustedProfileId === "local"
+        && !host
+        && !wslDistro
+        && !metadataOnly
+        && !(codexUserInput && codexUserInput.phase === "resolved")
+        && typeof ctx.shouldSuppressCodexArchive === "function"
+        && ctx.shouldSuppressCodexArchive(sessionIdentity.rawSessionId, {
+          agentId,
+          profileId: trustedProfileId,
+          host,
+          wslDistro,
+        });
+      if (codexArchiveSuppressed) {
+        recordRequestHookEvent.droppedUnsupported();
+        res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+        res.end();
+        return;
+      }
       if (agentId === "codex" && codexUserInput) {
         const sid = session_id || "default";
         if (codexUserInput.phase === "resolved") {
@@ -560,6 +585,27 @@ function handleStatePost(req, res, options) {
         });
         res.end();
         return;
+      }
+      // Grok Build turn-order fence. Assessed before any lifecycle mutation but
+      // committed only after the synchronous state update succeeds, so a
+      // dropped event returns immediately (no state / recentEvents touched) and
+      // a state-update exception can never mark an un-applied terminal event as
+      // handled.
+      let grokFenceDecision = null;
+      if (agentId === "grok-build" && grokTurnFence && typeof grokTurnFence.assess === "function") {
+        grokFenceDecision = grokTurnFence.assess({
+          sessionId: sessionIdentity.sessionId,
+          event,
+          state,
+          promptId: typeof data.prompt_id === "string" ? data.prompt_id : null,
+          notificationType: typeof data.notification_type === "string" ? data.notification_type : null,
+        });
+        if (!grokFenceDecision.accept) {
+          recordRequestHookEvent.droppedUnsupported();
+          res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+          res.end();
+          return;
+        }
       }
       if (ctx.STATE_SVGS[state]) {
         const sid = session_id || "default";
@@ -875,11 +921,12 @@ function handleStatePost(req, res, options) {
           );
         }
         recordRequestHookEvent.acceptedUnlessDnd(shouldDropForDnd());
+        let sessionUpdateApplied = true;
         if (svg) {
           const safeSvg = pathApi.basename(svg);
           ctx.setState(state, safeSvg);
         } else {
-          ctx.updateSession(sid, state, event, {
+          sessionUpdateApplied = ctx.updateSession(sid, state, event, {
             sourcePid: effectiveProcessMetadata.sourcePid,
             wtHwnd: effectiveWtHwnd,
             cwd,
@@ -936,7 +983,10 @@ function handleStatePost(req, res, options) {
             ...(codexUserInput ? { transientPermissionEvent: true } : {}),
             ...(agentIdentity.defaulted ? { agentIdDefaulted: true } : {}),
             ...(replaceProcessMetadata ? { replaceProcessMetadata: true } : {}),
-          });
+          }) !== false;
+        }
+        if (grokFenceDecision && typeof grokFenceDecision.commit === "function" && sessionUpdateApplied) {
+          grokFenceDecision.commit();
         }
         // Decorative only: the lifecycle update above remains authoritative.
         // Main owns the opt-in / DND / visibility / mini / drag gate; a visual
