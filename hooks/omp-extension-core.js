@@ -224,6 +224,20 @@ function chainDelivery(chains, key, task) {
   return next;
 }
 
+// Sessions deliver on independent chains, which is right for ordinary events:
+// one slow session must not hold up another. A shutdown is different — it is
+// the last thing the process will say. Awaiting only the shutting-down
+// session's chain lets the process exit with another chain still queued,
+// including the synthetic SessionEnd for the conversation this terminal
+// switched away from, which lives on the *old* session's chain. Clawd would
+// then keep a live row for a session nothing will ever report on again. So the
+// shutdown awaits every tail the extension still owes. Tails are read after
+// the shutdown itself is enqueued, and each tail already carries its own
+// predecessors.
+function drainDeliveries(chains) {
+  return Promise.all([...new Set(chains.values())]).then(() => undefined);
+}
+
 function attach(omp, deps = {}) {
   if (!omp || typeof omp.on !== "function") {
     throw new Error("OMP extension API missing on()");
@@ -238,15 +252,15 @@ function attach(omp, deps = {}) {
   // followed by a second, synthetic one.
   let current = null;
 
-  function deliver(payload, waitForDelivery) {
+  function deliver(payload, waitForDelivery, drainAll = false) {
     const sessionKey = payload && payload.session_id ? payload.session_id : `${OMP_AGENT_ID}:default`;
     const task = () => Promise.resolve(postStateFn(payload));
-    if (waitForDelivery) return chainDelivery(deliveryChains, sessionKey, task);
-    chainDelivery(deliveryChains, sessionKey, task);
-    return true;
+    const tail = chainDelivery(deliveryChains, sessionKey, task);
+    if (!waitForDelivery) return true;
+    return drainAll ? drainDeliveries(deliveryChains) : tail;
   }
 
-  function send(state, event, nativeEvent, ctx, waitForDelivery = false) {
+  function send(state, event, nativeEvent, ctx, waitForDelivery = false, drainAll = false) {
     let report;
     try {
       report = shouldReportFn(ctx);
@@ -270,14 +284,16 @@ function attach(omp, deps = {}) {
     }
     current = event === "SessionEnd" ? null : payload;
 
-    return deliver(payload, waitForDelivery);
+    return deliver(payload, waitForDelivery, drainAll);
   }
 
   for (const [nativeName, clawdEvent, state] of DEFAULT_EVENT_BINDINGS) {
     // A completion or a shutdown is the last thing a session says; await
-    // delivery so the process cannot exit with it still queued.
+    // delivery so the process cannot exit with it still queued. A shutdown
+    // additionally drains every other session's tail — see drainDeliveries.
     const wait = nativeName === "session_stop" || nativeName === "session_shutdown";
-    omp.on(nativeName, (nativeEvent, ctx) => send(state, clawdEvent, nativeEvent, ctx, wait));
+    const drainAll = nativeName === "session_shutdown";
+    omp.on(nativeName, (nativeEvent, ctx) => send(state, clawdEvent, nativeEvent, ctx, wait, drainAll));
   }
 
   omp.on("tool_call", (nativeEvent, ctx) => {

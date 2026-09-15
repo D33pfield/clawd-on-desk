@@ -297,6 +297,45 @@ describe("omp-extension-core", () => {
       await omp.fire("session_stop", {}, ctx);
       assert.deepStrictEqual(order, ["UserPromptSubmit", "Stop"]);
     });
+
+    // A switch retires the session being left on that session's own chain.
+    // Awaiting only the shutting-down session's chain lets a shutdown resolve —
+    // and the process exit — while the retirement is still queued behind a slow
+    // post on the other chain, so Clawd keeps a live row for a conversation
+    // nothing will ever report on again.
+    it("drains the other session's tail before a shutdown resolves", async () => {
+      const omp = makeOmp();
+      const order = [];
+      let releaseRetirement = null;
+      core.attach(omp, {
+        postState: (payload) => {
+          if (payload.event === "SessionEnd" && payload.session_id === "omp:first") {
+            return new Promise((resolve) => {
+              releaseRetirement = () => { order.push(payload.event); resolve(true); };
+            });
+          }
+          order.push(payload.event);
+          return true;
+        },
+      });
+
+      const first = makeCtx({ sessionManager: { getSessionId: () => "first" } });
+      const second = makeCtx({ sessionManager: { getSessionId: () => "second" } });
+      omp.fire("session_start", {}, first);
+      await flush();
+      omp.fire("session_switch", {}, second);
+      await flush();
+      assert.strictEqual(typeof releaseRetirement, "function", "the retirement must still be in flight");
+
+      let shutdownSettled = false;
+      const shutdown = omp.fire("session_shutdown", {}, second).then(() => { shutdownSettled = true; });
+      await flush();
+      assert.strictEqual(shutdownSettled, false, "shutdown must not resolve while another chain is still owed");
+
+      releaseRetirement();
+      await shutdown;
+      assert.deepStrictEqual(order, ["SessionStart", "SessionStart", "SessionEnd", "SessionEnd"]);
+    });
   });
 
   // The two cores solve the same problem for forks of the same agent. Keeping
