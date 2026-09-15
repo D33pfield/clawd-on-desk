@@ -139,6 +139,12 @@
       "y": -442,
       "width": 1504,
       "height": 1504
+    },
+    "hash-sage-idle-cloud-play.apng": {
+      "x": 0.0,
+      "y": 0.0,
+      "width": 960.0,
+      "height": 960.0
     }
   },
   "layout": {
@@ -207,6 +213,12 @@
       "hash-sage-roam.apng"
     ]
   },
+  "idleAnimations": [
+    {
+      "file": "hash-sage-idle-cloud-play.apng",
+      "duration": 5389
+    }
+  ],
   "workingTiers": [
     {
       "minSessions": 3,

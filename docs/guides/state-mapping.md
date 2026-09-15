@@ -134,6 +134,7 @@ Hash Sage (哈希仙人) is a built-in APNG theme. It uses the same logical stat
 | State | Hash Sage animation |
 |---|---|
 | idle | 空手待机 — standing breath (approved sample; the full idle set is not final yet) |
+| idle random pool (after 20 s without mouse movement) | 小云捉迷藏 — a little cloud flies in, circles her with a gold trail, plays on her fingertip and flies off; starts and ends on the idle pose |
 | thinking | 掐诀推演 — palm compass turns, code glyphs rise |
 | working (1 session) | 执笔制符 — writes the verification talisman |
 | working (2 sessions) / juggling (1 subagent) | 御剑 · 哈希符文 — twin swords with hash runes |
