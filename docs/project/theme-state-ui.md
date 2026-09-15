@@ -33,7 +33,8 @@ Windows 的 hit window 在原生 activation controller 可用时按前台全屏�
 Clawd 是主题化桌宠：动画资源、计时、hitbox、眼球追踪参数都来自主题配置。
 
 - 内置主题目录：`themes/clawd/`、`themes/calico/`、`themes/cloudling/`、`themes/hash-sage/`；`themes/template/` 是脚手架模板
-- Hash Sage 的坐标约定：根 `viewBox` 就是宠物窗口在规范坐标（标准站姿 960 画布）里的区域，其余普通素材都用 `fileViewBoxes` 声明各自画布与角色缩放；`hash-sage-roam.apng` 的 `fileViewBoxes` 与根 viewBox 相同，因此同一个文件既是 `roam`，也是 pre-entry 的 `mini-crabwalk`（`hasRootViewBoxFileOverride` 让它继续走普通布局）。Mini 素材只走 `objectScale`：`imgWidthRatio 0.5` + `imgOffsetX 0.2585` 与 `miniMode.offsetRatio 0.45` 配合，使素材 58.3% 的墙线正好落在屏幕边；改其中任一数值都要同时重算另外两个
+- Hash Sage 的坐标约定：根 `viewBox` 就是宠物窗口在规范坐标（标准站姿 960 画布）里的区域，其余普通素材都用 `fileViewBoxes` 声明各自画布与角色缩放；`hash-sage-roam.apng` 的 `fileViewBoxes` 与根 viewBox 相同，因此同一个文件既是 `roam`，也是 pre-entry 的 `mini-crabwalk`（`hasRootViewBoxFileOverride` 让它继续走普通布局）。Mini 素材只走 `objectScale`：`imgWidthRatio 0.5` + `imgOffsetX 0.2585` 与 `miniMode.offsetRatio 0.45` 配合，使素材 58.3% 的墙线正好落在屏幕边；改其中任一数值都要同时重算另外两个。Mini 左边缘整只宠物被镜像，所以 `hash-sage-mini-happy-left.apng` / `hash-sage-mini-working-left.apng` 只把卷轴、符纸上的字纹预先镜像（字纹以外与原片逐像素相同），经 `miniMode.leftEdgeFiles` 在左边缘替换，镜像后文字正读
+- `miniMode.leftEdgeFiles`（`{ 原 mini 文件: 左边缘变体 }`）：main 在 `requestDisplayedVisual` 生成显示请求时按当前 Mini 边缘换文件，renderer、结算 ACK 与 committed visual 看到同一个文件；hitbox 仍按原文件解析（变体只改字纹）。只在真正进入 mini 后生效，pre-entry crabwalk 不替换
 - 用户主题目录：`<userData>/themes/<id>/theme.json`
 - `theme.json` 必需状态：`idle`、`working`、`thinking`
 - `states.idle[0]` 是主题默认的 follow-idle；Settings 的“默认待机动画”选项来自该主题声明的 idle 状态与 idle animation pool，并按主题分别持久化到 `prefs.idleVisual`

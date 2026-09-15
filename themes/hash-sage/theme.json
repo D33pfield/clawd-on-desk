@@ -236,7 +236,7 @@
   "timings": {
     "minDisplay": {
       "attention": 5059,
-      "error": 5000,
+      "error": 3600,
       "sweeping": 5500,
       "notification": 5000,
       "carrying": 4042,
@@ -245,7 +245,7 @@
     },
     "autoReturn": {
       "attention": 5059,
-      "error": 5000,
+      "error": 3600,
       "sweeping": 300000,
       "notification": 5000,
       "carrying": 4042
@@ -338,6 +338,18 @@
       "w": 420,
       "h": 900
     },
+    "hash-sage-mini-happy-left.apng": {
+      "x": 190,
+      "y": 30,
+      "w": 420,
+      "h": 900
+    },
+    "hash-sage-mini-working-left.apng": {
+      "x": 190,
+      "y": 30,
+      "w": 420,
+      "h": 900
+    },
     "hash-sage-collapsing.apng": {
       "x": 60,
       "y": 130,
@@ -417,6 +429,10 @@
       "mini-working": [
         "hash-sage-mini-working.apng"
       ]
+    },
+    "leftEdgeFiles": {
+      "hash-sage-mini-happy.apng": "hash-sage-mini-happy-left.apng",
+      "hash-sage-mini-working.apng": "hash-sage-mini-working-left.apng"
     },
     "timings": {
       "minDisplay": {
