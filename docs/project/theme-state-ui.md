@@ -25,14 +25,15 @@ Windows 的 hit window 在原生 activation controller 可用时按前台全屏�
 - DND 模式：跳过 dozing，直接 yawning → collapsing → sleeping；同时屏蔽 hook 事件
 - 隐藏桌宠（petHidden，入口：托盘 / 右键菜单 / 快捷键）：语义是「看不见宠物」而非免打扰——隐藏时收起宠物、Session HUD、update bubble 和当时 pending 的权限气泡（恢复显示时回来），但隐藏期间新到的权限请求仍照常弹气泡，这是有意设计、不要当 bug 修；要连权限气泡都静默是 DND 的职责（它有回终端确认的 fallback）。Allow/Deny 全局快捷键跟随「可见气泡」：隐藏期间只要有可见气泡就保持注册，但只作用于可见的请求，收起的旧气泡不会被盲操作（#601）。petHidden 不持久化，重启恢复显示
 - Windows 全屏自动隐藏会同时收起桌宠与浮层，并压住全屏期间新到的本地权限请求；退出全屏只恢复仍 pending 且未被其他隐藏条件排除的请求。它不同于手动 petHidden 的新请求例外。隐藏本身不产生决定，远程审批通道与用户配置的 auto-close 仍按原合同运行。
-- working 子动画：Clawd 主题为 1 个会话 → typing，2 个 → headphones groove，3+ → building；Calico / Cloudling 仍为 typing / juggling / building
-- juggling 子动画：1 个 subagent → juggling，2+ → conducting
+- working 子动画：Clawd 主题为 1 个会话 → typing，2 个 → headphones groove，3+ → building；Calico / Cloudling 仍为 typing / juggling / building；Hash Sage 为执笔制符 / 御剑哈希符文 / 纸灵忙碌协作
+- juggling 子动画：1 个 subagent → juggling，2+ → conducting（Hash Sage：1 → 御剑哈希符文，2+ → 纸灵忙碌协作）
 
 ## Theme System
 
 Clawd 是主题化桌宠：动画资源、计时、hitbox、眼球追踪参数都来自主题配置。
 
-- 内置主题目录：`themes/clawd/`、`themes/calico/`、`themes/cloudling/`；`themes/template/` 是脚手架模板
+- 内置主题目录：`themes/clawd/`、`themes/calico/`、`themes/cloudling/`、`themes/hash-sage/`；`themes/template/` 是脚手架模板
+- Hash Sage 的坐标约定：根 `viewBox` 就是宠物窗口在规范坐标（标准站姿 960 画布）里的区域，其余普通素材都用 `fileViewBoxes` 声明各自画布与角色缩放；`hash-sage-roam.apng` 的 `fileViewBoxes` 与根 viewBox 相同，因此同一个文件既是 `roam`，也是 pre-entry 的 `mini-crabwalk`（`hasRootViewBoxFileOverride` 让它继续走普通布局）。Mini 素材只走 `objectScale`：`imgWidthRatio 0.5` + `imgOffsetX 0.2585` 与 `miniMode.offsetRatio 0.45` 配合，使素材 58.3% 的墙线正好落在屏幕边；改其中任一数值都要同时重算另外两个
 - 用户主题目录：`<userData>/themes/<id>/theme.json`
 - `theme.json` 必需状态：`idle`、`working`、`thinking`
 - `states.idle[0]` 是主题默认的 follow-idle；Settings 的“默认待机动画”选项来自该主题声明的 idle 状态与 idle animation pool，并按主题分别持久化到 `prefs.idleVisual`
@@ -139,8 +140,8 @@ Mini 状态映射：
 
 权威表格见 `docs/guides/state-mapping.md`。这里只保留实现层面的补充：
 
-- working 子动画：Clawd 主题为 1 会话 → typing，2 → headphones groove，3+ → building；Calico / Cloudling 仍为 typing / juggling / building
-- juggling 子动画：1 subagent → juggling，2+ → conducting
+- working 子动画：Clawd 主题为 1 会话 → typing，2 → headphones groove，3+ → building；Calico / Cloudling 仍为 typing / juggling / building；Hash Sage 为执笔制符 / 御剑哈希符文 / 纸灵忙碌协作
+- juggling 子动画：1 subagent → juggling，2+ → conducting（Hash Sage：1 → 御剑哈希符文，2+ → 纸灵忙碌协作）
 - mini 状态有独立动画槽；`mini-working` 是可选能力
 - 睡眠序列和 DND 行为见上面的 State Machine
 - `attention / error / sweeping / notification / carrying` 是一次性状态，显示后按 `autoReturn` 回退
