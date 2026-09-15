@@ -21,8 +21,12 @@ const MARKER_FILE = ".clawd-managed.json";
 // lifecycle events through Clawd's custom-application channel. OMP would load
 // both and POST twice per event, so its presence blocks this installer.
 const STANDALONE_BRIDGE_FILE = "clawd-on-desk-omp.ts";
-const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".omp", "agent");
-const DEFAULT_EXTENSIONS_DIR = path.join(DEFAULT_PARENT_DIR, "extensions");
+const OMP_CONFIG_DIR_NAME = ".omp";
+const PROFILES_DIR_NAME = "profiles";
+const AGENT_DIR_NAME = "agent";
+const EXTENSIONS_DIR_NAME = "extensions";
+const DEFAULT_PARENT_DIR = path.join(os.homedir(), OMP_CONFIG_DIR_NAME, AGENT_DIR_NAME);
+const DEFAULT_EXTENSIONS_DIR = path.join(DEFAULT_PARENT_DIR, EXTENSIONS_DIR_NAME);
 const DEFAULT_EXTENSION_DIR = path.join(DEFAULT_EXTENSIONS_DIR, EXTENSION_DIR_NAME);
 
 function resolveSourcePath(fileName, baseDir = __dirname) {
@@ -142,9 +146,96 @@ function hasOmpCommand(options = {}) {
   return commandExists("sh", ["-lc", "command -v omp"], { execFileSync });
 }
 
+// OMP resolves user extensions through the ACTIVE agent directory, not a fixed
+// path: the config root is <home>/<PI_CONFIG_DIR or ".omp">, a named profile
+// (OMP_PROFILE ?? PI_PROFILE) lives one level deeper under profiles/<name>, and
+// PI_CODING_AGENT_DIR relocates the profile-less default. Mirroring that here is
+// what keeps install, uninstall, the installation detector and Doctor pointing
+// at the same directory — and at the directory an OMP session will actually
+// load. A directory OMP never reads would otherwise report a successful install.
+//
+// A profile name is a validated slug; OMP ignores an invalid one rather than
+// erroring, so an invalid value is treated as "no profile" here too.
+const PROFILE_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const WINDOWS_RESERVED_NAME_PATTERN = /^(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(?:\..*)?$/i;
+
+function normalizeOmpProfileName(value) {
+  const name = typeof value === "string" ? value.trim() : "";
+  if (!name) return null;
+  if (name === "." || name === ".." || name.endsWith(".")) return null;
+  if (!PROFILE_NAME_PATTERN.test(name)) return null;
+  if (WINDOWS_RESERVED_NAME_PATTERN.test(name)) return null;
+  return name;
+}
+
+function resolveOmpEnvironment(options = {}) {
+  const env = options.env && typeof options.env === "object" ? options.env : process.env;
+  const homeDir = typeof options.homeDir === "string" && options.homeDir
+    ? options.homeDir
+    : os.homedir();
+  const configuredRoot = typeof env.PI_CONFIG_DIR === "string" ? env.PI_CONFIG_DIR.trim() : "";
+  // OMP always joins the name under the home directory, even when the value
+  // looks absolute, so an absolute-looking value must not escape it here.
+  const root = path.join(homeDir, configuredRoot || OMP_CONFIG_DIR_NAME);
+  const profile = normalizeOmpProfileName(env.OMP_PROFILE)
+    || normalizeOmpProfileName(env.PI_PROFILE);
+  return {
+    env,
+    homeDir,
+    root,
+    profile,
+    configRoot: profile ? path.join(root, PROFILES_DIR_NAME, profile) : root,
+  };
+}
+
+// The agent directory OMP would load extensions from for this environment.
+function resolveOmpAgentDir(options = {}) {
+  if (typeof options.parentDir === "string" && options.parentDir) return options.parentDir;
+  const { env, configRoot, profile } = resolveOmpEnvironment(options);
+  const defaultAgentDir = path.join(configRoot, AGENT_DIR_NAME);
+  // An active profile owns its directory outright: OMP ignores
+  // PI_CODING_AGENT_DIR while one is set.
+  if (profile) return defaultAgentDir;
+  const override = typeof env.PI_CODING_AGENT_DIR === "string"
+    ? env.PI_CODING_AGENT_DIR.trim()
+    : "";
+  return override ? path.resolve(override) : defaultAgentDir;
+}
+
+// Every OTHER profile on this machine, i.e. the agent directories this
+// installation does NOT manage. Clawd resolves exactly one, so a machine that
+// runs OMP under a profile loads nothing from it; Doctor says so rather than
+// reporting bare "verified".
+function listOtherOmpProfileAgentDirs(options = {}) {
+  const fsImpl = options.fs || fs;
+  const { root } = resolveOmpEnvironment(options);
+  const managed = path.resolve(resolveOmpAgentDir(options));
+  const profilesDir = path.join(root, PROFILES_DIR_NAME);
+  let entries;
+  try {
+    entries = fsImpl.readdirSync(profilesDir, { withFileTypes: true });
+  } catch {
+    // No profiles directory (the common case) or an fs double without
+    // readdirSync: nothing to report.
+    return [];
+  }
+  const dirs = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry.isDirectory !== "function" || !entry.isDirectory()) continue;
+    const agentDir = path.join(profilesDir, entry.name, AGENT_DIR_NAME);
+    if (path.resolve(agentDir) === managed) continue;
+    if (!dirExists(agentDir, fsImpl)) continue;
+    dirs.push({ profile: entry.name, agentDir });
+  }
+  // readdir order is filesystem-defined; the Doctor detail renders this list,
+  // so pin it to a stable order instead of whatever the directory happens to
+  // return.
+  return dirs.sort((a, b) => a.profile.localeCompare(b.profile));
+}
+
 function resolveExtensionsDir(options = {}) {
   if (options.extensionDir) return path.dirname(options.extensionDir);
-  return path.join(options.parentDir || DEFAULT_PARENT_DIR, "extensions");
+  return path.join(resolveOmpAgentDir(options), EXTENSIONS_DIR_NAME);
 }
 
 // Path of the standalone bridge if the user already runs it, else null.
@@ -155,7 +246,7 @@ function findStandaloneBridge(options = {}) {
 }
 
 function resolveExtensionDir(options = {}) {
-  return options.extensionDir || path.join(options.parentDir || DEFAULT_PARENT_DIR, "extensions", EXTENSION_DIR_NAME);
+  return options.extensionDir || path.join(resolveExtensionsDir(options), EXTENSION_DIR_NAME);
 }
 
 function readSourceFiles(options = {}) {
@@ -172,7 +263,7 @@ function readSourceFiles(options = {}) {
 
 function registerOmpExtension(options = {}) {
   const fsImpl = options.fs || fs;
-  const parentDir = options.parentDir || DEFAULT_PARENT_DIR;
+  const parentDir = resolveOmpAgentDir(options);
   const extensionDir = resolveExtensionDir(options);
   const markerPath = path.join(extensionDir, MARKER_FILE);
   const extensionPath = path.join(extensionDir, EXTENSION_FILE);
@@ -188,8 +279,22 @@ function registerOmpExtension(options = {}) {
 
   const standaloneBridge = findStandaloneBridge({ ...options, extensionDir });
   if (standaloneBridge) {
+    // Clawd may have installed first, with the bridge added afterwards. The
+    // bridge owns the same lifecycle events, so leaving Clawd's copy in place
+    // makes OMP load BOTH and report every event twice. Retire only the copy
+    // this installer verifiably wrote; a foreign directory stays untouched.
+    const oursHere = dirExists(extensionDir, fsImpl)
+      && isManagedMarker(readJsonIfPresent(markerPath, fsImpl));
+    let removedOwnCopy = false;
+    if (oursHere) {
+      fsImpl.rmSync(extensionDir, { recursive: true, force: true });
+      removedOwnCopy = true;
+    }
     if (!options.silent) {
       console.log(`Clawd: ${standaloneBridge} already bridges OMP - skipping`);
+      if (removedOwnCopy) {
+        console.log(`  Removed Clawd's own copy at ${extensionDir} so OMP does not report every event twice`);
+      }
       console.log("  Remove it first if you want Clawd to manage the integration instead.");
     }
     return {
@@ -199,6 +304,7 @@ function registerOmpExtension(options = {}) {
       reason: "standalone-bridge-present",
       extensionDir,
       standaloneBridge,
+      removedOwnCopy,
     };
   }
 
@@ -255,13 +361,17 @@ module.exports = {
   DEFAULT_EXTENSIONS_DIR,
   DEFAULT_PARENT_DIR,
   EXTENSION_DIR_NAME,
+  EXTENSIONS_DIR_NAME,
   EXTENSION_FILE,
   MARKER_FILE,
   buildMarker,
   hasOmpCommand,
   isManagedMarker,
+  listOtherOmpProfileAgentDirs,
   registerOmpExtension,
   resolveExtensionDir,
+  resolveOmpAgentDir,
+  resolveOmpEnvironment,
   resolveSourcePath,
   unregisterOmpExtension,
   writeTextAtomic,

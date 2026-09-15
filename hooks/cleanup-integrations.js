@@ -22,7 +22,7 @@ const {
 const { unregisterOpencodePlugin } = require("./opencode-install");
 const { unregisterMimocodePlugin } = require("./mimocode-install");
 const { unregisterPiExtension } = require("./pi-install");
-const { unregisterOmpExtension } = require("./omp-install");
+const { resolveOmpAgentDir, unregisterOmpExtension } = require("./omp-install");
 const { unregisterOpenClawPlugin } = require("./openclaw-install");
 const { resolveHermesHome, unregisterHermesPlugin } = require("./hermes-install");
 const { unregisterQoderHooks } = require("./qoder-install");
@@ -259,7 +259,10 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       },
       omp: {
         ...common,
-        parentDir: path.join(homeDir, ".omp", "agent"),
+        // Resolved through the installer's own resolver, like Grok below:
+        // a hardcoded default would remove a different directory than the one
+        // the install wrote whenever OMP's environment moves it.
+        parentDir: resolveOmpAgentDir({ homeDir, env }),
       },
       openclaw: {
         ...common,

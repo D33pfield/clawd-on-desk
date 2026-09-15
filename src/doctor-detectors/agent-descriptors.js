@@ -313,8 +313,12 @@ const AGENT_DESCRIPTORS = Object.freeze([
     agentId: "omp",
     agentName: agentName("omp"),
     eventSource: agentEventSource("omp"),
-    parentDir: omp.DEFAULT_PARENT_DIR,
-    configPath: omp.DEFAULT_EXTENSION_DIR,
+    // Resolved once, like DeepSeek Harness above: OMP's extension directory
+    // moves with PI_CONFIG_DIR / PI_CODING_AGENT_DIR / OMP_PROFILE, and install,
+    // the installation detector and Doctor must all judge the directory OMP
+    // would actually load rather than a fixed one.
+    parentDir: omp.resolveOmpAgentDir(),
+    configPath: omp.resolveExtensionDir(),
     configMode: "omp-extension",
     autoInstall: true,
     marker: omp.EXTENSION_FILE,
