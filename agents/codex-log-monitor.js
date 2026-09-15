@@ -2139,6 +2139,7 @@ class CodexLogMonitor {
       agentPid: extra && Object.prototype.hasOwnProperty.call(extra, "agentPid")
         ? extra.agentPid
         : agentPid,
+      transcriptPath: tracked.filePath,
       sessionTitle: tracked.sessionTitle,
       codexOriginator: tracked.codexOriginator || null,
       codexSource: tracked.codexSource || null,

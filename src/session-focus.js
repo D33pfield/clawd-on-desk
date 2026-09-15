@@ -13,6 +13,8 @@ function normalizeOsPlatform(options) {
 }
 
 function getCodexThreadUrl(entry) {
+  const originator = entry && (entry.codexOriginator || entry.originator);
+  if (!isCodexDesktopOriginator(originator)) return null;
   const threadId = getCodexThreadId(entry);
   // `codex queue --thread` accepts exact saved names, but the Desktop deep-link
   // contract is only established for UUIDs. Keep focus narrower than delivery

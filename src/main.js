@@ -3767,6 +3767,7 @@ async function initTelegramMigrationController() {
   } = require("./telegram-direct-send");
   const { createWindowsConsoleInputDeliveryAdapter } = require("./windows-console-input");
   const { createCodexQueueDeliveryAdapter } = require("./codex-queue-delivery");
+  const { deriveCodexHomeFromTranscriptPath } = require("./codex-thread-id");
   const {
     isCodexCliOriginator,
     isCodexDesktopOriginator,
@@ -3786,6 +3787,12 @@ async function initTelegramMigrationController() {
         return {
           ...entry,
           agentPid: runtimeEntry && runtimeEntry.agentPid || null,
+          // Direct Send keeps this main-process-only. It is derived from the
+          // authoritative rollout path and never enters the shared UI snapshot.
+          codexHome: deriveCodexHomeFromTranscriptPath(
+            runtimeEntry && runtimeEntry.transcriptPath,
+            process.platform,
+          ),
         };
       }),
     };
@@ -3804,11 +3811,13 @@ async function initTelegramMigrationController() {
       if (!entry || entry.agentId !== "codex") return windowsConsoleDeliveryAdapter;
       const originator = entry.codexOriginator || entry.originator;
       if (isCodexDesktopOriginator(originator)) return codexQueueDeliveryAdapter;
+      if (isCodexCliOriginator(originator) && entry.codexHome) return codexQueueDeliveryAdapter;
+      // A CLI session without store provenance keeps the established Windows
+      // Console path. On other hosts that adapter fails into clipboard fallback.
       if (isCodexCliOriginator(originator)) return windowsConsoleDeliveryAdapter;
-      // Codex Desktop app-server processes can be shared by several threads.
-      // An unknown originator therefore must not inherit the CLI Console path.
-      // The queue adapter rejects non-Desktop targets through canDeliver(),
-      // which sends this reply to the clipboard fallback without OS input.
+      // An unknown originator must not inherit a known Codex delivery path.
+      // The queue adapter rejects it through canDeliver(), which sends this
+      // reply to the clipboard fallback without injecting OS input.
       return codexQueueDeliveryAdapter;
     },
     fallbackAdapter: createClipboardFallbackDeliveryAdapter({ clipboard }),

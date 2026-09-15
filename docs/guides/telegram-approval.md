@@ -120,30 +120,36 @@ ids, proxy addresses, or Telegram response bodies.
   older notification for that session; a completion notification created after
   that submission remains replyable. Changing the bot token, recipient, or
   resolved chat also clears existing mappings.
-- For an eligible local Windows session, Clawd uses the session's agent PID to
-  attach to its Windows Console/ConPTY input and writes the single-line Unicode
-  reply followed by Enter. Successful delivery does not switch the foreground
-  window and does not read or write the system clipboard. Reply deliveries are
-  serialized so concurrent Telegram messages cannot interleave.
-- Codex Desktop sessions use Codex's thread queue instead of the shared
-  app-server Console. Clawd extracts the exact thread UUID or saved thread name
-  from the mapped completion session and runs
+- Known local Codex Desktop and Codex CLI sessions use Codex's durable thread
+  queue instead of Console input. Clawd extracts the exact thread UUID or saved
+  thread name from the mapped completion session and runs
   `codex queue --thread <THREAD> --message <TEXT>`; the reply is then picked up
-  by that Desktop conversation without depending on which app-server PID is
-  shared by other sessions. Ordinary Codex CLI sessions continue to use their
-  own local Console/ConPTY input. While at least one current completion mapping
-  remains replyable, Clawd retains the completed Codex Desktop session beyond
-  the normal idle-session cutoff. Mapping expiry, submission, route changes,
-  or disabling Direct Send restores the normal cleanup behavior.
+  by that exact conversation and submitted by Codex itself. This avoids shared
+  app-server processes, composer paste-burst handling, and local keyboard input
+  interleaving with an injected Enter. Codex CLI 0.154.0 or newer is required;
+  when the queue command is unavailable or unsupported, Clawd copies the reply
+  to the clipboard without injecting text or Enter. If Clawd cannot derive the
+  session's Codex store, a Windows CLI session retains the Console path instead.
+  While at least one current completion mapping remains replyable, Clawd retains
+  the completed Codex session beyond the normal idle-session cutoff. Mapping
+  expiry, submission, route changes, or disabling Direct Send restores normal
+  cleanup behavior.
+- For other eligible local Windows sessions, Clawd uses the session's agent PID
+  to attach to its Windows Console/ConPTY input and writes the single-line
+  Unicode reply followed by Enter. Successful delivery does not switch the
+  foreground window and does not read or write the system clipboard. Reply
+  deliveries are serialized so concurrent Telegram messages cannot interleave.
 - Terminal tabs or panes backed by independent ConPTY instances have separate
   consoles and can be targeted independently. If another live Clawd session
   shares the same Console as the target, Clawd treats the target as ambiguous,
   skips automatic submission, and copies the reply to the clipboard for manual
   paste. Text already present in the target terminal composer, or typed locally
   at the same time, may be combined with the injected reply before Enter.
-- WSL, remote, headless, and non-Windows sessions use clipboard fallback, as do
-  sessions without a usable agent PID and replies containing multiple lines.
-  Clipboard fallback never injects paste or Enter.
+- Outside the Codex queue path, WSL, remote, headless, and non-Windows sessions
+  use clipboard fallback, as do sessions without a usable agent PID and replies
+  containing multiple lines. A Codex CLI session whose store cannot be derived
+  keeps the Windows Console path when available. Clipboard fallback never injects
+  paste or Enter.
 - Before writing input, Clawd rechecks that the mapped session is still the same
   live, completed local session and is not waiting for an interactive permission
   decision. A reused session id or changed session state is not submitted to a

@@ -79,19 +79,38 @@ test("Telegram completion mappings capture the live agent PID outside the snapsh
   assert.match(source, /agentPid:\s*runtimeEntry\s*&&\s*runtimeEntry\.agentPid/);
 });
 
-test("Telegram Codex delivery uses Console only for a known CLI originator", () => {
+test("Telegram Codex delivery binds known CLI sessions to their store before queueing", () => {
   const start = MAIN_SOURCE.indexOf("const windowsConsoleDeliveryAdapter =");
   const end = MAIN_SOURCE.indexOf("\n    fallbackAdapter:", start);
   assert.ok(start >= 0 && end > start, "Telegram adapter selection wiring should exist");
   const source = MAIN_SOURCE.slice(start, end);
 
-  assert.match(source, /isCodexDesktopOriginator\(originator\)[\s\S]*return codexQueueDeliveryAdapter/);
-  assert.match(source, /isCodexCliOriginator\(originator\)[\s\S]*return windowsConsoleDeliveryAdapter/);
   assert.match(
     source,
-    /isCodexCliOriginator\(originator\)[\s\S]*return codexQueueDeliveryAdapter;\s*\n\s*\}/,
+    /isCodexDesktopOriginator\(originator\)[\s\S]*return codexQueueDeliveryAdapter/,
+  );
+  assert.match(
+    source,
+    /isCodexCliOriginator\(originator\)\s*&&\s*entry\.codexHome[\s\S]*return codexQueueDeliveryAdapter/,
+  );
+  assert.match(
+    source,
+    /CLI session without store provenance[\s\S]*return windowsConsoleDeliveryAdapter/,
+  );
+  assert.match(
+    source,
+    /unknown originator[\s\S]*return codexQueueDeliveryAdapter;\s*\n\s*\}/,
     "unknown Codex originators must use the queue guard and fall back instead of reaching Console",
   );
+});
+
+test("Telegram Direct Send derives Codex home outside the shared snapshot", () => {
+  const start = MAIN_SOURCE.indexOf("const getTelegramDirectSendSnapshot =");
+  const end = MAIN_SOURCE.indexOf("\n  const windowsConsoleDeliveryAdapter =", start);
+  assert.ok(start >= 0 && end > start, "Direct Send snapshot adapter should exist");
+  const source = MAIN_SOURCE.slice(start, end);
+  assert.match(source, /runtimeEntry\s*&&\s*runtimeEntry\.transcriptPath/);
+  assert.match(source, /deriveCodexHomeFromTranscriptPath/);
 });
 
 test("Telegram polling offset resets only when the bot token identity changes", () => {

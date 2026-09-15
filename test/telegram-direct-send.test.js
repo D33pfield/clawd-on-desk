@@ -1502,6 +1502,38 @@ test("direct send reports a completion mapping as replyable only until it expire
   assert.equal(direct._mappings.size, 0);
 });
 
+test("direct send derives the Codex store when checking a raw retained session", () => {
+  const codexHome = "C:\\Users\\tester\\.codex-work";
+  const target = localTerminalEntry({
+    id: "codex:11111111-1111-4111-8111-111111111111",
+    rawSessionId: "11111111-1111-4111-8111-111111111111",
+    agentId: "codex",
+    codexOriginator: "codex_cli_rs",
+    codexHome,
+  });
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    osPlatform: "win32",
+  });
+  const context = direct.createCompletionNotificationContext(target);
+
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 431,
+    sessionId: target.id,
+    notificationContext: context,
+  }), true);
+  assert.equal(direct.hasReplyableCompletionMapping(target.id, {
+    ...target,
+    codexHome: undefined,
+    transcriptPath: `${codexHome}\\sessions\\2026\\09\\15\\rollout.jsonl`,
+  }), true);
+  assert.equal(direct.hasReplyableCompletionMapping(target.id, {
+    ...target,
+    codexHome: undefined,
+    transcriptPath: "C:\\Users\\tester\\.codex-other\\sessions\\2026\\09\\15\\rollout.jsonl",
+  }), false);
+});
+
 test("direct send stops reporting completion mappings after their native route changes", () => {
   let routeGeneration = 31;
   const target = localTerminalEntry({ id: "sess-route-retained", agentPid: 4331 });
@@ -2021,8 +2053,12 @@ test("direct send does not reuse a completion mapping after native polling resta
   assert.equal(direct._mappings.size, 0);
 });
 
-test("direct send captures the terminal identity when the completion is observed", async () => {
-  const original = localTerminalEntry({ id: "sess-captured-identity", agentPid: 2111 });
+test("direct send captures the terminal and Codex store identity when completion is observed", async () => {
+  const original = localTerminalEntry({
+    id: "sess-captured-identity",
+    agentPid: 2111,
+    codexHome: "C:\\Users\\tester\\.codex",
+  });
   let current = original;
   const direct = createTelegramDirectSend({
     isEnabled: () => true,
@@ -2038,7 +2074,7 @@ test("direct send captures the terminal identity when the completion is observed
   // Simulate the Telegram send completing after the session id was reused by
   // a new agent process. Registration must retain the identity from the
   // completion snapshot, rather than the later callback arguments.
-  current = { ...original, agentPid: 3222 };
+  current = { ...original, agentPid: 3222, codexHome: "D:\\reused-codex" };
   assert.equal(direct.registerCompletionNotification({
     messageId: 9613,
     chatId: "123",
@@ -2046,6 +2082,9 @@ test("direct send captures the terminal identity when the completion is observed
     agentPid: current.agentPid,
     notificationContext: context,
   }), true);
+  const mapping = direct._mappings.values().next().value;
+  assert.equal(mapping.agentPid, 2111);
+  assert.equal(mapping.codexHome, "C:\\Users\\tester\\.codex");
 
   const result = await direct.handleTextMessage({
     text: "must not target the reused process",
@@ -2506,6 +2545,7 @@ test("direct send rejects a reused session when mapped UI identity changes", asy
     ["wtHwnd", "12346"],
     ["orcaPaneKey", "window:new-pane"],
     ["codexOriginator", "codex_work_desktop"],
+    ["codexHome", "D:\\Codex-New"],
   ];
 
   for (let index = 0; index < identityFields.length; index += 1) {
@@ -2521,6 +2561,7 @@ test("direct send rejects a reused session when mapped UI identity changes", asy
       wtHwnd: "12345",
       orcaPaneKey: "window:old-pane",
       codexOriginator: "codex-tui",
+      codexHome: "D:\\Codex-Old",
     });
     let current = original;
     const deliveries = [];
@@ -2549,6 +2590,7 @@ test("direct send rejects a reused session when mapped UI identity changes", asy
       wtHwnd: original.wtHwnd,
       orcaPaneKey: original.orcaPaneKey,
       codexOriginator: original.codexOriginator,
+      codexHome: original.codexHome,
     });
     current = { ...original, [field]: replacement };
 
@@ -2562,65 +2604,73 @@ test("direct send rejects a reused session when mapped UI identity changes", asy
   }
 });
 
-test("direct send routes Codex Desktop replies through a focusless queue adapter", async () => {
-  const threadId = "019e115a-4df2-7ed0-b90e-8e6345aca777";
-  const desktop = localTerminalEntry({
-    id: `codex:${threadId}`,
-    rawSessionId: `codex:${threadId}`,
-    agentId: "codex",
-    codexOriginator: "codex_work_desktop",
-    sourcePid: null,
-    agentPid: 14220,
-  });
-  const focused = [];
-  const delivered = [];
-  const consoleAdapter = {
-    deliver: async () => {
-      throw new Error("Desktop replies must not use Console input");
-    },
-  };
-  const queueAdapter = {
-    requiresFocus: false,
-    requiresFocusableTarget: false,
-    requiresMappedAgentPid: false,
-    requiresPidDisambiguation: false,
-    canDeliver: (entry) => entry && entry.codexOriginator === "codex_work_desktop",
-    deliver: async (payload) => {
-      delivered.push({ sessionId: payload.sessionId, promptText: payload.promptText });
-      return { status: "queued", delivered: true, autoEnter: true };
-    },
-  };
-  const direct = createTelegramDirectSend({
-    isEnabled: () => true,
-    getSessionSnapshot: () => ({ sessions: [desktop] }),
-    focusSession: (sessionId) => {
-      focused.push(sessionId);
-      return confirmedFocusResult();
-    },
-    deliveryAdapter: consoleAdapter,
-    getDeliveryAdapter: ({ entry }) => entry.agentId === "codex" ? queueAdapter : consoleAdapter,
-    osPlatform: "win32",
-  });
+test("direct send routes known Codex Desktop and CLI replies through the focusless queue", async () => {
+  for (const [codexOriginator, messageId] of [
+    ["codex_work_desktop", 9971],
+    ["codex-tui", 9972],
+  ]) {
+    const threadId = "019e115a-4df2-7ed0-b90e-8e6345aca777";
+    const session = localTerminalEntry({
+      id: `codex:${threadId}`,
+      rawSessionId: `codex:${threadId}`,
+      agentId: "codex",
+      codexOriginator,
+      codexHome: codexOriginator === "codex-tui" ? "C:\\Users\\tester\\.codex" : null,
+      sourcePid: codexOriginator === "codex-tui" ? 14220 : null,
+      agentPid: 14220,
+    });
+    const focused = [];
+    const delivered = [];
+    const consoleAdapter = {
+      deliver: async () => {
+        throw new Error("Known Codex replies must not use Console input");
+      },
+    };
+    const queueAdapter = {
+      requiresFocus: false,
+      requiresFocusableTarget: false,
+      requiresMappedAgentPid: false,
+      requiresPidDisambiguation: false,
+      canDeliver: (entry) => entry && ["codex_work_desktop", "codex-tui"].includes(entry.codexOriginator),
+      deliver: async (payload) => {
+        delivered.push({ sessionId: payload.sessionId, promptText: payload.promptText });
+        return { status: "queued", delivered: true, autoEnter: true };
+      },
+    };
+    const direct = createTelegramDirectSend({
+      isEnabled: () => true,
+      getSessionSnapshot: () => ({ sessions: [session] }),
+      focusSession: (sessionId) => {
+        focused.push(sessionId);
+        return confirmedFocusResult();
+      },
+      deliveryAdapter: consoleAdapter,
+      getDeliveryAdapter: ({ entry }) => entry.agentId === "codex" ? queueAdapter : consoleAdapter,
+      osPlatform: "win32",
+    });
 
-  assert.equal(direct.registerCompletionNotification({
-    messageId: 9971,
-    sessionId: desktop.id,
-    agentId: desktop.agentId,
-    agentPid: desktop.agentPid,
-  }), true);
-  const result = await direct.handleTextMessage({
-    text: "Please continue from Telegram",
-    replyToMessageId: 9971,
-  });
+    assert.equal(direct.registerCompletionNotification({
+      messageId,
+      sessionId: session.id,
+      agentId: session.agentId,
+      sourcePid: session.sourcePid,
+      agentPid: session.agentPid,
+      codexOriginator: session.codexOriginator,
+    }), true);
+    const result = await direct.handleTextMessage({
+      text: "Please continue from Telegram",
+      replyToMessageId: messageId,
+    });
 
-  assert.equal(result.status, "queued");
-  assert.equal(result.deliveryResult.status, "queued");
-  assert.match(result.text, /Codex session/);
-  assert.deepEqual(focused, []);
-  assert.deepEqual(delivered, [{
-    sessionId: desktop.id,
-    promptText: "Please continue from Telegram",
-  }]);
+    assert.equal(result.status, "queued", codexOriginator);
+    assert.equal(result.deliveryResult.status, "queued", codexOriginator);
+    assert.match(result.text, /Codex session/);
+    assert.deepEqual(focused, []);
+    assert.deepEqual(delivered, [{
+      sessionId: session.id,
+      promptText: "Please continue from Telegram",
+    }]);
+  }
 });
 
 test("direct send revalidates every Codex queue candidate before submission", async () => {

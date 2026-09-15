@@ -5,6 +5,10 @@ const test = require("node:test");
 
 const { makeSessionKey } = require("../src/session-key");
 const {
+  deriveCodexHomeFromTranscriptPath,
+  normalizeCodexHome,
+} = require("../src/codex-thread-id");
+const {
   classifyQueueError,
   createCodexQueueDeliveryAdapter,
   getCodexThreadId,
@@ -45,6 +49,15 @@ test("Codex queue target extraction accepts raw and profile-scoped session keys"
   assert.equal(getCodexThreadId(rawEntry), THREAD_ID);
   assert.equal(isCodexQueueTarget(rawEntry), true);
 
+  const cliEntry = desktopEntry({
+    codexOriginator: "codex-tui",
+    codexHome: "C:\\Users\\tester\\.codex",
+    sourcePid: 16200,
+    agentPid: 16200,
+  });
+  assert.equal(getCodexThreadId(cliEntry), THREAD_ID);
+  assert.equal(isCodexQueueTarget(cliEntry), true);
+
   const rawSessionId = `codex:${THREAD_ID}`;
   const scopedEntry = desktopEntry({
     id: makeSessionKey({ profileId: "local", rawSessionId }),
@@ -62,19 +75,65 @@ test("Codex queue target extraction accepts raw and profile-scoped session keys"
   assert.equal(getCodexThreadId(desktopEntry({ id: "s1.local.not-valid", rawSessionId: null })), null);
 });
 
-test("Codex queue target rejects remote, hidden, and non-Desktop sessions", () => {
+test("Codex home derivation accepts only canonical rollout layouts", () => {
+  assert.equal(
+    deriveCodexHomeFromTranscriptPath(
+      "C:\\Users\\tester\\custom-codex\\sessions\\2026\\09\\15\\rollout-test.jsonl",
+      "win32",
+    ),
+    "C:\\Users\\tester\\custom-codex",
+  );
+  assert.equal(
+    deriveCodexHomeFromTranscriptPath(
+      "/home/tester/custom-codex/sessions/2026/09/15/rollout-test.jsonl",
+      "linux",
+    ),
+    "/home/tester/custom-codex",
+  );
+  assert.equal(deriveCodexHomeFromTranscriptPath("C:\\tmp\\rollout-test.jsonl", "win32"), null);
+  assert.equal(normalizeCodexHome("relative\\codex", "win32"), null);
+});
+
+test("Codex queue target rejects remote, hidden, and unknown-originator sessions", () => {
   for (const overrides of [
     { host: "remote-box" },
     { hiddenFromHud: true },
     { headless: true },
     { state: "sleeping" },
-    { codexOriginator: "codex-tui" },
+    { codexOriginator: "codex-tui", codexHome: null },
+    { codexOriginator: "future-unknown-client" },
     { rawSessionId: "codex:\nnot-a-thread" },
     { wslDistro: "Ubuntu" },
     { platform: "WSL" },
   ]) {
     assert.equal(isCodexQueueTarget(desktopEntry(overrides)), false, JSON.stringify(overrides));
   }
+});
+
+test("Codex CLI queue delivery binds the child to its session store", async () => {
+  const calls = [];
+  const adapter = createCodexQueueDeliveryAdapter({
+    executable: "codex.exe",
+    osPlatform: "win32",
+    env: { CODEX_HOME: "C:\\Users\\tester\\.codex" },
+    execFile: (command, args, options, callback) => {
+      calls.push({ command, args, options });
+      callback(null, "queued", "");
+    },
+  });
+  const entry = desktopEntry({
+    codexOriginator: "codex-tui",
+    codexHome: "D:\\isolated-codex",
+    sourcePid: null,
+    agentPid: null,
+  });
+
+  assert.equal(adapter.canDeliver(entry), true);
+  const result = await adapter.deliver({ entry, promptText: "continue" });
+
+  assert.equal(result.status, "queued");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.env.CODEX_HOME, "D:\\isolated-codex");
 });
 
 test("Codex queue adapter passes the exact thread and message arguments without a shell", async () => {

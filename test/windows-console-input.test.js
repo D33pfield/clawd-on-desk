@@ -342,10 +342,20 @@ test("Windows console adapter quarantines after kill confirmation times out and 
     },
   });
 
-  const uncertain = await adapter.deliver({
+  const uncertainDelivery = adapter.deliver({
     promptText: "continue",
     entry: { agentPid: 1234 },
   });
+  // Production helper timers are intentionally unref'ed. Keep this test's
+  // event loop alive until the promise settles so scheduler timing cannot
+  // cancel the test before the quarantine transition is observed.
+  const keepAlive = setInterval(() => {}, 50);
+  let uncertain;
+  try {
+    uncertain = await uncertainDelivery;
+  } finally {
+    clearInterval(keepAlive);
+  }
   assert.equal(uncertain.errorClass, "console_input_result_unknown");
   assert.deepEqual(kills, [true, "SIGKILL"]);
 

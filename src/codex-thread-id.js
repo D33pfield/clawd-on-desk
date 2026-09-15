@@ -1,6 +1,10 @@
 "use strict";
 
-const { isCodexDesktopOriginator } = require("../hooks/codex-originator");
+const path = require("path");
+const {
+  isCodexCliOriginator,
+  isCodexDesktopOriginator,
+} = require("../hooks/codex-originator");
 
 const CODEX_THREAD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CODEX_PREFIX = "codex:";
@@ -10,6 +14,8 @@ const SESSION_KEY_PREFIX = "s1.";
 // allowing the Unicode, spaces, punctuation, and emoji used by real titles.
 const CODEX_THREAD_NAME_MAX_LENGTH = 512;
 const CODEX_THREAD_NAME_INVALID_RE = /[\u0000-\u001f\u007f\ufffd]/u;
+const CODEX_PATH_MAX_LENGTH = 4096;
+const CODEX_PATH_INVALID_RE = /[\u0000-\u001f\u007f\ufffd]/u;
 
 function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -28,6 +34,36 @@ function normalizeCodexThreadId(value) {
   return CODEX_THREAD_ID_RE.test(text) ? text.toLowerCase() : text;
 }
 
+function normalizeCodexHome(value, platform = process.platform) {
+  if (typeof value !== "string" || CODEX_PATH_INVALID_RE.test(value)) return null;
+  const text = value.trim();
+  if (!text || text.length > CODEX_PATH_MAX_LENGTH) return null;
+  const pathModule = platform === "win32" ? path.win32 : path.posix;
+  if (!pathModule.isAbsolute(text)) return null;
+  const normalized = pathModule.normalize(text);
+  return normalized !== pathModule.parse(normalized).root ? normalized : null;
+}
+
+function deriveCodexHomeFromTranscriptPath(value, platform = process.platform) {
+  if (typeof value !== "string" || CODEX_PATH_INVALID_RE.test(value)) return null;
+  const text = value.trim();
+  if (!text || text.length > CODEX_PATH_MAX_LENGTH) return null;
+  const pathModule = platform === "win32" ? path.win32 : path.posix;
+  if (!pathModule.isAbsolute(text)) return null;
+
+  const dayDir = pathModule.dirname(text);
+  const monthDir = pathModule.dirname(dayDir);
+  const yearDir = pathModule.dirname(monthDir);
+  const sessionsDir = pathModule.dirname(yearDir);
+  if (!/^\d{2}$/.test(pathModule.basename(dayDir))
+    || !/^\d{2}$/.test(pathModule.basename(monthDir))
+    || !/^\d{4}$/.test(pathModule.basename(yearDir))
+    || pathModule.basename(sessionsDir).toLowerCase() !== "sessions") {
+    return null;
+  }
+  return normalizeCodexHome(pathModule.dirname(sessionsDir), platform);
+}
+
 function decodeSessionKeyRawId(value) {
   const text = normalizeString(value);
   if (!text.startsWith(SESSION_KEY_PREFIX)) return null;
@@ -43,7 +79,8 @@ function decodeSessionKeyRawId(value) {
 
 function getCodexThreadId(entry) {
   if (!entry || entry.agentId !== "codex") return null;
-  if (!isCodexDesktopOriginator(entry.codexOriginator || entry.originator)) return null;
+  const originator = entry.codexOriginator || entry.originator;
+  if (!isCodexDesktopOriginator(originator) && !isCodexCliOriginator(originator)) return null;
 
   // rawSessionId is the authoritative Codex thread identity whenever it is
   // present. Do not silently switch to a stale canonical key when metadata
@@ -66,9 +103,12 @@ function getCodexThreadId(entry) {
   return null;
 }
 
-function isCodexQueueTarget(entry) {
+function isCodexQueueTarget(entry, options = {}) {
+  const originator = entry && (entry.codexOriginator || entry.originator);
+  const platform = options.platform || process.platform;
   return !!getCodexThreadId(entry)
     && !!entry
+    && (!isCodexCliOriginator(originator) || !!normalizeCodexHome(entry.codexHome, platform))
     && !entry.host
     // A WSL hook can report a Codex Desktop originator while its rollout and
     // queue store live in Linux. Running the Windows queue CLI here would
@@ -85,7 +125,9 @@ function isCodexQueueTarget(entry) {
 module.exports = {
   CODEX_THREAD_ID_RE,
   decodeSessionKeyRawId,
+  deriveCodexHomeFromTranscriptPath,
   getCodexThreadId,
   isCodexQueueTarget,
+  normalizeCodexHome,
   normalizeCodexThreadId,
 };

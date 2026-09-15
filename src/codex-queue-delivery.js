@@ -7,6 +7,7 @@ const { execFile: defaultExecFile } = require("child_process");
 const {
   getCodexThreadId,
   isCodexQueueTarget,
+  normalizeCodexHome,
   normalizeCodexThreadId,
 } = require("./codex-thread-id");
 
@@ -303,8 +304,9 @@ function resolveCodexQueueExecutableCandidates({
     const codexHome = normalizeExecutable(read("CODEX_HOME"))
       || pathModule.join(homeDir || "", ".codex");
     const roots = [
-      // This adapter is selected only for a Codex Desktop-originated session,
-      // so prefer the app-managed runtime that owns the active thread store.
+      // This adapter is selected only for a known local Codex Desktop or CLI
+      // session. Prefer the app-managed runtime because it is queue-capable
+      // and shares the authoritative local thread store.
       pathModule.join(localAppData, "OpenAI", "Codex", "bin"),
       // Official standalone installer layout. Keep this ahead of PATH because
       // an old npm/Scoop shim can shadow the native queue-capable binary.
@@ -463,12 +465,12 @@ function createCodexQueueDeliveryAdapter({
     try { log(level, message, meta); } catch {}
   }
 
-  function candidates() {
+  function candidates(candidateEnv) {
     const configured = Array.isArray(executableCandidates)
       ? executableCandidates
       : resolveCodexQueueExecutableCandidates({
         platform: osPlatform,
-        env: executionEnv,
+        env: candidateEnv,
         fsModule,
         homeDir,
       });
@@ -485,9 +487,13 @@ function createCodexQueueDeliveryAdapter({
       return { status: "failed", delivered: false, errorClass: "direct_send_cancelled" };
     }
     const entry = payload.entry;
-    if (!isCodexQueueTarget(entry)) {
+    if (!isCodexQueueTarget(entry, { platform: osPlatform })) {
       return { status: "failed", delivered: false, errorClass: "codex_thread_id_invalid" };
     }
+    const codexHome = normalizeCodexHome(entry.codexHome, osPlatform);
+    const deliveryEnv = codexHome
+      ? mergedExecutionEnv({ ...executionEnv, CODEX_HOME: codexHome }, osPlatform)
+      : executionEnv;
     const threadId = getCodexThreadId(entry);
     const promptText = typeof payload.promptText === "string" ? payload.promptText : "";
     if (!threadId || !normalizeCodexThreadId(threadId)) {
@@ -499,7 +505,7 @@ function createCodexQueueDeliveryAdapter({
 
     const args = ["queue", `--thread=${threadId}`, `--message=${promptText}`];
     const failures = [];
-    for (const candidate of candidates()) {
+    for (const candidate of candidates(deliveryEnv)) {
       if (payload.signal && payload.signal.aborted) {
         return { status: "failed", delivered: false, errorClass: "direct_send_cancelled" };
       }
@@ -540,7 +546,7 @@ function createCodexQueueDeliveryAdapter({
           timeout: effectiveTimeout(timeoutMs),
           maxBuffer: Math.max(1024, Number(maxBuffer) || MAX_BUFFER_BYTES),
           encoding: "utf8",
-          env: executionEnv,
+          env: deliveryEnv,
           ...invocation.options,
           ...(payload.signal ? { signal: payload.signal } : {}),
         });
@@ -589,7 +595,7 @@ function createCodexQueueDeliveryAdapter({
     requiresMappedAgentPid: false,
     requiresFocusableTarget: false,
     requiresPidDisambiguation: false,
-    canDeliver: isCodexQueueTarget,
+    canDeliver: (entry) => isCodexQueueTarget(entry, { platform: osPlatform }),
     deliver,
   };
 }

@@ -39,6 +39,7 @@ function buildCodexMonitorSessionOptions(extra, options = {}) {
   if (Object.prototype.hasOwnProperty.call(input, "sourcePid")) out.sourcePid = input.sourcePid;
   if (Object.prototype.hasOwnProperty.call(input, "agentPid")) out.agentPid = input.agentPid;
   if (Object.prototype.hasOwnProperty.call(input, "pidChain")) out.pidChain = input.pidChain;
+  if (Object.prototype.hasOwnProperty.call(input, "transcriptPath")) out.transcriptPath = input.transcriptPath;
   if (Object.prototype.hasOwnProperty.call(input, "codexOriginator")) out.codexOriginator = input.codexOriginator;
   if (Object.prototype.hasOwnProperty.call(input, "codexSource")) out.codexSource = input.codexSource;
   if (options.includeRecap === true) {

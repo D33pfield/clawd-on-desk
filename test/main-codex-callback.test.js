@@ -110,6 +110,7 @@ describe("Codex monitor callback helpers", () => {
       sourcePid: 11,
       agentPid: 22,
       pidChain: [22, 11],
+      transcriptPath: "C:\\Users\\tester\\.codex\\sessions\\2026\\09\\15\\rollout.jsonl",
       codexOriginator: "Codex Desktop",
       codexSource: "vscode",
     }, { includeHeadless: true }), {
@@ -119,6 +120,7 @@ describe("Codex monitor callback helpers", () => {
       sourcePid: 11,
       agentPid: 22,
       pidChain: [22, 11],
+      transcriptPath: "C:\\Users\\tester\\.codex\\sessions\\2026\\09\\15\\rollout.jsonl",
       codexOriginator: "Codex Desktop",
       codexSource: "vscode",
       headless: false,

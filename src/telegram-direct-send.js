@@ -9,6 +9,7 @@ const {
 } = require("./session-focus");
 const { createTranslator } = require("./i18n");
 const { isPassiveNotifyEntry } = require("./passive-notify-entry");
+const { deriveCodexHomeFromTranscriptPath } = require("./codex-thread-id");
 
 const DEFAULT_MAPPING_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_AUTO_SUBMIT_TEXT = 3800;
@@ -180,7 +181,18 @@ function captureSessionIdentity(entry) {
     wtHwnd: normalizeHwndString(entry.wtHwnd),
     orcaPaneKey: normalizeSessionId(entry.orcaPaneKey) || null,
     codexOriginator: normalizeOriginatorIdentity(entry.codexOriginator || entry.originator),
+    codexHome: normalizeStringIdentity(entry.codexHome),
   };
+}
+
+function withDerivedCodexStoreIdentity(entry, platform) {
+  if (!entry || typeof entry !== "object"
+    || entry.agentId !== "codex"
+    || normalizeStringIdentity(entry.codexHome)) {
+    return entry;
+  }
+  const codexHome = deriveCodexHomeFromTranscriptPath(entry.transcriptPath, platform);
+  return codexHome ? { ...entry, codexHome } : entry;
 }
 
 // Completion mappings may come from older callers that only recorded a
@@ -199,6 +211,7 @@ function mappingIdentityMatches(entry, mapping) {
     wtHwnd: normalizeHwndString(mapping.wtHwnd),
     orcaPaneKey: normalizeSessionId(mapping.orcaPaneKey) || null,
     codexOriginator: normalizeOriginatorIdentity(mapping.codexOriginator),
+    codexHome: normalizeStringIdentity(mapping.codexHome),
   };
   for (const field of Object.keys(expected)) {
     if (expected[field] != null && current[field] !== expected[field]) return false;
@@ -219,6 +232,7 @@ function hasSameSessionIdentity(entry, expectedIdentity) {
     "wtHwnd",
     "orcaPaneKey",
     "codexOriginator",
+    "codexHome",
   ]) {
     if (expectedIdentity[field] != null && current[field] !== expectedIdentity[field]) return false;
   }
@@ -1011,10 +1025,15 @@ function createTelegramDirectSend({
       try {
         const liveEntry = findSession(getSessionSnapshot(), identity.id);
         const liveAgentPid = normalizePid(liveEntry && liveEntry.agentPid);
-        if (identity.agentPid == null && liveAgentPid != null) identity = {
-          ...identity,
-          agentPid: liveAgentPid,
-        };
+        const liveCodexHome = normalizeStringIdentity(liveEntry && liveEntry.codexHome);
+        if ((identity.agentPid == null && liveAgentPid != null)
+          || (identity.codexHome == null && liveCodexHome != null)) {
+          identity = {
+            ...identity,
+            ...(identity.agentPid == null && liveAgentPid != null ? { agentPid: liveAgentPid } : {}),
+            ...(identity.codexHome == null && liveCodexHome != null ? { codexHome: liveCodexHome } : {}),
+          };
+        }
       } catch {}
     }
     const context = {
@@ -1080,6 +1099,7 @@ function createTelegramDirectSend({
     wtHwnd,
     orcaPaneKey,
     codexOriginator,
+    codexHome,
     notificationContext,
   } = {}) {
     const key = normalizeMessageId(messageId);
@@ -1145,6 +1165,7 @@ function createTelegramDirectSend({
       wtHwnd: normalizeHwndString(identityValue("wtHwnd", wtHwnd)),
       orcaPaneKey: normalizeSessionId(identityValue("orcaPaneKey", orcaPaneKey)) || null,
       codexOriginator: normalizeOriginatorIdentity(identityValue("codexOriginator", codexOriginator)),
+      codexHome: normalizeStringIdentity(identityValue("codexHome", codexHome)),
       generation: mappingGeneration,
       sequence,
       expiresAt: now() + Math.max(1, mappingTtlMs),
@@ -1197,7 +1218,10 @@ function createTelegramDirectSend({
         mappings.delete(key);
         continue;
       }
-      if (entry && !mappingIdentityMatches({ ...entry, id }, mapping)) continue;
+      const identityEntry = entry
+        ? withDerivedCodexStoreIdentity({ ...entry, id }, osPlatform)
+        : null;
+      if (identityEntry && !mappingIdentityMatches(identityEntry, mapping)) continue;
       return true;
     }
     return false;
@@ -1312,10 +1336,10 @@ function createTelegramDirectSend({
     }
 
     // A session can have a delivery channel other than the foreground
-    // terminal. Codex Desktop owns a shared app-server and must receive text
-    // through its thread queue; ordinary CLI sessions continue through the
-    // Console adapter. Resolve this only after the mapping identity fence so
-    // the selected channel is based on the same live session we will validate.
+    // terminal. Known local Codex Desktop and CLI sessions receive text
+    // through Codex's authoritative thread queue. Resolve this only after the
+    // mapping identity fence so the selected channel is based on the same live
+    // session we will validate.
     const activeDeliveryAdapter = selectDeliveryAdapter(entry, mapping, payload);
 
     updateDeliveryEntry(deliveryEntry, "target_resolved", {
