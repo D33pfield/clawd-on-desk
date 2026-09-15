@@ -133,6 +133,12 @@
       "y": 51.0,
       "width": 915.2,
       "height": 915.2
+    },
+    "hash-sage-roam-left.apng": {
+      "x": -272,
+      "y": -442,
+      "width": 1504,
+      "height": 1504
     }
   },
   "layout": {
@@ -284,6 +290,7 @@
   ],
   "wideHitboxFiles": [
     "hash-sage-roam.apng",
+    "hash-sage-roam-left.apng",
     "hash-sage-attention.apng",
     "hash-sage-busy.apng",
     "hash-sage-react-drag.apng",
@@ -369,6 +376,11 @@
       "h": 682
     }
   },
+  "mirroredFiles": {
+    "hash-sage-mini-happy.apng": "hash-sage-mini-happy-left.apng",
+    "hash-sage-mini-working.apng": "hash-sage-mini-working-left.apng",
+    "hash-sage-roam.apng": "hash-sage-roam-left.apng"
+  },
   "reactions": {
     "drag": {
       "file": "hash-sage-react-drag.apng"
@@ -430,10 +442,6 @@
         "hash-sage-mini-working.apng"
       ]
     },
-    "leftEdgeFiles": {
-      "hash-sage-mini-happy.apng": "hash-sage-mini-happy-left.apng",
-      "hash-sage-mini-working.apng": "hash-sage-mini-working-left.apng"
-    },
     "timings": {
       "minDisplay": {
         "mini-alert": 4042,
@@ -446,13 +454,13 @@
     }
   },
   "objectScale": {
-    "widthRatio": 0.5,
-    "heightRatio": 0.5,
-    "offsetX": 0.2585,
-    "offsetY": 0.25,
-    "imgWidthRatio": 0.5,
-    "imgOffsetX": 0.2585,
-    "imgBottom": 0.25,
-    "objBottom": 0.25
+    "widthRatio": 0.4255,
+    "heightRatio": 0.4255,
+    "offsetX": 0.301934,
+    "offsetY": 0.1531,
+    "imgWidthRatio": 0.4255,
+    "imgOffsetX": 0.301934,
+    "imgBottom": 0.1531,
+    "objBottom": 0.1531
   }
 }
