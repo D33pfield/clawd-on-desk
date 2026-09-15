@@ -596,7 +596,7 @@ If two themes have very different visible body heights even though the window si
 }
 ```
 
-- `contentBox` — the visible body area in viewBox units, not the whole exported canvas
+- `contentBox` — the visible body area in viewBox units, not the whole exported canvas. Settings also uses it to frame the theme card thumbnail, measured against the preview file's `fileViewBoxes` entry when it has one
 - `centerX` — the horizontal anchor inside the viewBox
 - `baselineY` — the standing baseline inside the viewBox
 - `visibleHeightRatio` — how tall the visible body should be relative to the window height

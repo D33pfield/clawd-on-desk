@@ -1661,6 +1661,7 @@ module.exports = {
   normalizeTrustedRuntime,
   normalizeRendering,
   normalizeFileViewBoxes,
+  getCanonicalFileViewBoxes,
   normalizeFileHitBoxes,
   mergeFileHitBoxes,
 };
