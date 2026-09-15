@@ -190,6 +190,7 @@ While free roam moves the pet across the screen, themes without a `roam` binding
 - Any playback format works (SVG with CSS/SMIL animations, GIF, APNG, WebP)
 - Draw the walk art **facing right** — the renderer mirrors it automatically while the pet walks left
 - If your art faces left instead, declare a top-level `"roamFlipAssets": true` to invert the mirror
+- If the walk art carries legible glyphs, give it a pre-mirrored variant in `mirroredFiles` (see Mini Mode)
 - Without a `roam` binding nothing breaks: the pet keeps the idle-visual-plus-bob fallback
 
 ### Optional Update Visuals
@@ -492,15 +493,16 @@ If `miniMode.supported` is `true`, the validator expects all 8 mini states shown
 
 `mini-working` is optional. If you provide `miniMode.states["mini-working"]`, Clawd can show a compact working animation while the pet is in mini mode. If you omit it, working/thinking/juggling events do not break mini mode; Clawd keeps the current mini visual.
 
-`miniMode.leftEdgeFiles` is optional. On the left screen edge Clawd mirrors the whole mini pet, so raster art with legible text or glyphs (a scroll, a talisman) would read backwards there. Map each such file to a left-edge variant whose glyphs are pre-mirrored; while mini mode sits on the left edge Clawd shows the variant instead, and the mirror turns its text the right way round:
+`mirroredFiles` (top level) is optional. Clawd mirrors some visuals: every mini visual against the left screen edge, and a dedicated `roam` visual while the walk heads left (including the pre-entry crabwalk toward the left edge). Raster art with legible text or glyphs (a scroll, a talisman, code symbols) reads backwards once mirrored. Map each such file to a variant whose glyphs are pre-mirrored; whenever Clawd draws that file mirrored it shows the variant instead, and the mirror turns its text the right way round:
 
 ```json
-"miniMode": {
-  "leftEdgeFiles": { "mini-happy.apng": "mini-happy-left.apng" }
+"mirroredFiles": {
+  "mini-happy.apng": "mini-happy-left.apng",
+  "my-theme-walk.apng": "my-theme-walk-left.apng"
 }
 ```
 
-Keep the variant pixel-identical to the original outside the glyphs. It reuses the original file's hit box, while per-file layout entries (`fileViewBoxes`, `objectScale.fileScales` / `fileOffsets`) are looked up by the file actually shown, so repeat any you set for the original.
+Keep the variant pixel-identical to the original outside the glyphs. It reuses the original file's hit box, while per-file layout entries (`fileViewBoxes`, `objectScale.fileScales` / `fileOffsets`) are looked up by the file actually shown, so repeat any you set for the original. A walk that turns around swaps between the two files, so the loop restarts at the turn.
 
 ### Timings
 

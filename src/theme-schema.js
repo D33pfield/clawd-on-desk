@@ -226,8 +226,8 @@ function validateTheme(cfg) {
     errors.push(`roamFlipAssets must be a boolean, got ${JSON.stringify(cfg.roamFlipAssets)}`);
   }
 
-  if (isPlainObject(cfg.miniMode) && cfg.miniMode.leftEdgeFiles !== undefined) {
-    errors.push(...validateMiniLeftEdgeFiles(cfg.miniMode.leftEdgeFiles));
+  if (cfg.mirroredFiles !== undefined) {
+    errors.push(...validateMirroredFiles(cfg.mirroredFiles));
   }
 
   const fallbackStateKeys = Object.keys(normalizedStates);
@@ -1197,25 +1197,25 @@ function buildCapabilities(cfg, options = {}) {
   };
 }
 
-// miniMode.leftEdgeFiles: { "<mini file>": "<left-edge variant>" }. Mini mode
-// mirrors the whole pet on the left edge; the variant carries pre-mirrored
-// glyphs so text reads the right way round there (src/mini-edge-files.js).
-function validateMiniLeftEdgeFiles(value) {
+// mirroredFiles: { "<file>": "<variant>" }. Whenever the runtime draws a file
+// mirrored (left mini edge, leftward roam) it shows the variant, whose glyphs
+// are pre-mirrored so text reads the right way round (src/mirrored-files.js).
+function validateMirroredFiles(value) {
   if (!isPlainObject(value)) {
-    return [`miniMode.leftEdgeFiles must be an object mapping a mini file to its left-edge variant, got ${JSON.stringify(value)}`];
+    return [`mirroredFiles must be an object mapping a file to its mirrored-display variant, got ${JSON.stringify(value)}`];
   }
   const errors = [];
   for (const [from, to] of Object.entries(value)) {
     if (typeof to !== "string" || !basenameOnly(to)) {
-      errors.push(`miniMode.leftEdgeFiles["${from}"] must be a file name, got ${JSON.stringify(to)}`);
+      errors.push(`mirroredFiles["${from}"] must be a file name, got ${JSON.stringify(to)}`);
     } else if (basenameOnly(to) === basenameOnly(from)) {
-      errors.push(`miniMode.leftEdgeFiles["${from}"] must name a different file`);
+      errors.push(`mirroredFiles["${from}"] must name a different file`);
     }
   }
   return errors;
 }
 
-function normalizeMiniLeftEdgeFiles(value) {
+function normalizeMirroredFiles(value) {
   const out = {};
   if (!isPlainObject(value)) return out;
   for (const [from, to] of Object.entries(value)) {
@@ -1250,8 +1250,8 @@ function collectRequiredAssetFiles(theme) {
   for (const file of Array.isArray(objectChannelFiles) ? objectChannelFiles : []) {
     addThemeAssetFile(files, file);
   }
-  const leftEdgeFiles = theme && theme.miniMode && theme.miniMode.leftEdgeFiles;
-  for (const file of Object.values(isPlainObject(leftEdgeFiles) ? leftEdgeFiles : {})) {
+  const mirroredFiles = theme && theme.mirroredFiles;
+  for (const file of Object.values(isPlainObject(mirroredFiles) ? mirroredFiles : {})) {
     addThemeAssetFile(files, file);
   }
   return [...files];
@@ -1497,6 +1497,8 @@ function mergeDefaults(raw, themeId, isBuiltin) {
   // artwork; themes whose roam asset is drawn facing left set this to invert
   // the mirror. Pure rendering flag — safe for external themes.
   theme.roamFlipAssets = !!raw.roamFlipAssets;
+  // Pre-mirrored-glyph variants shown whenever a file is drawn mirrored.
+  theme.mirroredFiles = normalizeMirroredFiles(raw.mirroredFiles);
 
   // miniMode
   if (raw.miniMode) {
@@ -1511,10 +1513,9 @@ function mergeDefaults(raw, themeId, isBuiltin) {
         ...(raw.miniMode.timings || {}),
       },
       glyphFlips: raw.miniMode.glyphFlips || {},
-      leftEdgeFiles: normalizeMiniLeftEdgeFiles(raw.miniMode.leftEdgeFiles),
     };
   } else {
-    theme.miniMode = { supported: false, states: {}, viewBox: null, timings: { minDisplay: {}, autoReturn: {} }, glyphFlips: {}, leftEdgeFiles: {} };
+    theme.miniMode = { supported: false, states: {}, viewBox: null, timings: { minDisplay: {}, autoReturn: {} }, glyphFlips: {} };
   }
 
   theme.customization.accessories = normalizeAccessoryAttachments(
