@@ -3058,12 +3058,33 @@ function buildRemoteApprovalPayload(permEntry) {
   // never a session id or full local path.
   // The same reason the local card shows, so a remote-only operator is not told
   // less about why the request stopped than someone sitting at the desk.
-  const reminderTag = reminderIsWhyThisIsPending(permEntry)
+  //
+  // Two tiers, mirroring bubble-renderer.js's badge exactly, because the local
+  // card degrades to a weaker line where this used to degrade to silence:
+  //   held BY the reminder        -> "Held for your review - matched: X"
+  //   matched but pending anyway  -> "Destructive action ... (matched: X)"
+  // The second tier is the case the old single-tier code dropped. It is the
+  // ONLY tier a remote-only operator can ever see: bubbles are off, so the
+  // local irreversible badge that carries this hint is not on their screen at
+  // all. Dropping it left exactly one configuration -- the one named in the
+  // comment above -- told nothing, which is the opposite of what it promises.
+  // Tier 2 must NOT reuse the tier-1 wording: the request was reaching a human
+  // regardless, so claiming Clawd stopped it would be false.
+  // One extraction, not three: reminderHolds() already rejects a null stamp, a
+  // malformed one, and an empty tag (test/permission-reminder lanes pin all
+  // four shapes), so a true from either predicate GUARANTEES an object with a
+  // truthy tag. Two cross-family reviewers independently read the old shape as
+  // a null-dereference plus an empty-tag asymmetry; both were refuted at the
+  // source, and the per-branch guards that invited the reading are gone with
+  // them rather than being left as dead code that documents a fear.
+  const reminderTag = permissionReminderHolds(permEntry)
     ? permEntry.permissionReminder.tag
     : null;
-  const reminderLine = reminderTag
-    ? interpolate(t("approvalDetailReminderValue"), "{reason}", reminderTag)
-    : null;
+  const reminderLine = !reminderTag
+    ? null
+    : (reminderIsWhyThisIsPending(permEntry)
+      ? interpolate(t("approvalDetailReminderValue"), "{reason}", reminderTag)
+      : interpolate(t("approvalDetailIrreversibleValue"), "{reason}", reminderTag));
   const detail = [
     `${t("approvalDetailAgent")}: ${agentId}`,
     `${t("approvalDetailTool")}: ${toolName}`,

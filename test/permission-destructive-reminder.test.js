@@ -381,6 +381,10 @@ function liveResponse() {
   };
 }
 
+// The rendered strings are the contract a human reads on the card, so the
+// lanes below assert them verbatim rather than by substring.
+const EN = require("../src/i18n.js").i18n.en;
+
 function makeRuntime(ctxOverrides = {}, entryOverrides = {}) {
   const ctx = {
     doNotDisturb: false,
@@ -634,6 +638,116 @@ describe("destructive reminder — runtime behavior", () => {
     });
     assert.equal(off.permission.maybeStartRemoteApproval(off.entry), true);
     assert.doesNotMatch(requests[1].detail, /force-push/);
+  });
+
+  // Field-measured 2026-09-16 (real machine, Telegram, bubbles off): the card
+  // above carries the reason only when the reminder is why the request is
+  // pending. In remote-only operation it never is -- the request reaches a
+  // human regardless -- so that card shipped with NO reason line at all, twice
+  // reproduced. The lane above did not catch it because its name says
+  // "remote-only" while its fixture leaves bubbles ON, so it only ever
+  // exercised the held case. This is the arm it was missing.
+  //
+  // The local card degrades to the weaker irreversible hint here; before this
+  // lane the remote card degraded to silence, and a remote-only operator has
+  // no local badge to fall back on.
+  it("remote-only: a matched request still names its pattern, in weaker wording", () => {
+    const requests = [];
+    const client = {
+      isEnabled: () => true,
+      requestApproval: (payload) => {
+        requests.push(payload);
+        return new Promise(() => {});
+      },
+    };
+    // Automation off => the request was reaching a human anyway => the reminder
+    // is NOT why it is pending. One of the three cases the comment on
+    // reminderIsWhyThisIsPending() names by hand.
+    const remoteOnly = makeRuntime({
+      isDestructiveReminderEnabled: () => true,
+      getPermissionAutomationMode: () => "off",
+      getBubblePolicy: () => ({ enabled: false, autoCloseMs: 0 }),
+      getTelegramApprovalClient: () => client,
+    });
+    assert.equal(remoteOnly.permission.maybeStartRemoteApproval(remoteOnly.entry), true);
+    assert.equal(requests.length, 1);
+
+    // Pin the LINE, not the tag. Both cross-family reviewers flagged that
+    // /force-push/ could match the command text instead of the reminder field
+    // and let this pass for the wrong reason. The mutant run refutes that for
+    // this fixture (the command reads "--force", never the hyphenated tag, and
+    // reverting the fix fails on exactly this assertion) -- but a later fixture
+    // edit could make it true, so the assertion names the field and its exact
+    // rendered value instead of relying on a substring.
+    const reminderField = (req) =>
+      req.fields.find((f) => f.label === EN.approvalDetailReminder) || null;
+    const weak = reminderField(requests[0]);
+    assert.ok(weak, "a remote-only operator must get the reminder FIELD, not just a blob");
+    assert.equal(
+      weak.value,
+      EN.approvalDetailIrreversibleValue.replace("{reason}", "force-push"),
+      "tier 2 must render the weaker irreversible wording, verbatim"
+    );
+    assert.match(requests[0].detail, /may not be recoverable/,
+      "and the same line must reach the plain-text detail");
+
+    // Tier 2 must not borrow tier 1's wording: nothing stopped this request,
+    // so claiming Clawd held it would be false on a card a human acts from.
+    const held = makeRuntime({
+      isDestructiveReminderEnabled: () => true,
+      getTelegramApprovalClient: () => client,
+    });
+    assert.equal(held.permission.maybeStartRemoteApproval(held.entry), true);
+    const strong = reminderField(requests[1]);
+    assert.ok(strong, "the held case still carries the field");
+    assert.equal(
+      strong.value,
+      EN.approvalDetailReminderValue.replace("{reason}", "force-push"),
+      "tier 1 keeps the held wording"
+    );
+    assert.doesNotMatch(weak.value, /Held for your review/,
+      "tier 2 must never claim Clawd stopped a request it did not stop");
+
+    // The arm a cross-family reviewer named as missing: automation is ON, but
+    // THIS request was never auto-allowable anyway (an ineligible session), so
+    // the reminder still changed nothing and tier 2 is still the honest line.
+    // Without it, a predicate that dropped its "would otherwise auto-allow"
+    // half would keep every other lane green.
+    const ineligible = makeRuntime({
+      isDestructiveReminderEnabled: () => true,
+      getPermissionAutomationMode: () => "auto-tools",
+      getBubblePolicy: () => ({ enabled: false, autoCloseMs: 0 }),
+      getTelegramApprovalClient: () => client,
+    }, {
+      // The lever is the INTERACTION, not the session: evaluatePermissionAutomation()
+      // reads only (mode, interaction). zcode is a real adapter classified
+      // tool-approval with automationEligibility.autoTools === false, so
+      // automation is on and this request is still not auto-allowable.
+      // (A first attempt used sessionAutomationIdentity and rendered tier 1 --
+      // the arm was asserting a lever that does not reach this predicate.)
+      agentId: "zcode",
+      interaction: classifyPermissionInteraction({ agentId: "zcode", toolName: "Bash" }),
+    });
+    assert.equal(ineligible.permission.maybeStartRemoteApproval(ineligible.entry), true);
+    const ineligibleField = reminderField(requests[2]);
+    assert.ok(ineligibleField, "an ineligible session still gets the field");
+    assert.equal(
+      ineligibleField.value,
+      EN.approvalDetailIrreversibleValue.replace("{reason}", "force-push"),
+      "automation on but inapplicable is still tier 2, not tier 1"
+    );
+
+    // Known-negative: with the setting off, neither tier may appear.
+    const disabled = makeRuntime({
+      isDestructiveReminderEnabled: () => false,
+      getPermissionAutomationMode: () => "off",
+      getBubblePolicy: () => ({ enabled: false, autoCloseMs: 0 }),
+      getTelegramApprovalClient: () => client,
+    });
+    assert.equal(disabled.permission.maybeStartRemoteApproval(disabled.entry), true);
+    assert.equal(reminderField(requests[3]), null,
+      "the setting off means no reminder field at all, in either tier");
+    assert.doesNotMatch(requests[3].detail, /may not be recoverable/);
   });
 });
 
