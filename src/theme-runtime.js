@@ -156,7 +156,12 @@ function createThemeRuntime(options = {}) {
     newTheme._overrideSignature = targetOverrideSignature;
 
     const animationOverrides = getAnimationOverridesRuntime();
-    if (animationOverrides && typeof animationOverrides.clearPreviewTimer === "function") {
+    // A reload re-applies whatever state is current once it finishes, so a
+    // preview has to be handed back here, not just have its timer dropped —
+    // otherwise the preview visual becomes the state the reload restores.
+    if (animationOverrides && typeof animationOverrides.cancelAnimationPreview === "function") {
+      animationOverrides.cancelAnimationPreview();
+    } else if (animationOverrides && typeof animationOverrides.clearPreviewTimer === "function") {
       animationOverrides.clearPreviewTimer();
     }
     if (!activeTheme || activeTheme._id !== newTheme._id) {

@@ -137,6 +137,7 @@ function createRuntime(options = {}) {
     startMainTick: () => calls.push("startMainTick"),
     invalidateDisplayedVisual: (detail) => calls.push(["invalidateDisplayedVisual", detail]),
     refreshDisplayedVisualHitBoxes: () => calls.push("refreshDisplayedVisualHitBoxes"),
+    getAnimationOverridesRuntime: () => options.animationOverrides || null,
     bumpAnimationOverridePreviewPosterGeneration: () => calls.push("bumpPoster"),
     rebuildAllMenus: () => calls.push("rebuildMenus"),
   });
@@ -359,5 +360,41 @@ describe("theme-runtime active ownership", () => {
 
     assert.strictEqual(runtime.isReloadInProgress(), false);
     assert.ok(calls.includes("sequencer.cleanup"));
+  });
+});
+
+describe("theme-runtime animation preview handoff", () => {
+  it("hands a running animation preview back instead of only dropping its timer", () => {
+    makeFixture();
+    const seen = [];
+    const { runtime } = createRuntime({
+      animationOverrides: {
+        cancelAnimationPreview: () => {
+          seen.push("cancelAnimationPreview");
+          return { status: "ok", restoredState: true };
+        },
+        clearPreviewTimer: () => seen.push("clearPreviewTimer"),
+      },
+    });
+    runtime.loadInitialTheme("clawd");
+
+    runtime.activateTheme("calico");
+
+    // Dropping the timer alone would leave the preview state as the current
+    // one, and the reload re-applies exactly that afterwards.
+    assert.deepStrictEqual(seen, ["cancelAnimationPreview"]);
+  });
+
+  it("falls back to clearing the timer when the overrides runtime cannot cancel", () => {
+    makeFixture();
+    const seen = [];
+    const { runtime } = createRuntime({
+      animationOverrides: { clearPreviewTimer: () => seen.push("clearPreviewTimer") },
+    });
+    runtime.loadInitialTheme("clawd");
+
+    runtime.activateTheme("calico");
+
+    assert.deepStrictEqual(seen, ["clearPreviewTimer"]);
   });
 });
