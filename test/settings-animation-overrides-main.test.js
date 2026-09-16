@@ -83,6 +83,7 @@ function createRuntimeHarness(overrides = {}) {
 
   const stateCalls = [];
   let themeReloadInProgress = !!overrides.themeReloadInProgress;
+  let displayState = overrides.displayState || "idle";
   const activeTheme = typeof overrides.activeThemeFactory === "function"
     ? overrides.activeThemeFactory(root)
     : (overrides.activeTheme || makeTheme(root, overrides.themeOverrides));
@@ -114,7 +115,7 @@ function createRuntimeHarness(overrides = {}) {
     getThemeReloadInProgress: () => themeReloadInProgress,
     getStateRuntime: () => ({
       applyState: (...args) => stateCalls.push(["applyState", ...args]),
-      resolveDisplayState: () => "idle",
+      resolveDisplayState: () => displayState,
       getSvgOverride: (state) => `${state}.svg`,
     }),
     sendToRenderer: (...args) => stateCalls.push(["sendToRenderer", ...args]),
@@ -126,6 +127,9 @@ function createRuntimeHarness(overrides = {}) {
     runtime,
     root,
     stateCalls,
+    setDisplayState(value) {
+      displayState = value;
+    },
     setThemeReloadInProgress(value) {
       themeReloadInProgress = !!value;
     },
@@ -532,6 +536,111 @@ test("idle visual payload is null when the theme has no idle variants", () => {
   try {
     const data = harness.runtime.buildAnimationOverrideData();
     assert.strictEqual(data.idleDefaultVisual, null);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+function withFakeTimers(run) {
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const timers = [];
+  global.setTimeout = (fn, ms) => {
+    timers.push({ fn, ms });
+    return { fakeTimer: timers.length };
+  };
+  global.clearTimeout = () => {};
+  try {
+    return run(timers);
+  } finally {
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+}
+
+test("a finished preview hands the pet back to the live state instead of forcing idle", () => {
+  const harness = createRuntimeHarness();
+  try {
+    withFakeTimers((timers) => {
+      harness.runtime.previewAnimationOverride({ stateKey: "thinking", file: "scripted.svg", durationMs: 5000 });
+      // A real session starts working while the preview is still up: previews
+      // now run for a whole playthrough, so this is an ordinary case.
+      harness.setDisplayState("working");
+      timers[timers.length - 1].fn();
+    });
+
+    assert.deepStrictEqual(harness.stateCalls, [
+      ["applyState", "thinking", "scripted.svg"],
+      ["applyState", "working", "working.svg"],
+    ]);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("a replaced or cancelled preview cannot restore state afterwards", () => {
+  const harness = createRuntimeHarness();
+  try {
+    withFakeTimers((timers) => {
+      harness.runtime.previewAnimationOverride({ stateKey: "thinking", file: "scripted.svg", durationMs: 5000 });
+      harness.runtime.previewAnimationOverride({ stateKey: "sleeping", file: "sleep.svg", durationMs: 5000 });
+      timers[0].fn();
+
+      assert.deepStrictEqual(harness.stateCalls, [
+        ["applyState", "thinking", "scripted.svg"],
+        ["applyState", "sleeping", "sleep.svg"],
+      ]);
+
+      harness.runtime.cancelAnimationPreview();
+      timers[1].fn();
+    });
+
+    assert.deepStrictEqual(harness.stateCalls.slice(2), [
+      ["sendToRenderer", "cancel-click-reaction"],
+      ["applyState", "idle", "idle.svg"],
+    ]);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("cancelling a preview stops a reaction too, and does nothing when none is running", () => {
+  const harness = createRuntimeHarness();
+  try {
+    assert.deepStrictEqual(harness.runtime.cancelAnimationPreview(), { status: "ok", noop: true });
+    assert.deepStrictEqual(harness.stateCalls, []);
+
+    harness.runtime.previewReaction({ file: "idle.svg", durationMs: 3000 });
+    assert.deepStrictEqual(harness.runtime.cancelAnimationPreview(), { status: "ok" });
+
+    assert.deepStrictEqual(harness.stateCalls, [
+      ["sendToRenderer", "play-click-reaction", "idle.svg", 3000],
+      ["sendToRenderer", "cancel-click-reaction"],
+      ["applyState", "idle", "idle.svg"],
+    ]);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("preview holds keep their documented floor and ceilings", () => {
+  assert.strictEqual(animationOverrideTest.PREVIEW_HOLD_MIN_MS, 800);
+  assert.strictEqual(animationOverrideTest.PREVIEW_HOLD_MAX_MS, 3500);
+  assert.strictEqual(animationOverrideTest.TRUSTED_SCRIPTED_PREVIEW_HOLD_MAX_MS, 15000);
+  assert.strictEqual(animationOverrideTest.FRAME_TIMED_PREVIEW_HOLD_MAX_MS, 60000);
+
+  const harness = createRuntimeHarness();
+  try {
+    const delays = withFakeTimers((timers) => {
+      harness.runtime.previewAnimationOverride({ stateKey: "thinking", file: "sleep.svg", durationMs: 1 });
+      harness.runtime.previewAnimationOverride({ stateKey: "thinking", file: "scripted.svg", durationMs: 20000 });
+      return timers.map((timer) => timer.ms);
+    });
+
+    assert.deepStrictEqual(delays, [
+      animationOverrideTest.PREVIEW_HOLD_MIN_MS,
+      animationOverrideTest.TRUSTED_SCRIPTED_PREVIEW_HOLD_MAX_MS,
+    ]);
   } finally {
     harness.cleanup();
   }

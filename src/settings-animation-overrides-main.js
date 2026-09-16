@@ -207,6 +207,10 @@ function createSettingsAnimationOverridesMain(options = {}) {
   const sendToRenderer = options.sendToRenderer || (() => {});
 
   let animationOverridePreviewTimer = null;
+  let animationOverridePreviewGeneration = 0;
+  // Reaction previews have no main-side timer, so remember when the pet is
+  // expected to be free again: a cancel only has to act while one is running.
+  let animationOverridePreviewActiveUntil = 0;
   let animationOverridePreviewPosterWindow = null;
   let animationOverridePreviewPosterReady = null;
   let animationOverridePreviewPosterQueue = Promise.resolve();
@@ -216,6 +220,10 @@ function createSettingsAnimationOverridesMain(options = {}) {
   let pendingPostReloadTasks = [];
 
   function clearPreviewTimer() {
+    // Bump the generation too, so a callback that already fired but is still
+    // queued behind this tick cannot restore state after a cancel.
+    animationOverridePreviewGeneration += 1;
+    animationOverridePreviewActiveUntil = 0;
     if (animationOverridePreviewTimer) {
       clearTimeout(animationOverridePreviewTimer);
       animationOverridePreviewTimer = null;
@@ -1175,6 +1183,23 @@ function createSettingsAnimationOverridesMain(options = {}) {
     return Math.max(PREVIEW_HOLD_MIN_MS, Math.min(previewMaxMs, requested));
   }
 
+  // A preview is a temporary visual, so hand the pet back to the state the live
+  // sessions actually want when it ends. A preview now holds for a whole
+  // playthrough, so a real session can easily start working while one is up;
+  // forcing "idle" here would silently downgrade it.
+  function restoreDisplayedState() {
+    const stateRuntime = getStateRuntime();
+    if (!stateRuntime
+      || typeof stateRuntime.resolveDisplayState !== "function"
+      || typeof stateRuntime.applyState !== "function") return;
+    try {
+      const state = stateRuntime.resolveDisplayState();
+      stateRuntime.applyState(state, typeof stateRuntime.getSvgOverride === "function"
+        ? stateRuntime.getSvgOverride(state)
+        : undefined);
+    } catch {}
+  }
+
   function runAnimationOverridePreview(stateKey, file, durationMs) {
     clearPreviewTimer();
     const stateRuntime = getStateRuntime();
@@ -1184,12 +1209,13 @@ function createSettingsAnimationOverridesMain(options = {}) {
       return { status: "error", message: `previewAnimationOverride: ${err && err.message}` };
     }
     const holdMs = resolvePreviewHoldMs(file, durationMs);
+    const generation = animationOverridePreviewGeneration;
+    animationOverridePreviewActiveUntil = Date.now() + holdMs;
     animationOverridePreviewTimer = setTimeout(() => {
       animationOverridePreviewTimer = null;
-      const latestStateRuntime = getStateRuntime();
-      try {
-        latestStateRuntime.applyState("idle", latestStateRuntime.getSvgOverride("idle"));
-      } catch {}
+      if (generation !== animationOverridePreviewGeneration) return;
+      animationOverridePreviewActiveUntil = 0;
+      restoreDisplayedState();
     }, holdMs);
     return { status: "ok" };
   }
@@ -1224,7 +1250,22 @@ function createSettingsAnimationOverridesMain(options = {}) {
     if (typeof file !== "string" || !file) {
       return { status: "error", message: "previewReaction.file must be a non-empty string" };
     }
-    sendToRenderer("play-click-reaction", file, resolvePreviewHoldMs(file, durationMs));
+    const holdMs = resolvePreviewHoldMs(file, durationMs);
+    animationOverridePreviewActiveUntil = Math.max(animationOverridePreviewActiveUntil, Date.now() + holdMs);
+    sendToRenderer("play-click-reaction", file, holdMs);
+    return { status: "ok" };
+  }
+
+  // Closing Settings must not leave a preview running on the pet: a state
+  // preview holds for the clip's whole length, and a reaction preview keeps the
+  // renderer's cursor polling paused until its own timer fires.
+  function cancelAnimationPreview() {
+    const running = !!animationOverridePreviewTimer || Date.now() < animationOverridePreviewActiveUntil;
+    clearPreviewTimer();
+    pendingPostReloadTasks = [];
+    if (!running) return { status: "ok", noop: true };
+    sendToRenderer("cancel-click-reaction");
+    restoreDisplayedState();
     return { status: "ok" };
   }
 
@@ -1342,6 +1383,7 @@ function createSettingsAnimationOverridesMain(options = {}) {
     buildAnimationAssetProbe,
     previewAnimationOverride,
     previewReaction,
+    cancelAnimationPreview,
     openThemeAssetsDir,
     exportAnimationOverrides,
     importAnimationOverrides,
