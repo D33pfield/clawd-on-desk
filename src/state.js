@@ -182,6 +182,10 @@ let currentHitBox = HIT_BOXES.default;
 
 // ── State machine internal ──
 let currentState = "idle";
+// Bumped by every applyState that actually lands, so an owner can tell "the
+// visual I put up is still the current one" from "something applied a state
+// since" — including a real event that re-applies the same state name.
+let displayRevision = 0;
 let previousState = "idle";
 let currentSvg = null;
 let stateChangedAt = Date.now();
@@ -738,15 +742,20 @@ function applyState(state, svgOverride, options = {}) {
 
   previousState = currentState;
   currentState = state;
+  displayRevision += 1;
   stateChangedAt = Date.now();
   ctx.idlePaused = false;
 
-  // Sound triggers
-  if (state === "attention" || state === "mini-happy") {
-    ctx.playSound("complete");
-    if (ctx.flashTaskbar) ctx.flashTaskbar();
-  } else if (state === "notification" || state === "mini-alert") {
-    if (!applyOptions.muteNotificationSound) ctx.playSound("confirm");
+  // Sound triggers. muteStateSounds is for re-applying a state the pet is
+  // already in — handing an animation preview back — where the cue already
+  // played when that state first arrived.
+  if (!applyOptions.muteStateSounds) {
+    if (state === "attention" || state === "mini-happy") {
+      ctx.playSound("complete");
+      if (ctx.flashTaskbar) ctx.flashTaskbar();
+    } else if (state === "notification" || state === "mini-alert") {
+      if (!applyOptions.muteNotificationSound) ctx.playSound("confirm");
+    }
   }
 
   // #509: no-override idle entries (e.g. roam ending) also rest on the
@@ -3511,6 +3520,7 @@ function startStartupRecovery() {
 }
 
 function getCurrentState() { return currentState; }
+function getDisplayRevision() { return displayRevision; }
 function getCurrentSvg() { return currentSvg; }
 function getCurrentHitBox() { return currentHitBox; }
 function getStartupRecoveryActive() { return startupRecoveryActive; }
@@ -3566,7 +3576,7 @@ return {
   clearSessionsByAgent,
   disposeAllKimiPermissionState,
   deriveSessionBadge,
-  getCurrentState, getCurrentSvg, getCurrentHitBox, resolveHitBoxForSvg, getStartupRecoveryActive,
+  getCurrentState, getDisplayRevision, getCurrentSvg, getCurrentHitBox, resolveHitBoxForSvg, getStartupRecoveryActive,
   sessions, STATE_PRIORITY, ONESHOT_STATES, SLEEP_SEQUENCE,
   get STATE_SVGS() { return STATE_SVGS; },
   get HIT_BOXES() { return HIT_BOXES; },

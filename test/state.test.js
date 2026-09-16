@@ -2678,6 +2678,44 @@ describe("updateSession()", () => {
     assert.strictEqual(api.getCurrentState(), "attention");
   });
 
+  it("advances the display revision even when the same state is applied again", () => {
+    api.cleanup();
+    ctx = makeCtx({});
+    api = require("../src/state")(ctx);
+
+    const start = api.getDisplayRevision();
+    api.applyState("working");
+    const afterFirst = api.getDisplayRevision();
+    api.applyState("working");
+    const afterSecond = api.getDisplayRevision();
+
+    // An owner of the current visual (an animation preview) needs to notice a
+    // real event taking over even when it lands on the same state name.
+    assert.ok(afterFirst > start, "applying a state advances the revision");
+    assert.ok(afterSecond > afterFirst, "re-applying the same state advances it too");
+  });
+
+  it("re-applies a state without replaying its cue when muteStateSounds is set", () => {
+    const soundsPlayed = [];
+    const flashes = [];
+    api.cleanup();
+    ctx = makeCtx({
+      playSound: (name) => soundsPlayed.push(name),
+      flashTaskbar: () => flashes.push("flash"),
+    });
+    api = require("../src/state")(ctx);
+
+    api.applyState("attention");
+    assert.deepStrictEqual(soundsPlayed, ["complete"]);
+    assert.strictEqual(flashes.length, 1);
+
+    // Handing an animation preview back re-applies the state the pet is
+    // already in; its cue already played when that state first arrived.
+    api.applyState("attention", undefined, { muteStateSounds: true });
+    assert.deepStrictEqual(soundsPlayed, ["complete"]);
+    assert.strictEqual(flashes.length, 1);
+  });
+
   it("does not replay the completion animation for a duplicate Stop without progress", () => {
     const soundsPlayed = [];
     const stateChanges = [];
