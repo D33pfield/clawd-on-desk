@@ -398,6 +398,7 @@ El código fuente se distribuye bajo la [GNU Affero General Public License v3.0]
 - El personaje **Clawd** es propiedad de [Anthropic](https://www.anthropic.com). Este es un proyecto no oficial creado por fans, sin afiliación ni respaldo de Anthropic.
 - Ilustración del **gato Calico (三花猫)** por 鹿鹿 ([@rullerzhou-afk](https://github.com/rullerzhou-afk)). Todos los derechos reservados.
 - Ilustración de **Cloudling (云宝)** por 鹿鹿 ([@rullerzhou-afk](https://github.com/rullerzhou-afk)). Todos los derechos reservados. La dirección visual de Cloudling incluye un homenaje al logotipo de OpenAI Codex; las marcas Codex/OpenAI siguen siendo propiedad de OpenAI y este proyecto no está afiliado ni respaldado por OpenAI.
+- Ilustración de **Hash Sage (哈希仙人)** por 鹿鹿 ([@rullerzhou-afk](https://github.com/rullerzhou-afk)). Todos los derechos reservados. La dirección visual de Hash Sage incluye un homenaje al logotipo de OpenAI Codex; las marcas Codex/OpenAI siguen siendo propiedad de OpenAI y este proyecto no está afiliado ni respaldado por OpenAI.
 - **Contribuciones de terceros**: los respectivos artistas conservan los derechos de autor.
 
 **Sin criptomonedas.** Este proyecto no tiene token, moneda, NFT ni airdrop, y no está afiliado a ningún proyecto de criptomonedas.

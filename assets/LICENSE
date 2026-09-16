@@ -1,9 +1,9 @@
 All Rights Reserved
 
-The artwork files in this directory and its subdirectories (including but not
-limited to SVG, PNG, GIF, and ICO files) are NOT covered by the project's
-source-code license. All rights are reserved by their respective copyright
-holders.
+The artwork files under assets/ and the bundled theme asset directories under
+themes/*/assets/ (including but not limited to SVG, PNG, APNG, GIF, and ICO
+files) are NOT covered by the project's source-code license. All rights are
+reserved by their respective copyright holders.
 
 Clawd character artwork:
   The Clawd character is the property of Anthropic (https://www.anthropic.com).
@@ -12,6 +12,18 @@ Clawd character artwork:
 
 Calico cat (三花猫) artwork:
   Copyright (c) 2026 鹿鹿 (rullerzhou-afk). All rights reserved.
+
+Cloudling (云宝) artwork:
+  Copyright (c) 2026 鹿鹿 (rullerzhou-afk). All rights reserved.
+  Cloudling's visual direction includes an homage to the OpenAI Codex logo.
+  Codex and OpenAI marks remain the property of OpenAI. This project is not
+  affiliated with or endorsed by OpenAI.
+
+Hash Sage (哈希仙人) artwork:
+  Copyright (c) 2026 鹿鹿 (rullerzhou-afk). All rights reserved.
+  Hash Sage's visual direction includes an homage to the OpenAI Codex logo.
+  Codex and OpenAI marks remain the property of OpenAI. This project is not
+  affiliated with or endorsed by OpenAI.
 
 Third-party artist contributions:
   Copyright is retained by the respective artists. See individual file headers

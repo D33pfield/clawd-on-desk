@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "name": "Hash Sage",
   "author": "rullerzhou",
+  "license": "All Rights Reserved",
   "version": "1.0.0",
   "description": "Hash Sage (哈希仙人) — hand-directed Seedance animations, colour-harmonised, with the approved SVG effects baked into APNG",
   "customization": {
