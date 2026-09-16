@@ -561,8 +561,10 @@ function probeAssetCycle(absPath) {
 
 module.exports = {
   CYCLE_STATUS,
+  PROBE_CACHE_LIMIT,
   probeAssetCycle,
   probeSvgCycle,
   probeGifCycle,
   probeApngCycle,
+  __test: { getProbeCacheSize: () => probeCache.size },
 };
