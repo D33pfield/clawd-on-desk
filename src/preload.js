@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   onStartDragReaction: (cb) => ipcRenderer.on("start-drag-reaction", (_, requestOrDirection, legacyDirection) => cb(requestOrDirection, legacyDirection)),
   onEndDragReaction: (cb) => ipcRenderer.on("end-drag-reaction", () => cb()),
   onPlayClickReaction: (cb) => ipcRenderer.on("play-click-reaction", (_, requestOrSvg, duration) => cb(requestOrSvg, duration)),
+  onCancelClickReaction: (cb) => ipcRenderer.on("cancel-click-reaction", () => cb()),
   onPlayTestReaction: (cb) => ipcRenderer.on("play-test-reaction", (_, result) => {
     if (result === "pass" || result === "fail") cb(result);
   }),

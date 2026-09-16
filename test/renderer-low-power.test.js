@@ -3296,3 +3296,38 @@ describe("renderer viewport offset X (#690)", () => {
     }
   });
 });
+
+describe("renderer reaction preview lifecycle", () => {
+  it("clears a pending reaction timer before the next reaction starts", () => {
+    const harness = createRendererHarness();
+    harness.electronHandlers.onPlayClickReaction("react-drag.apng", 5600);
+    const first = harness.timers.find((timer) => timer.ms === 5600);
+    harness.electronHandlers.onPlayClickReaction("react-surprise.apng", 4600);
+    const second = harness.timers.find((timer) => timer.ms === 4600);
+
+    assert.ok(first, "first reaction timer");
+    assert.ok(second, "second reaction timer");
+    // Without the clear, the first timer would fire mid-clip and end the
+    // second reaction early — settings previews now last as long as the clip.
+    assert.strictEqual(first.cleared, true);
+    assert.strictEqual(second.cleared, false);
+    assert.strictEqual(
+      harness.electronCalls.filter((call) => call.name === "resumeFromReaction").length,
+      0
+    );
+  });
+
+  it("cancels a reaction preview and resumes cursor polling when settings asks", () => {
+    const harness = createRendererHarness();
+    harness.electronHandlers.onPlayClickReaction("react-drag.apng", 5600);
+    const timer = harness.timers.find((entry) => entry.ms === 5600);
+    harness.electronHandlers.onCancelClickReaction();
+
+    assert.ok(timer);
+    assert.strictEqual(timer.cleared, true);
+    assert.strictEqual(
+      harness.electronCalls.filter((call) => call.name === "resumeFromReaction").length,
+      1
+    );
+  });
+});

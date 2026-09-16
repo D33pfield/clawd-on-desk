@@ -1506,8 +1506,19 @@ function getAssetUrl(file) {
 window.electronAPI.onStartDragReaction((requestOrDirection, legacyDirection) => startDragReaction(requestOrDirection, legacyDirection));
 window.electronAPI.onEndDragReaction(() => endDragReaction());
 window.electronAPI.onPlayClickReaction((svg, duration) => playReaction(svg, duration));
+// Settings cancels a reaction preview when it closes; without this the pet
+// would hold the reaction visual, and its paused cursor polling, until the
+// clip's own timer fired.
+window.electronAPI.onCancelClickReaction(() => {
+  if (reactTimer) { clearTimeout(reactTimer); reactTimer = null; }
+  endReaction();
+});
 
 function playReaction(requestOrFile, durationMs) {
+  // A reaction preview now runs as long as the clip, so the next one can start
+  // while this timer is still pending. Clearing it first keeps the old timer
+  // from firing mid-clip and ending the new reaction early.
+  if (reactTimer) { clearTimeout(reactTimer); reactTimer = null; }
   const visualRequest = normalizeVisualRequest(requestOrFile);
   const svgFile = visualRequest ? visualRequest.file : requestOrFile;
   isReacting = true;
