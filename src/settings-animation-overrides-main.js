@@ -208,9 +208,14 @@ function createSettingsAnimationOverridesMain(options = {}) {
 
   let animationOverridePreviewTimer = null;
   let animationOverridePreviewGeneration = 0;
-  // Reaction previews have no main-side timer, so remember when the pet is
-  // expected to be free again: a cancel only has to act while one is running.
-  let animationOverridePreviewActiveUntil = 0;
+  // Whether a preview has overwritten the canonical state. Only that kind of
+  // preview has to be handed back; a reaction preview lives in the renderer,
+  // and main must not guess at its timer from a wall clock.
+  let statePreviewOutstanding = false;
+  // The display revision the preview left behind. A state name cannot answer
+  // "is my preview still up?" — a real task finishing into the same state the
+  // preview is showing looks identical — but the revision moves either way.
+  let statePreviewRevision = null;
   let animationOverridePreviewPosterWindow = null;
   let animationOverridePreviewPosterReady = null;
   let animationOverridePreviewPosterQueue = Promise.resolve();
@@ -223,7 +228,6 @@ function createSettingsAnimationOverridesMain(options = {}) {
     // Bump the generation too, so a callback that already fired but is still
     // queued behind this tick cannot restore state after a cancel.
     animationOverridePreviewGeneration += 1;
-    animationOverridePreviewActiveUntil = 0;
     if (animationOverridePreviewTimer) {
       clearTimeout(animationOverridePreviewTimer);
       animationOverridePreviewTimer = null;
@@ -1187,6 +1191,27 @@ function createSettingsAnimationOverridesMain(options = {}) {
   // sessions actually want when it ends. A preview now holds for a whole
   // playthrough, so a real session can easily start working while one is up;
   // forcing "idle" here would silently downgrade it.
+  // A preview only owns the pet until a real event takes the state over — a
+  // task finishing into attention, say. Handing back after that would cut the
+  // live animation short, so the hand-back is dropped instead.
+  function statePreviewStillShowing() {
+    const stateRuntime = getStateRuntime();
+    if (!stateRuntime || typeof stateRuntime.getDisplayRevision !== "function") return true;
+    try {
+      return stateRuntime.getDisplayRevision() === statePreviewRevision;
+    } catch {
+      return true;
+    }
+  }
+
+  function releaseStatePreview() {
+    if (!statePreviewOutstanding) return false;
+    const stillShowing = statePreviewStillShowing();
+    statePreviewOutstanding = false;
+    statePreviewRevision = null;
+    return stillShowing;
+  }
+
   function restoreDisplayedState() {
     const stateRuntime = getStateRuntime();
     if (!stateRuntime
@@ -1194,9 +1219,11 @@ function createSettingsAnimationOverridesMain(options = {}) {
       || typeof stateRuntime.applyState !== "function") return;
     try {
       const state = stateRuntime.resolveDisplayState();
+      // Muted: the pet is being handed back to a state it is already in, and
+      // its cue already played when that state first arrived.
       stateRuntime.applyState(state, typeof stateRuntime.getSvgOverride === "function"
         ? stateRuntime.getSvgOverride(state)
-        : undefined);
+        : undefined, { muteStateSounds: true });
     } catch {}
   }
 
@@ -1210,12 +1237,14 @@ function createSettingsAnimationOverridesMain(options = {}) {
     }
     const holdMs = resolvePreviewHoldMs(file, durationMs);
     const generation = animationOverridePreviewGeneration;
-    animationOverridePreviewActiveUntil = Date.now() + holdMs;
+    statePreviewOutstanding = true;
+    statePreviewRevision = typeof stateRuntime.getDisplayRevision === "function"
+      ? stateRuntime.getDisplayRevision()
+      : null;
     animationOverridePreviewTimer = setTimeout(() => {
       animationOverridePreviewTimer = null;
       if (generation !== animationOverridePreviewGeneration) return;
-      animationOverridePreviewActiveUntil = 0;
-      restoreDisplayedState();
+      if (releaseStatePreview()) restoreDisplayedState();
     }, holdMs);
     return { status: "ok" };
   }
@@ -1236,7 +1265,14 @@ function createSettingsAnimationOverridesMain(options = {}) {
       return { status: "error", message: "previewAnimationOverride requires state runtime" };
     }
     if (getThemeReloadInProgress()) {
-      pendingPostReloadTasks.push(() => runAnimationOverridePreview(stateKey, file, durationMs));
+      // Only the newest deferred preview should survive the reload, and a
+      // cancel in between has to void it: both ride the same generation.
+      const generation = ++animationOverridePreviewGeneration;
+      const task = () => {
+        if (generation !== animationOverridePreviewGeneration) return;
+        runAnimationOverridePreview(stateKey, file, durationMs);
+      };
+      pendingPostReloadTasks.push(task);
       return { status: "ok", deferred: true };
     }
     return runAnimationOverridePreview(stateKey, file, durationMs);
@@ -1250,23 +1286,26 @@ function createSettingsAnimationOverridesMain(options = {}) {
     if (typeof file !== "string" || !file) {
       return { status: "error", message: "previewReaction.file must be a non-empty string" };
     }
-    const holdMs = resolvePreviewHoldMs(file, durationMs);
-    animationOverridePreviewActiveUntil = Math.max(animationOverridePreviewActiveUntil, Date.now() + holdMs);
-    sendToRenderer("play-click-reaction", file, holdMs);
+    // Marked as a Settings preview so closing Settings cancels this reaction
+    // and not one the user started by clicking the pet on the same channel.
+    sendToRenderer("play-click-reaction", file, resolvePreviewHoldMs(file, durationMs), { settingsPreview: true });
     return { status: "ok" };
   }
 
-  // Closing Settings must not leave a preview running on the pet: a state
-  // preview holds for the clip's whole length, and a reaction preview keeps the
-  // renderer's cursor polling paused until its own timer fires.
+  // Closing Settings, or reloading the theme under one, must not leave a
+  // preview on the pet: a state preview holds for the clip's whole length, and
+  // a reaction preview keeps the renderer's cursor polling paused until its own
+  // timer fires. The renderer cancel is idempotent, so it always goes out
+  // instead of being gated on main's guess about the renderer's timer; only the
+  // state hand-back is conditional, because applyState is not a free redraw.
   function cancelAnimationPreview() {
-    const running = !!animationOverridePreviewTimer || Date.now() < animationOverridePreviewActiveUntil;
+    // clearPreviewTimer() bumps the generation, which is also what voids a
+    // preview still queued behind a theme reload.
     clearPreviewTimer();
-    pendingPostReloadTasks = [];
-    if (!running) return { status: "ok", noop: true };
+    const handBack = releaseStatePreview();
     sendToRenderer("cancel-click-reaction");
-    restoreDisplayedState();
-    return { status: "ok" };
+    if (handBack) restoreDisplayedState();
+    return { status: "ok", restoredState: handBack };
   }
 
   function getSettingsDialogParent(event) {
