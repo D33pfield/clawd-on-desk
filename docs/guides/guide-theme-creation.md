@@ -596,13 +596,15 @@ If two themes have very different visible body heights even though the window si
 }
 ```
 
-- `contentBox` — the visible body area in viewBox units, not the whole exported canvas. Settings also uses it to frame the theme card thumbnail, measured against the preview file's `fileViewBoxes` entry when it has one
+- `contentBox` — the visible body area in viewBox units, not the whole exported canvas. Settings also frames the theme card thumbnail with it: measured against the preview file's own `fileViewBoxes` entry when that file has a valid one and the content box fits inside it, and against the root `viewBox` otherwise
 - `centerX` — the horizontal anchor inside the viewBox
 - `baselineY` — the standing baseline inside the viewBox
 - `visibleHeightRatio` — how tall the visible body should be relative to the window height
 - `baselineBottomRatio` — distance from the baseline to the bottom of the window
 
 Mini mode still uses the existing `objectScale` + per-file offsets, so this is mainly for normal mode alignment.
+
+The theme card's preview file is the optional top-level `preview` when you declare one, and `states.idle[0]` otherwise; a variant card uses the variant's own `preview` (or its first `idleAnimations` file) when that asset exists, and is framed by that file. Point `preview` at a file whose canvas contains `contentBox` — a file drawn on a smaller canvas makes the card fall back to the root `viewBox`.
 
 ## Asset Guidelines
 
