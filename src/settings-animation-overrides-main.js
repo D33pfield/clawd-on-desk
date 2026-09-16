@@ -1228,25 +1228,72 @@ function createSettingsAnimationOverridesMain(options = {}) {
   }
 
   function runAnimationOverridePreview(stateKey, file, durationMs) {
+    // A previous preview may still own the visual. Its timer is dropped below
+    // by clearPreviewTimer(); if this attempt fails to land, that previous
+    // preview has no recovery path left, so it must be handed back here.
     clearPreviewTimer();
     const stateRuntime = getStateRuntime();
-    try {
-      stateRuntime.applyState(stateKey, file);
-    } catch (err) {
-      return { status: "error", message: `previewAnimationOverride: ${err && err.message}` };
-    }
-    const holdMs = resolvePreviewHoldMs(file, durationMs);
-    const generation = animationOverridePreviewGeneration;
-    statePreviewOutstanding = true;
-    statePreviewRevision = typeof stateRuntime.getDisplayRevision === "function"
+    const readRevision = () => (typeof stateRuntime.getDisplayRevision === "function"
       ? stateRuntime.getDisplayRevision()
-      : null;
-    animationOverridePreviewTimer = setTimeout(() => {
-      animationOverridePreviewTimer = null;
-      if (generation !== animationOverridePreviewGeneration) return;
+      : null);
+    const beforeRevision = readRevision();
+    let applyError = null;
+    try {
+      // The settingsPreview marker is what lets state.js tell "a preview owns
+      // this visual" from "the pet is really in this state" — without it a
+      // real event on the same state name would be deduped away and never take
+      // the visual back.
+      stateRuntime.applyState(stateKey, file, { settingsPreview: true });
+    } catch (err) {
+      applyError = err;
+    }
+    // "Landed" means THIS apply advanced the display revision and now holds a
+    // settings-preview owner. A bare isSettingsPreviewVisual() === true is not
+    // enough: a previous preview that is still up would read true even though
+    // this attempt early-returned, and its old visual would then be held under
+    // the new duration. When the runtime cannot report a revision, fall back to
+    // the marker alone.
+    const afterRevision = readRevision();
+    const revisionAdvanced = beforeRevision === null
+      || afterRevision === null
+      || afterRevision !== beforeRevision;
+    const ownedByThisPreview = typeof stateRuntime.isSettingsPreviewVisual !== "function"
+      || stateRuntime.isSettingsPreviewVisual() === true;
+    // A "partial landing" is the same visual takeover as a landing, except the
+    // apply threw after taking it (revision advanced + preview owner set). It
+    // is judged from THIS apply's revision, never the outstanding preview's:
+    // the attempt replaced whatever was up, so it must be handed back now.
+    const tookVisual = revisionAdvanced && ownedByThisPreview;
+
+    if (!applyError && tookVisual) {
+      const holdMs = resolvePreviewHoldMs(file, durationMs);
+      const generation = animationOverridePreviewGeneration;
+      statePreviewOutstanding = true;
+      statePreviewRevision = afterRevision;
+      animationOverridePreviewTimer = setTimeout(() => {
+        animationOverridePreviewTimer = null;
+        if (generation !== animationOverridePreviewGeneration) return;
+        if (releaseStatePreview()) restoreDisplayedState();
+      }, holdMs);
+      return { status: "ok", applied: true };
+    }
+
+    if (tookVisual) {
+      // applyState took the visual and only then threw: there is no timer and
+      // no valid owner, so hand the authoritative state back immediately.
+      statePreviewOutstanding = false;
+      statePreviewRevision = null;
+      restoreDisplayedState();
+    } else if (statePreviewOutstanding) {
+      // No visual was taken by this attempt; a previous preview that is still
+      // shown just lost its timer, so hand it back. Ownership is always dropped.
       if (releaseStatePreview()) restoreDisplayedState();
-    }, holdMs);
-    return { status: "ok" };
+    }
+
+    if (applyError) {
+      return { status: "error", message: `previewAnimationOverride: ${applyError && applyError.message}` };
+    }
+    return { status: "ok", applied: false };
   }
 
   function previewAnimationOverride(payload) {

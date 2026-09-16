@@ -11,6 +11,47 @@ const {
   registerSettingsAnimationOverridesIpc,
 } = createSettingsAnimationOverridesMain;
 const animationOverrideTest = createSettingsAnimationOverridesMain.__test;
+const themeLoader = require("../src/theme-loader");
+const { createTranslator } = require("../src/i18n");
+
+themeLoader.init(path.join(__dirname, "..", "src"));
+
+// A real src/state.js instance for tests that need the true preview-ownership
+// contract (mini remaps, display revision) rather than the harness fake.
+function createRealStateRuntime({ theme, miniMode = false } = {}) {
+  const sounds = [];
+  const flashes = [];
+  const ctx = {
+    lang: "en",
+    theme,
+    doNotDisturb: false,
+    miniTransitioning: false,
+    miniMode,
+    mouseOverPet: false,
+    idlePaused: false,
+    forceEyeResend: false,
+    eyePauseUntil: 0,
+    mouseStillSince: Date.now(),
+    miniSleepPeeked: false,
+    playSound: (name) => sounds.push(name),
+    flashTaskbar: () => flashes.push("flash"),
+    sendToRenderer: () => {},
+    syncHitWin: () => {},
+    sendToHitWin: () => {},
+    miniPeekIn: () => {},
+    miniPeekOut: () => {},
+    buildContextMenu: () => {},
+    buildTrayMenu: () => {},
+    pendingPermissions: [],
+    resolvePermissionEntry: () => {},
+    focusTerminalWindow: () => {},
+    processKill: () => true,
+    getCursorScreenPoint: () => ({ x: 100, y: 100 }),
+  };
+  ctx.t = createTranslator(() => ctx.lang);
+  const api = require("../src/state")(ctx);
+  return { api, sounds, flashes };
+}
 
 class FakeIpcMain {
   constructor() {
@@ -85,7 +126,14 @@ function createRuntimeHarness(overrides = {}) {
   let themeReloadInProgress = !!overrides.themeReloadInProgress;
   let displayState = overrides.displayState || "idle";
   let currentState = overrides.currentState || "idle";
+  let currentVisualSource = null;
   let displayRevision = 0;
+  let applyStateEarlyReturns = overrides.applyStateEarlyReturns === true;
+  let applyStateThrows = overrides.applyStateThrows === true;
+  let applyStateThrowsAfterLanding = overrides.applyStateThrowsAfterLanding === true;
+  const injectedStateRuntime = typeof overrides.stateRuntimeFactory === "function"
+    ? overrides.stateRuntimeFactory()
+    : (overrides.stateRuntime || null);
   const activeTheme = typeof overrides.activeThemeFactory === "function"
     ? overrides.activeThemeFactory(root)
     : (overrides.activeTheme || makeTheme(root, overrides.themeOverrides));
@@ -115,17 +163,33 @@ function createRuntimeHarness(overrides = {}) {
     getSettingsWindow: () => null,
     getLang: () => "en",
     getThemeReloadInProgress: () => themeReloadInProgress,
-    getStateRuntime: () => ({
+    getStateRuntime: () => injectedStateRuntime || {
       applyState: (...args) => {
+        stateCalls.push(["applyState", ...args]);
+        // Simulates applyState's early returns (mini transition, disabled
+        // one-shot): the call is recorded but the visual never changes.
+        if (applyStateThrows) throw new Error("applyState failed");
+        if (applyStateEarlyReturns) return;
         currentState = args[0];
         displayRevision += 1;
-        stateCalls.push(["applyState", ...args]);
+        // Mirrors src/state.js: the settingsPreview marker is the only thing
+        // that makes the current visual settings-owned.
+        currentVisualSource = args[2] && args[2].settingsPreview === true
+          ? "settings-preview"
+          : null;
+        // One-shot: the visual is taken, then the apply fails. The follow-up
+        // hand-back must still be able to apply for real.
+        if (applyStateThrowsAfterLanding) {
+          applyStateThrowsAfterLanding = false;
+          throw new Error("applyState failed after landing");
+        }
       },
       getCurrentState: () => currentState,
       getDisplayRevision: () => displayRevision,
+      isSettingsPreviewVisual: () => currentVisualSource === "settings-preview",
       resolveDisplayState: () => displayState,
       getSvgOverride: (state) => `${state}.svg`,
-    }),
+    },
     sendToRenderer: (...args) => stateCalls.push(["sendToRenderer", ...args]),
   });
 
@@ -138,11 +202,21 @@ function createRuntimeHarness(overrides = {}) {
     setDisplayState(value) {
       displayState = value;
     },
+    setApplyStateEarlyReturns(value) {
+      applyStateEarlyReturns = !!value;
+    },
+    setApplyStateThrows(value) {
+      applyStateThrows = !!value;
+    },
+    setApplyStateThrowsAfterLanding(value) {
+      applyStateThrowsAfterLanding = !!value;
+    },
     // A real event applying a state, the way state.js does: the revision moves
-    // even when the state name is unchanged.
+    // even when the state name is unchanged, and preview ownership is dropped.
     simulateRealStateChange(value) {
       currentState = value;
       displayRevision += 1;
+      currentVisualSource = null;
     },
     setThemeReloadInProgress(value) {
       themeReloadInProgress = !!value;
@@ -292,7 +366,7 @@ test("external object-channel SVG previews require posters without getting trust
     );
     assert.deepStrictEqual(
       harness.runtime.previewAnimationOverride({ stateKey: "thinking", file: "scripted.svg", durationMs: 12000 }),
-      { status: "ok" }
+      { status: "ok", applied: true }
     );
     assert.deepStrictEqual(delays, [animationOverrideTest.PREVIEW_HOLD_MAX_MS]);
   } finally {
@@ -396,7 +470,7 @@ test("animation preview requests defer while theme reload is in progress", () =>
     harness.setThemeReloadInProgress(false);
     harness.runtime.runPendingPostReloadTasks();
 
-    assert.deepStrictEqual(harness.stateCalls[0], ["applyState", "thinking", "scripted.svg"]);
+    assert.deepStrictEqual(harness.stateCalls[0], ["applyState", "thinking", "scripted.svg", { settingsPreview: true }]);
   } finally {
     harness.cleanup();
   }
@@ -584,7 +658,7 @@ test("a finished preview hands the pet back to the live state instead of forcing
     });
 
     assert.deepStrictEqual(harness.stateCalls, [
-      ["applyState", "thinking", "scripted.svg"],
+      ["applyState", "thinking", "scripted.svg", { settingsPreview: true }],
       ["applyState", "working", "working.svg", { muteStateSounds: true }],
     ]);
   } finally {
@@ -601,8 +675,8 @@ test("a replaced or cancelled preview cannot restore state afterwards", () => {
       timers[0].fn();
 
       assert.deepStrictEqual(harness.stateCalls, [
-        ["applyState", "thinking", "scripted.svg"],
-        ["applyState", "sleeping", "sleep.svg"],
+        ["applyState", "thinking", "scripted.svg", { settingsPreview: true }],
+        ["applyState", "sleeping", "sleep.svg", { settingsPreview: true }],
       ]);
 
       harness.runtime.cancelAnimationPreview();
@@ -656,7 +730,7 @@ test("cancelling a state preview hands the pet back once", () => {
     assert.deepStrictEqual(harness.runtime.cancelAnimationPreview(), { status: "ok", restoredState: false });
 
     assert.deepStrictEqual(harness.stateCalls, [
-      ["applyState", "thinking", "scripted.svg"],
+      ["applyState", "thinking", "scripted.svg", { settingsPreview: true }],
       ["sendToRenderer", "cancel-click-reaction"],
       ["applyState", "idle", "idle.svg", { muteStateSounds: true }],
       ["sendToRenderer", "cancel-click-reaction"],
@@ -665,6 +739,147 @@ test("cancelling a state preview hands the pet back once", () => {
     harness.cleanup();
     global.setTimeout = originalSetTimeout;
     global.clearTimeout = originalClearTimeout;
+  }
+});
+
+test("an early-returning applyState leaves no preview owner to release", () => {
+  const harness = createRuntimeHarness({ applyStateEarlyReturns: true });
+  try {
+    assert.deepStrictEqual(
+      harness.runtime.previewAnimationOverride({ stateKey: "thinking", file: "scripted.svg", durationMs: 5000 }),
+      { status: "ok", applied: false }
+    );
+    // The preview never took the visual, so a cancel must only cancel the
+    // renderer reaction and must not re-apply state.
+    assert.deepStrictEqual(harness.runtime.cancelAnimationPreview(), { status: "ok", restoredState: false });
+    assert.deepStrictEqual(harness.stateCalls, [
+      ["applyState", "thinking", "scripted.svg", { settingsPreview: true }],
+      ["sendToRenderer", "cancel-click-reaction"],
+    ]);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("a preview that fails to land hands the previous preview back", () => {
+  const harness = createRuntimeHarness();
+  try {
+    withFakeTimers(() => {
+      assert.deepStrictEqual(
+        harness.runtime.previewAnimationOverride({ stateKey: "thinking", file: "scripted.svg", durationMs: 5000 }),
+        { status: "ok", applied: true }
+      );
+      // B clears A's timer, then early-returns: A is still on screen but would
+      // have no recovery path unless the failure hands it back.
+      harness.setApplyStateEarlyReturns(true);
+      assert.deepStrictEqual(
+        harness.runtime.previewAnimationOverride({ stateKey: "sleeping", file: "sleep.svg", durationMs: 5000 }),
+        { status: "ok", applied: false }
+      );
+      harness.setApplyStateEarlyReturns(false);
+    });
+    assert.deepStrictEqual(harness.stateCalls, [
+      ["applyState", "thinking", "scripted.svg", { settingsPreview: true }],
+      ["applyState", "sleeping", "sleep.svg", { settingsPreview: true }],
+      ["applyState", "idle", "idle.svg", { muteStateSounds: true }],
+    ]);
+    // Ownership is gone, so a later cancel must not apply state again.
+    assert.deepStrictEqual(harness.runtime.cancelAnimationPreview(), { status: "ok", restoredState: false });
+    assert.deepStrictEqual(harness.stateCalls.slice(3), [["sendToRenderer", "cancel-click-reaction"]]);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("a preview that throws hands the previous preview back", () => {
+  const harness = createRuntimeHarness();
+  try {
+    withFakeTimers(() => {
+      harness.runtime.previewAnimationOverride({ stateKey: "thinking", file: "scripted.svg", durationMs: 5000 });
+      harness.setApplyStateThrows(true);
+      const result = harness.runtime.previewAnimationOverride({ stateKey: "sleeping", file: "sleep.svg", durationMs: 5000 });
+      assert.strictEqual(result.status, "error");
+      harness.setApplyStateThrows(false);
+    });
+    assert.deepStrictEqual(harness.stateCalls, [
+      ["applyState", "thinking", "scripted.svg", { settingsPreview: true }],
+      ["applyState", "sleeping", "sleep.svg", { settingsPreview: true }],
+      ["applyState", "idle", "idle.svg", { muteStateSounds: true }],
+    ]);
+    assert.deepStrictEqual(harness.runtime.cancelAnimationPreview(), { status: "ok", restoredState: false });
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("a preview that throws after taking the visual is handed back immediately", () => {
+  const harness = createRuntimeHarness();
+  try {
+    withFakeTimers(() => {
+      // The apply lands (revision advances + preview owner) and only then
+      // throws — the pet would otherwise be stuck on the preview with no timer.
+      harness.setApplyStateThrowsAfterLanding(true);
+      const result = harness.runtime.previewAnimationOverride({ stateKey: "thinking", file: "scripted.svg", durationMs: 5000 });
+      assert.strictEqual(result.status, "error");
+    });
+    assert.deepStrictEqual(harness.stateCalls, [
+      ["applyState", "thinking", "scripted.svg", { settingsPreview: true }],
+      ["applyState", "idle", "idle.svg", { muteStateSounds: true }],
+    ]);
+    // Ownership is gone, so a later cancel must not apply state again.
+    assert.deepStrictEqual(harness.runtime.cancelAnimationPreview(), { status: "ok", restoredState: false });
+    assert.deepStrictEqual(harness.stateCalls.slice(2), [["sendToRenderer", "cancel-click-reaction"]]);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("a partial landing after a previous preview hands back by its own revision", () => {
+  const harness = createRuntimeHarness();
+  try {
+    withFakeTimers(() => {
+      harness.runtime.previewAnimationOverride({ stateKey: "thinking", file: "scripted.svg", durationMs: 5000 });
+      // B replaces A and then fails. The hand-back must be judged from B's
+      // revision; A's recorded revision no longer matches the shown visual.
+      harness.setApplyStateThrowsAfterLanding(true);
+      const result = harness.runtime.previewAnimationOverride({ stateKey: "sleeping", file: "sleep.svg", durationMs: 5000 });
+      assert.strictEqual(result.status, "error");
+    });
+    assert.deepStrictEqual(harness.stateCalls, [
+      ["applyState", "thinking", "scripted.svg", { settingsPreview: true }],
+      ["applyState", "sleeping", "sleep.svg", { settingsPreview: true }],
+      ["applyState", "idle", "idle.svg", { muteStateSounds: true }],
+    ]);
+    assert.deepStrictEqual(harness.runtime.cancelAnimationPreview(), { status: "ok", restoredState: false });
+    assert.deepStrictEqual(harness.stateCalls.slice(3), [["sendToRenderer", "cancel-click-reaction"]]);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("a mini-working preview keeps ownership and is handed back by the settings timer", () => {
+  const hashSage = themeLoader.loadTheme("hash-sage");
+  const { api } = createRealStateRuntime({ theme: hashSage, miniMode: true });
+  const harness = createRuntimeHarness({ stateRuntime: api, activeTheme: hashSage });
+  try {
+    withFakeTimers((timers) => {
+      assert.deepStrictEqual(
+        harness.runtime.previewAnimationOverride({ stateKey: "working", file: "working.svg", durationMs: 900 }),
+        { status: "ok", applied: true }
+      );
+      // Hash Sage maps working → mini-working; the ownership marker must
+      // survive that remap or the preview stays on screen forever.
+      assert.strictEqual(api.getCurrentState(), "mini-working");
+      assert.strictEqual(api.isSettingsPreviewVisual(), true);
+      assert.strictEqual(timers.length, 1, "only the hand-back timer should be scheduled");
+      assert.strictEqual(timers[0].ms, 900);
+      timers[0].fn();
+    });
+    assert.strictEqual(api.isSettingsPreviewVisual(), false, "hand-back must release the preview owner");
+    assert.strictEqual(api.getCurrentState(), "mini-idle");
+  } finally {
+    harness.cleanup();
+    api.cleanup();
   }
 });
 
@@ -706,7 +921,7 @@ test("only the newest deferred preview survives a theme reload, and a cancel voi
 
     // Replaying the superseded request would restart autoReturn timing and,
     // for a one-shot, replay its cue.
-    assert.deepStrictEqual(harness.stateCalls, [["applyState", "sleeping", "sleep.svg"]]);
+    assert.deepStrictEqual(harness.stateCalls, [["applyState", "sleeping", "sleep.svg", { settingsPreview: true }]]);
 
     // Settle the preview that just ran, so the next cancel has only the
     // deferred request left to void. The queued task stays in the queue; its
@@ -740,12 +955,12 @@ test("a preview the live state has taken over is not handed back", () => {
     });
 
     // Handing back here would apply idle and cut the attention clip short.
-    assert.deepStrictEqual(harness.stateCalls, [["applyState", "thinking", "scripted.svg"]]);
+    assert.deepStrictEqual(harness.stateCalls, [["applyState", "thinking", "scripted.svg", { settingsPreview: true }]]);
 
     // Closing Settings afterwards must not do it either.
     assert.deepStrictEqual(harness.runtime.cancelAnimationPreview(), { status: "ok", restoredState: false });
     assert.deepStrictEqual(harness.stateCalls, [
-      ["applyState", "thinking", "scripted.svg"],
+      ["applyState", "thinking", "scripted.svg", { settingsPreview: true }],
       ["sendToRenderer", "cancel-click-reaction"],
     ]);
   } finally {
@@ -767,7 +982,7 @@ test("a preview is not handed back when a real event re-applies the same state",
 
     // Handing back would apply idle over the completion animation that just
     // started playing for real.
-    assert.deepStrictEqual(harness.stateCalls, [["applyState", "attention", "scripted.svg"]]);
+    assert.deepStrictEqual(harness.stateCalls, [["applyState", "attention", "scripted.svg", { settingsPreview: true }]]);
     assert.deepStrictEqual(harness.runtime.cancelAnimationPreview(), { status: "ok", restoredState: false });
   } finally {
     harness.cleanup();
