@@ -194,6 +194,24 @@ describe("animation-cycle raster probes", () => {
       source: "apng",
     });
   });
+
+  it("treats a zero APNG denominator as an exact hundredth of a second", () => {
+    const apng = buildApngBuffer([{ num: 5, den: 0 }, { num: 5, den: 0 }]);
+    assert.deepStrictEqual(probeApngCycle(apng), {
+      ms: 100,
+      status: CYCLE_STATUS.EXACT,
+      source: "apng",
+    });
+  });
+
+  it("keeps a zero APNG numerator estimated", () => {
+    const apng = buildApngBuffer([{ num: 0, den: 100 }]);
+    assert.deepStrictEqual(probeApngCycle(apng), {
+      ms: 10,
+      status: CYCLE_STATUS.ESTIMATED,
+      source: "apng",
+    });
+  });
 });
 
 describe("probeAssetCycle", () => {
