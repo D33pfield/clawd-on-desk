@@ -26,6 +26,7 @@ function desktopEntry(overrides = {}) {
     rawSessionId: `codex:${THREAD_ID}`,
     agentId: "codex",
     codexOriginator: "codex_work_desktop",
+    codexHome: "C:\\Users\\tester\\.codex",
     state: "idle",
     badge: "done",
     sourcePid: null,
@@ -47,7 +48,14 @@ test("Codex queue target extraction accepts raw and profile-scoped session keys"
 
   const rawEntry = desktopEntry();
   assert.equal(getCodexThreadId(rawEntry), THREAD_ID);
-  assert.equal(isCodexQueueTarget(rawEntry), true);
+  assert.equal(isCodexQueueTarget(rawEntry, { platform: "win32" }), true);
+
+  const namedEntry = desktopEntry({
+    id: "codex:Build / release?week#1",
+    rawSessionId: "codex:Build / release?week#1",
+  });
+  assert.equal(getCodexThreadId(namedEntry), "Build / release?week#1");
+  assert.equal(isCodexQueueTarget(namedEntry, { platform: "win32" }), true);
 
   const cliEntry = desktopEntry({
     codexOriginator: "codex-tui",
@@ -56,7 +64,7 @@ test("Codex queue target extraction accepts raw and profile-scoped session keys"
     agentPid: 16200,
   });
   assert.equal(getCodexThreadId(cliEntry), THREAD_ID);
-  assert.equal(isCodexQueueTarget(cliEntry), true);
+  assert.equal(isCodexQueueTarget(cliEntry, { platform: "win32" }), true);
 
   const rawSessionId = `codex:${THREAD_ID}`;
   const scopedEntry = desktopEntry({
@@ -64,15 +72,52 @@ test("Codex queue target extraction accepts raw and profile-scoped session keys"
     rawSessionId,
   });
   assert.equal(getCodexThreadId(scopedEntry), THREAD_ID);
-  assert.equal(isCodexQueueTarget(scopedEntry), true);
+  assert.equal(isCodexQueueTarget(scopedEntry, { platform: "win32" }), true);
 
   const scopedWithoutRaw = desktopEntry({
     id: makeSessionKey({ profileId: "local", rawSessionId }),
     rawSessionId: null,
   });
   assert.equal(getCodexThreadId(scopedWithoutRaw), THREAD_ID);
-  assert.equal(isCodexQueueTarget(scopedWithoutRaw), true);
+  assert.equal(isCodexQueueTarget(scopedWithoutRaw, { platform: "win32" }), true);
   assert.equal(getCodexThreadId(desktopEntry({ id: "s1.local.not-valid", rawSessionId: null })), null);
+});
+
+test("Codex queue targets reject placeholder session identities before process spawn", async () => {
+  for (const rawSessionId of [
+    "default",
+    " DEFAULT ",
+    "codex:",
+    " CODEX: ",
+    "codex:default",
+    " CODEX: DEFAULT ",
+  ]) {
+    assert.equal(normalizeCodexThreadId(rawSessionId), null, rawSessionId);
+    const entry = desktopEntry({ id: rawSessionId, rawSessionId });
+    assert.equal(getCodexThreadId(entry), null, rawSessionId);
+    assert.equal(isCodexQueueTarget(entry, { platform: "win32" }), false, rawSessionId);
+  }
+
+  const scopedPlaceholder = desktopEntry({
+    id: makeSessionKey({ profileId: "local", rawSessionId: "codex:default" }),
+    rawSessionId: null,
+  });
+  assert.equal(getCodexThreadId(scopedPlaceholder), null);
+  assert.equal(isCodexQueueTarget(scopedPlaceholder, { platform: "win32" }), false);
+
+  let execCalls = 0;
+  const adapter = createCodexQueueDeliveryAdapter({
+    executable: "codex.exe",
+    osPlatform: "win32",
+    execFile: () => { execCalls += 1; },
+  });
+  const result = await adapter.deliver({
+    entry: desktopEntry({ id: "codex:default", rawSessionId: "codex:default" }),
+    promptText: "must not be queued",
+  });
+  assert.equal(result.errorClass, "codex_thread_id_invalid");
+  assert.equal(result.delivered, false);
+  assert.equal(execCalls, 0);
 });
 
 test("Codex home derivation accepts only canonical rollout layouts", () => {
@@ -106,8 +151,33 @@ test("Codex queue target rejects remote, hidden, and unknown-originator sessions
     { wslDistro: "Ubuntu" },
     { platform: "WSL" },
   ]) {
-    assert.equal(isCodexQueueTarget(desktopEntry(overrides)), false, JSON.stringify(overrides));
+    assert.equal(
+      isCodexQueueTarget(desktopEntry(overrides), { platform: "win32" }),
+      false,
+      JSON.stringify(overrides),
+    );
   }
+});
+
+test("Codex queue targets require an authoritative store for Desktop and CLI", async () => {
+  for (const codexOriginator of ["codex_work_desktop", "codex-tui"]) {
+    const entry = desktopEntry({ codexOriginator, codexHome: null });
+    assert.equal(isCodexQueueTarget(entry, { platform: "win32" }), false, codexOriginator);
+  }
+
+  let execCalls = 0;
+  const adapter = createCodexQueueDeliveryAdapter({
+    executable: "codex.exe",
+    osPlatform: "win32",
+    execFile: () => { execCalls += 1; },
+  });
+  const result = await adapter.deliver({
+    entry: desktopEntry({ codexHome: null }),
+    promptText: "must use clipboard fallback",
+  });
+  assert.equal(result.errorClass, "codex_thread_id_invalid");
+  assert.equal(result.delivered, false);
+  assert.equal(execCalls, 0);
 });
 
 test("Codex CLI queue delivery binds the child to its session store", async () => {
@@ -115,7 +185,10 @@ test("Codex CLI queue delivery binds the child to its session store", async () =
   const adapter = createCodexQueueDeliveryAdapter({
     executable: "codex.exe",
     osPlatform: "win32",
-    env: { CODEX_HOME: "C:\\Users\\tester\\.codex" },
+    env: {
+      CODEX_HOME: "C:\\Users\\tester\\.codex",
+      CODEX_SQLITE_HOME: "C:\\Users\\tester\\.codex-sqlite",
+    },
     execFile: (command, args, options, callback) => {
       calls.push({ command, args, options });
       callback(null, "queued", "");
@@ -134,6 +207,71 @@ test("Codex CLI queue delivery binds the child to its session store", async () =
   assert.equal(result.status, "queued");
   assert.equal(calls.length, 1);
   assert.equal(calls[0].options.env.CODEX_HOME, "D:\\isolated-codex");
+  assert.deepEqual(
+    Object.keys(calls[0].options.env).filter((key) => key.toLowerCase() === "codex_sqlite_home"),
+    [],
+  );
+});
+
+test("Codex queue delivery removes ambient Windows SQLite-home spellings", async () => {
+  const previousExact = process.env.CODEX_SQLITE_HOME;
+  const previousMixed = process.env.Codex_Sqlite_Home;
+  const calls = [];
+  try {
+    process.env.CODEX_SQLITE_HOME = "C:\\ambient-sqlite";
+    process.env.Codex_Sqlite_Home = "C:\\ambient-mixed-sqlite";
+    const adapter = createCodexQueueDeliveryAdapter({
+      executable: "codex.exe",
+      osPlatform: "win32",
+      env: { CODEX_HOME: "C:\\ambient-codex" },
+      execFile: (command, args, options, callback) => {
+        calls.push({ command, args, options });
+        callback(null, "queued", "");
+      },
+    });
+    const result = await adapter.deliver({
+      entry: desktopEntry({ codexHome: "D:\\isolated-codex" }),
+      promptText: "continue",
+    });
+    assert.equal(result.status, "queued");
+  } finally {
+    if (previousExact === undefined) delete process.env.CODEX_SQLITE_HOME;
+    else process.env.CODEX_SQLITE_HOME = previousExact;
+    if (previousMixed === undefined) delete process.env.Codex_Sqlite_Home;
+    else process.env.Codex_Sqlite_Home = previousMixed;
+  }
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.env.CODEX_HOME, "D:\\isolated-codex");
+  assert.deepEqual(
+    Object.keys(calls[0].options.env).filter((key) => key.toLowerCase() === "codex_sqlite_home"),
+    [],
+  );
+});
+
+test("Codex queue delivery removes an injected POSIX SQLite-home override", async () => {
+  const calls = [];
+  const adapter = createCodexQueueDeliveryAdapter({
+    executable: "/usr/local/bin/codex",
+    osPlatform: "linux",
+    env: {
+      CODEX_HOME: "/home/tester/.codex",
+      CODEX_SQLITE_HOME: "/home/tester/.codex-sqlite",
+    },
+    execFile: (command, args, options, callback) => {
+      calls.push({ command, args, options });
+      callback(null, "queued", "");
+    },
+  });
+  const result = await adapter.deliver({
+    entry: desktopEntry({ codexHome: "/tmp/isolated-codex" }),
+    promptText: "continue",
+  });
+
+  assert.equal(result.status, "queued");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.env.CODEX_HOME, "/tmp/isolated-codex");
+  assert.equal(Object.hasOwn(calls[0].options.env, "CODEX_SQLITE_HOME"), false);
 });
 
 test("Codex queue adapter passes the exact thread and message arguments without a shell", async () => {

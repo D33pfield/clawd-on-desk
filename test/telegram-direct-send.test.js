@@ -2691,6 +2691,7 @@ test("direct send revalidates every Codex queue candidate before submission", as
       rawSessionId: `codex:${threadId}`,
       agentId: "codex",
       codexOriginator: "codex_work_desktop",
+      codexHome: "/tmp/codex-home",
       sourcePid: null,
       agentPid: 14220,
     });

@@ -4,6 +4,7 @@ const path = require("path");
 const {
   isCodexCliOriginator,
   isCodexDesktopOriginator,
+  isCodexPlaceholderSessionId,
 } = require("../hooks/codex-originator");
 
 const CODEX_THREAD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -27,10 +28,11 @@ function normalizeCodexThreadId(value) {
   // disappear and become an apparently valid thread name.
   if (CODEX_THREAD_NAME_INVALID_RE.test(value)) return null;
   let text = normalizeString(value);
+  if (isCodexPlaceholderSessionId(text)) return null;
   if (text.toLowerCase().startsWith(CODEX_PREFIX)) {
     text = text.slice(CODEX_PREFIX.length).trim();
   }
-  if (!text || text.length > CODEX_THREAD_NAME_MAX_LENGTH) return null;
+  if (!text || isCodexPlaceholderSessionId(text) || text.length > CODEX_THREAD_NAME_MAX_LENGTH) return null;
   return CODEX_THREAD_ID_RE.test(text) ? text.toLowerCase() : text;
 }
 
@@ -104,11 +106,10 @@ function getCodexThreadId(entry) {
 }
 
 function isCodexQueueTarget(entry, options = {}) {
-  const originator = entry && (entry.codexOriginator || entry.originator);
   const platform = options.platform || process.platform;
   return !!getCodexThreadId(entry)
     && !!entry
-    && (!isCodexCliOriginator(originator) || !!normalizeCodexHome(entry.codexHome, platform))
+    && !!normalizeCodexHome(entry.codexHome, platform)
     && !entry.host
     // A WSL hook can report a Codex Desktop originator while its rollout and
     // queue store live in Linux. Running the Windows queue CLI here would

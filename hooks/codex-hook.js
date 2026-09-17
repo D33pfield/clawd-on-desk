@@ -37,6 +37,7 @@ const {
 } = require("./codex-assistant-output");
 const { readCodexThreadName } = require("./codex-session-index");
 const {
+  CODEX_DEFAULT_SESSION_ID,
   isCodexCliOriginator,
   isCodexDesktopOriginator,
 } = require("./codex-originator");
@@ -158,7 +159,7 @@ function extractCodexSessionIdFromTranscriptPath(transcriptPath) {
 function normalizeCodexSessionId(value, transcriptPath = "") {
   const transcriptSessionId = extractCodexSessionIdFromTranscriptPath(transcriptPath);
   const raw = transcriptSessionId
-    || (typeof value === "string" && value.trim() ? value.trim() : "default");
+    || (typeof value === "string" && value.trim() ? value.trim() : CODEX_DEFAULT_SESSION_ID);
   return raw.startsWith("codex:") ? raw : `codex:${raw}`;
 }
 

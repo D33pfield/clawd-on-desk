@@ -228,6 +228,19 @@ function mergedExecutionEnv(env, platform = process.platform) {
   return out;
 }
 
+function withoutCodexStoreEnv(env, platform = process.platform) {
+  const source = env && typeof env === "object" ? env : {};
+  const caseInsensitive = platform === "win32";
+  const blocked = new Set(["CODEX_HOME", "CODEX_SQLITE_HOME"]);
+  const out = {};
+  for (const [key, value] of Object.entries(source)) {
+    const comparable = caseInsensitive ? String(key).toUpperCase() : key;
+    if (blocked.has(comparable)) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 function appendWindowsCodexRootCandidates({
   add,
   root,
@@ -491,9 +504,14 @@ function createCodexQueueDeliveryAdapter({
       return { status: "failed", delivered: false, errorClass: "codex_thread_id_invalid" };
     }
     const codexHome = normalizeCodexHome(entry.codexHome, osPlatform);
-    const deliveryEnv = codexHome
-      ? mergedExecutionEnv({ ...executionEnv, CODEX_HOME: codexHome }, osPlatform)
-      : executionEnv;
+    if (!codexHome) {
+      return { status: "failed", delivered: false, errorClass: "codex_thread_id_invalid" };
+    }
+    const deliveryEnv = mergedExecutionEnv({
+      ...withoutCodexStoreEnv(executionEnv, osPlatform),
+      CODEX_HOME: codexHome,
+      CODEX_SQLITE_HOME: undefined,
+    }, osPlatform);
     const threadId = getCodexThreadId(entry);
     const promptText = typeof payload.promptText === "string" ? payload.promptText : "";
     if (!threadId || !normalizeCodexThreadId(threadId)) {
