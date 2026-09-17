@@ -33,12 +33,21 @@ const {
 const { checkCodexHookTrust, checkCodexHooksFeature } = require("./codex-features-check");
 const { inspectStableCodexHookCommand } = require("../../hooks/codex-install-utils");
 const { validateOpencodeEntry } = require("./opencode-entry-validator");
+const { inspectManagedOpencode } = require("./opencode-managed-inspector");
 const { validateOpenClawEntry } = require("./openclaw-entry-validator");
 const { inspectGrokHookFile } = require("../../hooks/grok-install");
 const { hasIncludeDirective } = require("../../hooks/openclaw-install");
 const { inspectDeepSeekHarnessDiskSync } = require("../../hooks/dsh-install");
 
-const REPAIRABLE_AGENT_STATUSES = new Set(["not-connected", "broken-path"]);
+const REPAIRABLE_AGENT_STATUSES = new Set([
+  "not-connected",
+  "broken-path",
+  // #1026 managed OpenCode: a safe migration (legacy source / verified copy /
+  // owned stale generation / single missing legacy path) and safe duplicate
+  // convergence both have a real Repair path.
+  "legacy-path",
+  "duplicate-entry",
+]);
 const GEMINI_HOOKS_DISABLED_DETAIL = "Gemini hooks are disabled in settings.json; Clawd preserves this user setting and will not receive hook events";
 const ANTIGRAVITY_HOOKS_DISABLED_DETAIL = "Antigravity Clawd hooks are disabled in hooks.json; Clawd preserves this user setting and will not receive hook events";
 const QWEN_HOOKS_DISABLED_DETAIL = "Qwen Code hooks are disabled in settings.json; Clawd preserves this user setting and will not receive hook events";
@@ -366,6 +375,8 @@ function statusLevel(status) {
     || status === "broken-path"
     || status === "config-corrupt"
     || status === "needs-review"
+    || status === "legacy-path"
+    || status === "duplicate-entry"
   ) {
     return "warning";
   }
@@ -1460,6 +1471,11 @@ function applyAntigravitySupplementary(detail, descriptor, settings) {
 // miss the live one (#607 review). Only opencode-family JSONC members set
 // configCandidates, so this always funnels into checkOpencodeSettings.
 function checkMergedJsoncConfig(descriptor, options) {
+  // #1026: managed members use the ownership/manifest/generation inspector.
+  // MiMo (managedMaterialization:false) keeps the baseline path below.
+  if (descriptor.managedMaterialization === true) {
+    return inspectManagedOpencode(descriptor, options);
+  }
   const existing = [];
   for (const candidate of descriptor.configCandidates) {
     if (!fileExists(options.fs, candidate)) continue;

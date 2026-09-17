@@ -217,6 +217,57 @@ opencode 状态同步（in-process plugin，~0ms 延迟）：
   在 plugin 内因果串行，lifecycle 最多投递 3 次。Clawd 只按 agent/request/canonical session/bridge generation
   精确清理 pending UI、timer 与 notification，不向宿主反向发送第二次决定。
 
+opencode 托管 generation 注册（#1026）：
+  registry gate：agents/opencode-family.js 每个成员显式声明 managedMaterialization。opencode 为 true，
+  MiMo 本次保持 false；该 flag 同时 gate materialize、ownership classifier、managed Doctor 与 generation cleanup，
+  不得从 runtime / 平台 / permissionApproval 推导。
+  默认布局（目标 home，不是 Clawd 安装目录）：
+    <home>/.clawd/integrations/opencode-family/<agentId>/
+      homes/<sha256(canonical-config-dir)>/
+        owner.json                  // literal clawd-on-desk.opencode-family.target
+        mutation.lock/lock.json     // 独立 literal clawd-on-desk.opencode-family.target.lock
+        generations/<bundleHash>/
+          manifest.json
+          <agentId>-plugin/{index.mjs,package.json}
+          opencode-family-plugin/{core.mjs,session-ids.mjs}
+  数据流：Settings Install / startup sync / CLI install / Doctor Repair
+    → opencode-family-install 解析 target（canonicalizeTargetPath 是唯一路径身份）
+    → 取 target-scoped mutation lock
+    → 校验/写 owner record，materialize 内容寻址 generation（stage → 复验 hash/manifest/结构 → rename）
+    → entry ownership planner 分类所有候选文件（string/tuple、legacy source、verified copy、owned stale、
+      单一 missing legacy、modified/corrupt/unknown fail closed）并收敛为恰好一条 canonical entry
+    → masked lower-priority 文件先清、effective 文件最后写，写后重读 postcondition。
+  basename 不构成所有权；身份不清时 fail closed 且零 config mutation。options.pluginDir 是 test-only expected
+  canonical override（跳过 generation/manifest/boundary，但仍执行 ownership、唯一 entry 与 read-back）。
+  tuple 契约（OpenCode 1.18.31 真机证据，2026-09-17）：隔离 XDG_CONFIG_HOME 下运行
+  `opencode debug config`，`plugin` 只接受 string 或 `[specifier, optionsObject]`（第二项必须是普通对象）；
+  `[["/abs/opencode-plugin"]]`（Missing key plugin.0.1）与 `[["/abs/opencode-plugin","/b"]]`
+  （Expected object）都被宿主拒绝。因此解析器只认长度 2、首项 string、次项 plain object 的 tuple；其他 array
+  归 malformed/foreign 原样保留。重写 tuple 只替换 `plugin[index][0]`，options 值级保留，绝不把
+  `[canonical, options]` 写回造成嵌套。多个 safe-owned tuple options 冲突时 `tuple-options-conflict` 零 mutation。
+  MiMo（flag=false）继续 broad-basename register/unregister/Doctor，行为不变。
+  卸载：只有 proven-owned entries 被移除；配置不再引用 targetRoot 后才清理 owned generation，再释放与本次
+  source 匹配的 owner record。configPath-only 调用（Windows NSIS cleanup）仍扫配置，返回
+  managedFilesRemoved:false + managed-root-unknown warning。Settings Uninstall 以 registrationRemoved
+  true/false|null 判定是否提交 integrationInstalled:false；残留文件只 warning。
+  lock：被持有时不并发写；interactive Install/Repair/CLI/Uninstall/About cleanup 只做一次短而有界、可注入 delay
+  的重试，startup automatic 不等待直接 skipped；只有合法记录、超过 owner timeout 两倍且 PID 明确 ESRCH 才
+  atomic quarantine 接管，corrupt/foreign/live/EPERM 不接管；release 只删自己 token 的记录与随后为空的精确目录，
+  禁止 recursive cleanup，release 失败以 warning + residualPaths（精确 lock path）暴露，不掩盖主结果。
+  owner 的 `activeSourceMarker` 必须是 `<activeSourceRoot>/<pluginDirName>/index.mjs`
+  （共享 canonical 身份、Windows 折叠大小写）且为 regular file；目录/dangling/错 plugin 目录/root 不匹配都不算 live。
+  同一 target 的 live source owner 冲突一律 `owner-conflict` 且 byte-identical；旧 owner 的 marker 已不存在时，新
+  source 在锁内重读并原子接管 owner（config 已 canonical 也不例外）；锁内若 config 与当前 source owner 都已被并发
+  操作收敛，则零 mutation、零 materialize 返回 skipped。
+  离线安全：managed core 在 host-invoked initializer 最顶部运行 evaluateManagedLayoutGate。layout 匹配但
+  owner literal/schema/agent、64-hex target hash、绝对且 hash 自洽的 canonicalConfigDir、有界绝对 history、source
+  pairing、marker 结构或 regular-file 任一不符（含缺失/损坏）时，
+  在任何 log truncate / PID walk / bridge / handler 注册之前返回空 handler（inert）。完整 generation 被复制到
+  layout 外因缺少 owner record 而 inert；source-direct 模式行为不变。Doctor 使用独立 managed inspector
+  （descriptor managed flag + 注入 fs），输出 canonical ok、legacy/duplicate 可 Repair、
+  modified/corrupt/unknown/owner-conflict needs-review 无 Fix，masked ambiguous 作为 supplementary warning
+  只影响 modal attention，不改变 aggregate。
+
 MiMo Code 状态同步（in-process plugin，~0ms 延迟）：
   MiMo Code 触发事件（session.created / session.status / message.part.updated 等）
     → hooks/mimocode-plugin/index.mjs（插件跑在 mimo.exe 进程内，共享 @mimo-ai/plugin SDK）
