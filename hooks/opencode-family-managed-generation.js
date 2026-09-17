@@ -903,6 +903,41 @@ function materializeGeneration(target, cfg, sourcePluginDir, options = {}) {
   }
 }
 
+// Move one content-addressed generation out of its canonical hash slot before
+// best-effort cleanup or recovery.  The destination stays inside the exact
+// generations/ directory and is deliberately non-canonical, so a later
+// install can materialize the hash again without overwriting suspicious or
+// partially deleted bytes in place.
+function quarantineGeneration(target, genDir, options = {}) {
+  const fsImpl = options.fs || fs;
+  const platform = options.platform || process.platform;
+  const canonicalGenerations = canonicalizeTargetPath(target.generationsDir, platform, fsImpl);
+  const canonicalGen = canonicalizeTargetPath(genDir, platform, fsImpl);
+  const name = path.basename(genDir);
+  const directParent = canonicalizeTargetPath(path.dirname(genDir), platform, fsImpl);
+  if (!/^[0-9a-f]{64}$/.test(name)
+      || canonicalGenerations === null
+      || directParent !== canonicalGenerations
+      || !isPathWithin(canonicalGen, canonicalGenerations)) {
+    return { ok: false, reason: "generation-quarantine-boundary" };
+  }
+  const label = options.label === "cleanup" ? "cleanup" : "recovery";
+  const quarantinePath = path.join(
+    target.generationsDir,
+    `.${label}-${name}-${process.pid}-${crypto.randomBytes(6).toString("hex")}`,
+  );
+  try {
+    fsImpl.renameSync(genDir, quarantinePath);
+    return { ok: true, path: quarantinePath };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: "generation-quarantine-failed",
+      message: err && err.message ? err.message : "failed to quarantine generation",
+    };
+  }
+}
+
 module.exports = {
   SCHEMA,
   TARGET_OWNER_LITERAL,
@@ -938,6 +973,7 @@ module.exports = {
   isLiveSourceMarker,
   expectedSourceMarker,
   materializeGeneration,
+  quarantineGeneration,
   sleepSync,
   writeFileAtomic,
   __test: { pidIsAlive, lockIsStale, readLockRecord, compareRelPaths },

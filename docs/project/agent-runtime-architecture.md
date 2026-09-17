@@ -247,7 +247,11 @@ opencode 托管 generation 注册（#1026）：
   `[canonical, options]` 写回造成嵌套。多个 safe-owned tuple options 冲突时 `tuple-options-conflict` 零 mutation。
   MiMo（flag=false）继续 broad-basename register/unregister/Doctor，行为不变。
   卸载：只有 proven-owned entries 被移除；配置不再引用 targetRoot 后才清理 owned generation，再释放与本次
-  source 匹配的 owner record。configPath-only 调用（Windows NSIS cleanup）仍扫配置，返回
+  source 匹配的 owner record。有效 generation 先原子改名到同级非 canonical `.cleanup-*` 再删除；文件占用使删除
+  失败时，hash 槽仍已释放，residualPaths/warning 指向隔离目录，后续安装可重新物化。对旧版本已经留下的半残
+  canonical 目录，Repair 只在 released owner 的 bounded history 精确证明该 entry 且 effective config 无活动 Clawd
+  entry 时，将其原子隔离为 `.recovery-*` 后继续；active/foreign/unproven residual 仍 fail closed，不覆盖可疑 bytes。
+  configPath-only 调用（Windows NSIS cleanup）仍扫配置，返回
   managedFilesRemoved:false + managed-root-unknown warning。Settings Uninstall 以 registrationRemoved
   true/false|null 判定是否提交 integrationInstalled:false；残留文件只 warning。
   lock：被持有时不并发写；interactive Install/Repair/CLI/Uninstall/About cleanup 只做一次短而有界、可注入 delay

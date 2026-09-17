@@ -542,6 +542,46 @@ function makeFamilyInstaller(agentId) {
         };
       }
 
+      const recoveryWarnings = [];
+      const recoveryResidualPaths = [];
+      if (!isOverride && lockedPre.needsMutation && fsImpl.existsSync(managedGeneration.generationDir(target, bundleHash))) {
+        const genDir = managedGeneration.generationDir(target, bundleHash);
+        const inspected = managedGeneration.inspectGeneration(genDir, cfg, agentId, {
+          fs: fsImpl,
+          files: sourceFiles || undefined,
+        });
+        const knownCurrentPath = lockedOwner.state === "released"
+          && Array.isArray(lockedOwner.record.knownRegisteredPaths)
+          && lockedOwner.record.knownRegisteredPaths.some((knownPath) => (
+            canonicalEqual(knownPath, canonicalEntry, fsImpl, platform)
+          ));
+        const unregisterScan = jsonc.inspectManagedUnregister({ candidates, makeContext });
+        // A previous uninstall can remove the config entry successfully but
+        // be interrupted halfway through deleting the generation (notably by
+        // a Windows file handle).  Only a released, structurally valid owner
+        // record whose bounded history proves this exact canonical path may
+        // recover that unregistered residual.  Move it aside atomically;
+        // never overwrite or patch the suspicious bytes in place.
+        if (!inspected.ok && knownCurrentPath && unregisterScan.activeEntryRemaining === false) {
+          const quarantine = managedGeneration.quarantineGeneration(target, genDir, {
+            fs: fsImpl,
+            platform,
+            label: "recovery",
+          });
+          if (!quarantine.ok) {
+            return {
+              status: "error",
+              reason: quarantine.reason,
+              message: quarantine.message || `failed to quarantine released residual generation ${genDir}`,
+              configPath,
+              pluginDir: canonicalEntry,
+            };
+          }
+          recoveryResidualPaths.push(quarantine.path);
+          recoveryWarnings.push(`released managed residual was quarantined at ${quarantine.path}`);
+        }
+      }
+
       if (!isOverride && lockedPre.needsMutation) {
         const materialized = managedGeneration.materializeGeneration(target, cfg, sourcePluginDir, {
           fs: fsImpl,
@@ -555,6 +595,8 @@ function makeFamilyInstaller(agentId) {
             message: materialized.message || "failed to materialize managed generation",
             configPath,
             pluginDir: canonicalEntry,
+            residualPaths: recoveryResidualPaths,
+            warnings: recoveryWarnings,
           };
         }
         bundleHash = materialized.bundleHash;
@@ -586,7 +628,8 @@ function makeFamilyInstaller(agentId) {
             configPath,
             pluginDir: canonicalEntry,
             mutatedPaths: apply.mutatedPaths || [],
-            warnings: [...(lockedPre.warnings || []), ...(apply.warnings || [])],
+            residualPaths: recoveryResidualPaths,
+            warnings: [...recoveryWarnings, ...(lockedPre.warnings || []), ...(apply.warnings || [])],
           };
         }
         const verify = jsonc.verifyManagedRegisterPostcondition({
@@ -603,11 +646,12 @@ function makeFamilyInstaller(agentId) {
             configPath,
             pluginDir: canonicalEntry,
             mutatedPaths: apply.mutatedPaths,
-            warnings: [...(lockedPre.warnings || []), ...(apply.warnings || [])],
+            residualPaths: recoveryResidualPaths,
+            warnings: [...recoveryWarnings, ...(lockedPre.warnings || []), ...(apply.warnings || [])],
           };
         }
       }
-      const warnings = [...(lockedPre.warnings || []), ...(apply.warnings || [])];
+      const warnings = [...recoveryWarnings, ...(lockedPre.warnings || []), ...(apply.warnings || [])];
       const effectivePath = apply.mutatedPaths.length
         ? apply.mutatedPaths[apply.mutatedPaths.length - 1]
         : (lockedPre.effective ? lockedPre.effective.path : configPath);
@@ -623,7 +667,7 @@ function makeFamilyInstaller(agentId) {
         registrationRemoved: false,
         activeEntryRemaining: true,
         managedFilesRemoved: false,
-        residualPaths: [],
+        residualPaths: recoveryResidualPaths,
         warnings,
         mutatedPaths: apply.mutatedPaths,
       };
@@ -781,6 +825,9 @@ function makeFamilyInstaller(agentId) {
         const cleanup = cleanupManagedGenerations({ cfg, target, fsImpl, platform });
         managedFilesRemoved = cleanup.removed > 0;
         residualPaths.push(...cleanup.residual);
+        if (cleanup.residual.length > 0) {
+          warnings.push(`managed generation cleanup incomplete; residual retained at ${cleanup.residual.join(", ")}`);
+        }
         ownerRecord = null;
         try {
           const release = managedGeneration.releaseOwnerRecord(target, agentId, path.dirname(sourcePluginDir), sourcePluginDir ? path.join(sourcePluginDir, "index.mjs") : "", fsImpl, ownerOptions);
@@ -913,11 +960,20 @@ function makeFamilyInstaller(agentId) {
         residual.push(genDir);
         continue;
       }
+      const quarantine = managedGeneration.quarantineGeneration(target, genDir, {
+        fs: fsImpl,
+        platform,
+        label: "cleanup",
+      });
+      if (!quarantine.ok) {
+        residual.push(genDir);
+        continue;
+      }
       try {
-        fsImpl.rmSync(genDir, { recursive: true, force: true });
+        fsImpl.rmSync(quarantine.path, { recursive: true, force: true });
         removed++;
       } catch (err) {
-        residual.push(genDir);
+        residual.push(quarantine.path);
       }
     }
     return { removed, residual };
