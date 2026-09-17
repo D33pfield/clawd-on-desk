@@ -24,6 +24,7 @@ const {
   KIMI_HOOK_EVENTS,
 } = require("../../hooks/kimi-install");
 const { parseTomlSections: parseCodewhaleTomlSections } = require("../../hooks/codewhale-install");
+const { findStandaloneBridge, listOtherOmpProfileAgentDirs } = require("../../hooks/omp-install");
 const { getAgentDescriptors } = require("./agent-descriptors");
 const {
   commandContainsFragment,
@@ -2416,22 +2417,57 @@ function readJsonIfPresent(fsImpl, filePath) {
   }
 }
 
-function isPiManagedMarker(value) {
+// Pi and OMP install the same shape: a Clawd-managed directory holding the
+// entry file, the core it imports next to it, and an ownership marker. The
+// integration id lives in the config mode ("pi-extension" → "pi",
+// "omp-extension" → "omp"), so one checker serves both instead of a copy per
+// agent. The marker check in particular must not be hard-coded to Pi: an OMP
+// install writes `integration: "omp"`, and a Pi-only validator reports that
+// healthy install as needs-review forever.
+const EXTENSION_CONFIG_MODES = Object.freeze(["pi-extension", "omp-extension"]);
+
+function isExtensionConfigMode(configMode) {
+  return EXTENSION_CONFIG_MODES.includes(configMode);
+}
+
+function extensionIntegrationId(descriptor) {
+  return String(descriptor.configMode || "").replace(/-extension$/, "");
+}
+
+function isExtensionManagedMarker(value, integrationId) {
   return !!(
     value
     && value.app === "clawd-on-desk"
-    && value.integration === "pi"
+    && value.integration === integrationId
     && value.managed === true
   );
 }
 
-function checkPiExtensionMode(descriptor, options) {
+function checkExtensionMode(descriptor, options) {
+  const integrationId = extensionIntegrationId(descriptor);
+  const agentName = descriptor.agentName || integrationId;
   const extensionDir = descriptor.configPath;
   const markerPath = path.join(extensionDir, descriptor.markerFile || ".clawd-managed.json");
   const extensionPath = path.join(extensionDir, descriptor.marker || "index.ts");
-  const corePath = path.join(extensionDir, descriptor.coreFile || "pi-extension-core.js");
+  const corePath = path.join(extensionDir, descriptor.coreFile || `${integrationId}-extension-core.js`);
+  const extensionDirExists = dirExists(options.fs, extensionDir);
+  const standaloneBridge = integrationId === "omp"
+    ? findStandaloneBridge({ extensionDir, fs: options.fs })
+    : null;
 
-  if (!dirExists(options.fs, extensionDir)) {
+  if (!extensionDirExists && standaloneBridge) {
+    return makeDetail(descriptor, "manual-managed", {
+      level: "info",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: standaloneBridge,
+      extensionDir,
+      standaloneBridge,
+      detail: `${standaloneBridge} community bridge is active; the Clawd-managed OMP extension is intentionally absent`,
+    });
+  }
+
+  if (!extensionDirExists) {
     return makeDetail(descriptor, "not-connected", {
       level: "warning",
       parentDirExists: true,
@@ -2443,7 +2479,19 @@ function checkPiExtensionMode(descriptor, options) {
   }
 
   const marker = readJsonIfPresent(options.fs, markerPath);
-  if (!isPiManagedMarker(marker)) {
+  if (standaloneBridge && isExtensionManagedMarker(marker, integrationId)) {
+    return makeDetail(descriptor, "broken-path", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: extensionDir,
+      extensionDir,
+      markerPath,
+      standaloneBridge,
+      detail: `${extensionDir} and ${standaloneBridge} are both active; Fix retires Clawd's managed copy to prevent duplicate OMP events`,
+    });
+  }
+  if (!isExtensionManagedMarker(marker, integrationId)) {
     return makeDetail(descriptor, "needs-review", {
       level: "warning",
       parentDirExists: true,
@@ -2451,7 +2499,10 @@ function checkPiExtensionMode(descriptor, options) {
       configPath: extensionDir,
       extensionDir,
       markerPath,
-      detail: `${extensionDir} exists but is not Clawd-managed`,
+      standaloneBridge,
+      detail: standaloneBridge
+        ? `${extensionDir} is not Clawd-managed and ${standaloneBridge} also exists; OMP may report duplicate events`
+        : `${extensionDir} exists but is not Clawd-managed`,
     });
   }
 
@@ -2469,7 +2520,7 @@ function checkPiExtensionMode(descriptor, options) {
       corePath,
       extensionFileExists,
       coreFileExists,
-      detail: "Pi extension files are missing or incomplete",
+      detail: `${agentName} extension files are missing or incomplete`,
     });
   }
 
@@ -2625,8 +2676,8 @@ function checkAgent(descriptor, options) {
     detail = checkCodewhaleHooksTomlMode(descriptor, options);
   } else if (descriptor.configMode === "dir") {
     detail = checkKiroDirMode(descriptor, options);
-  } else if (descriptor.configMode === "pi-extension") {
-    detail = checkPiExtensionMode(descriptor, options);
+  } else if (isExtensionConfigMode(descriptor.configMode)) {
+    detail = checkExtensionMode(descriptor, options);
   } else if (descriptor.configMode === "openclaw-plugin") {
     detail = checkOpenClawPluginMode(descriptor, options);
   } else if (descriptor.configMode === "plugin-dir") {
@@ -2642,6 +2693,9 @@ function checkAgent(descriptor, options) {
 
   if (descriptor.agentId === "kimi-cli") {
     detail = withKimiLegacyPermissionModeSupplement(detail, descriptor, options);
+  }
+  if (descriptor.agentId === "omp") {
+    detail = withOmpProfileNotice(detail, options);
   }
   detail = withClaudeHookGuardNotice(detail, descriptor, options);
   detail = withTraeCodeEnableNotice(detail, descriptor);
@@ -2716,6 +2770,29 @@ function withKimiLegacyPermissionModeSupplement(detail, descriptor, options) {
   };
 }
 
+// Clawd installs into the ONE OMP agent directory it resolves for its own
+// environment. A machine that also runs OMP under another profile (including
+// the default profile) therefore has sessions that load nothing from it — the
+// extension directory is per-profile.
+// Reporting a bare "verified" there is a claim Clawd cannot make, so the note
+// names the unmanaged profiles (setting OMP_PROFILE for Clawd, or re-running
+// the installer from that profile's shell, is the fix). Never masks a finding.
+function withOmpProfileNotice(detail, options) {
+  if (detail.status !== "ok" && detail.status !== "manual-managed") return detail;
+  const unmanaged = listOtherOmpProfileAgentDirs({
+    env: options.env,
+    homeDir: options.homeDir,
+    fs: options.fs,
+  });
+  if (!unmanaged.length) return detail;
+  const names = unmanaged.map((entry) => entry.profile).join(", ");
+  return {
+    ...detail,
+    detail: `${detail.detail}; ${unmanaged.length} other OMP profile(s) are not managed here (${names}) — Clawd resolves one OMP agent directory per environment`,
+    unmanagedOmpProfiles: unmanaged.map((entry) => entry.profile),
+  };
+}
+
 function summarize(details) {
   const counts = {};
   for (const detail of details) {
@@ -2770,7 +2847,7 @@ module.exports = {
     checkFileMode,
     checkKiroDirMode,
     checkOpenClawPluginMode,
-    checkPiExtensionMode,
+    checkExtensionMode,
     checkPluginDirMode,
     checkAntigravityHooksMode,
     findAntigravityHookCommandsForEvent,

@@ -116,6 +116,31 @@ Pi uses a global extension (`~/.pi/agent/extensions/clawd-on-desk`) and maps int
 
 Pi is state-only in Clawd: Clawd does not intercept permissions or add confirmation prompts, so Pi keeps its default YOLO execution behavior.
 
+## OMP Extension Events
+
+OMP (oh-my-pi) uses a per-agent extension directory — `~/.omp/agent/extensions/clawd-on-desk` for the default environment — and maps interactive-session lifecycle events to shared Clawd states:
+
+| OMP Extension Event | Clawd Event | State |
+|---|---|---|
+| session_start | SessionStart | idle |
+| session_switch / session_branch | SessionStart | idle |
+| before_agent_start | UserPromptSubmit | thinking |
+| tool_call | PreToolUse | working |
+| tool_result (ok) | PostToolUse | working |
+| tool_result (isError) | PostToolUseFailure | error |
+| session_stop candidate + following agent_end (`willContinue !== true`) | Stop | attention |
+| session_before_compact | PreCompact | sweeping |
+| session_compact | PostCompact | attention |
+| session_shutdown | SessionEnd | remove session; idle if no live sessions |
+
+Three behaviours differ from the Pi extension deliberately:
+
+- **Completion is committed across `session_stop` and the following `agent_end`.** `session_stop` is a pre-settle aggregation hook: another extension can still request a hidden continuation after Clawd's handler runs. Clawd records a main-session candidate there, then commits it only when OMP's following `agent_end` does not carry `willContinue: true`. Scheduling pauses, built-in retries and extension continuations therefore do not play the finish chime.
+- **`session_switch` / `session_branch` are reported, and the session being left is retired** with a synthetic `SessionEnd`. OMP can move an interactive terminal to another conversation with no shutdown for the old one, which would otherwise leave a live HUD row for a session nothing reports on again.
+- **A `session_title` is always sent.** Several interactive OMP sessions legitimately share one working directory, and the folder-name fallback would render every row — and every jump target — identically.
+
+OMP is state-only in Clawd: Clawd does not intercept permissions or add confirmation prompts, so OMP keeps its own execution behavior.
+
 ## Mini Mode
 
 Drag to the right screen edge (or right-click → "Mini Mode") to enter mini mode — half-body visible at screen edge, peeking out on hover.
