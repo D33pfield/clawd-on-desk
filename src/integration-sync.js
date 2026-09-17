@@ -414,16 +414,26 @@ function createIntegrationSyncRuntime(options = {}) {
     return syncDeepSeekHarnessPlugin({ ...options, operation: "explicit-repair", automatic: false });
   }
 
-  function syncOpencodePlugin() {
+  function syncOpencodePlugin(options = {}) {
     try {
-      if (typeof ctx.syncOpencodePluginImpl === "function") return ctx.syncOpencodePluginImpl();
+      // #1026: homeDir/configPath/managedRoot/pluginDir/source/automatic must
+      // reach the real installer (and any injected test impl), or alternate
+      // homes and startup-vs-interactive lock semantics are lost here.
+      const normalizedOptions = { ...options, silent: true };
+      if (typeof ctx.syncOpencodePluginImpl === "function") return ctx.syncOpencodePluginImpl(normalizedOptions);
       const { registerOpencodePlugin } = require("../hooks/opencode-install.js");
-      const result = registerOpencodePlugin({ silent: true });
+      const result = registerOpencodePlugin(normalizedOptions);
       if (result.added || result.created) {
         console.log(`Clawd: synced opencode plugin (added=${result.added}, created=${result.created})`);
       }
       if (result && result.reason === "opencode-not-found") {
         return asSkipped(result, "opencode-not-found", "opencode is not installed; skipped plugin sync");
+      }
+      if (result && result.status === "skipped") {
+        return asSkipped(result, result.reason || "opencode-skipped", result.message || "opencode plugin sync skipped");
+      }
+      if (result && result.status === "error") {
+        return { ...result, message: result.message || "Failed to sync opencode plugin" };
       }
       return asOk(result);
     } catch (err) {
@@ -432,11 +442,12 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
-  function syncMimocodePlugin() {
+  function syncMimocodePlugin(options = {}) {
     try {
-      if (typeof ctx.syncMimocodePluginImpl === "function") return ctx.syncMimocodePluginImpl();
+      const normalizedOptions = { ...options, silent: true };
+      if (typeof ctx.syncMimocodePluginImpl === "function") return ctx.syncMimocodePluginImpl(normalizedOptions);
       const { registerMimocodePlugin } = require("../hooks/mimocode-install.js");
-      const result = registerMimocodePlugin({ silent: true });
+      const result = registerMimocodePlugin(normalizedOptions);
       if (result.added || result.created) {
         console.log(`Clawd: synced mimocode plugin (added=${result.added}, created=${result.created})`);
       }

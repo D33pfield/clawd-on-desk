@@ -409,6 +409,40 @@ describe("integration sync runtime", () => {
     }]);
   });
 
+  it("forwards options to the opencode/mimocode sync impls and forces silent (#1026)", () => {
+    const seen = [];
+    const { runtime } = makeRuntime({
+      ctx: {
+        syncOpencodePluginImpl: (options) => { seen.push({ name: "opencode", options }); return { status: "ok" }; },
+        syncMimocodePluginImpl: (options) => { seen.push({ name: "mimocode", options }); return { status: "ok" }; },
+      },
+    });
+
+    runtime.syncIntegrationForAgent("opencode", {
+      homeDir: "/tmp/home",
+      configPath: "/tmp/home/.config/opencode/opencode.json",
+      managedRoot: "/tmp/managed",
+      source: "startup",
+      automatic: true,
+    });
+    runtime.syncIntegrationForAgent("mimocode", { homeDir: "/tmp/home2" });
+
+    assert.deepStrictEqual(seen, [
+      {
+        name: "opencode",
+        options: {
+          homeDir: "/tmp/home",
+          configPath: "/tmp/home/.config/opencode/opencode.json",
+          managedRoot: "/tmp/managed",
+          source: "startup",
+          automatic: true,
+          silent: true,
+        },
+      },
+      { name: "mimocode", options: { homeDir: "/tmp/home2", silent: true } },
+    ]);
+  });
+
   it("reads saved custom integration options during startup sync", () => {
     const { runtime, calls } = makeRuntime({
       shouldSyncAgentIntegration: (agentId) => agentId === "codebuddy",

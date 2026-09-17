@@ -2414,6 +2414,8 @@ async function cleanupIntegrationsCommand(_payload, deps = {}) {
   let agents = { ...((snapshot && snapshot.agents) || {}) };
   let agentsChanged = false;
 
+  // Step 1: always disable every managed target so a failed disk cleanup can
+  // never keep receiving Clawd events or be re-synced at startup.
   for (const agentId of MANAGED_CLEANUP_AGENT_IDS) {
     const flagDeps = {
       ...deps,
@@ -2427,19 +2429,6 @@ async function cleanupIntegrationsCommand(_payload, deps = {}) {
       agents = result.commit.agents;
       agentsChanged = true;
     }
-    const currentEntry = agents[agentId] && typeof agents[agentId] === "object"
-      ? agents[agentId]
-      : {};
-    if (currentEntry.integrationInstalled !== false) {
-      agents = {
-        ...agents,
-        [agentId]: {
-          ...currentEntry,
-          integrationInstalled: false,
-        },
-      };
-      agentsChanged = true;
-    }
   }
 
   let cleanup;
@@ -2451,6 +2440,58 @@ async function cleanupIntegrationsCommand(_payload, deps = {}) {
       message: err && err.message ? err.message : String(err),
       summary: { agentsChecked: 0, agentsAffected: 0, entriesRemoved: 0, skipped: 0, failed: 1 },
     };
+  }
+
+  // Step 2: decide `integrationInstalled` from the per-agent disk result.
+  // Never mark an agent uninstalled before its actual registration was removed.
+  const diskAgents = cleanup && Array.isArray(cleanup.agents) ? cleanup.agents : null;
+  const failedCount = cleanup && cleanup.summary ? Number(cleanup.summary.failed || 0) : 0;
+  const cleanupErrored = !!(cleanup && cleanup.status === "error") || (!diskAgents && failedCount > 0);
+  const summaryWarnings = [];
+  if (cleanup && typeof cleanup.summary === "object" && cleanup.summary) {
+    if (Array.isArray(cleanup.summary.warnings)) summaryWarnings.push(...cleanup.summary.warnings);
+  }
+
+  for (const agentId of MANAGED_CLEANUP_AGENT_IDS) {
+    const currentEntry = agents[agentId] && typeof agents[agentId] === "object"
+      ? agents[agentId]
+      : {};
+    let shouldUninstall;
+    if (diskAgents) {
+      const diskAgent = diskAgents.find((entry) => entry && entry.agentId === agentId);
+      if (!diskAgent) {
+        // Conservative: a missing result is not proof of success.
+        shouldUninstall = false;
+        summaryWarnings.push(`cleanup result did not include ${agentId}; keeping its install intent`);
+      } else if (diskAgent.status === "failed") {
+        shouldUninstall = false;
+      } else if (diskAgent.registrationRemoved === false || diskAgent.registrationRemoved === null) {
+        shouldUninstall = false;
+      } else if (diskAgent.activeEntryRemaining === true) {
+        shouldUninstall = false;
+      } else {
+        shouldUninstall = true;
+      }
+    } else {
+      // Legacy cleaner contract: no `agents` array. Blanket-uninstall only on a
+      // clean success; any error/throw keeps the install intent (disabled only).
+      shouldUninstall = !cleanupErrored;
+    }
+
+    if (shouldUninstall && currentEntry.integrationInstalled !== false) {
+      agents = {
+        ...agents,
+        [agentId]: {
+          ...currentEntry,
+          integrationInstalled: false,
+        },
+      };
+      agentsChanged = true;
+    }
+  }
+
+  if (summaryWarnings.length && cleanup && typeof cleanup === "object") {
+    cleanup.summary = { ...(cleanup.summary || {}), warnings: summaryWarnings };
   }
 
   const response = {
