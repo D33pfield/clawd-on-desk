@@ -129,7 +129,12 @@ ids, proxy addresses, or Telegram response bodies.
   interleaving with an injected Enter. Codex CLI 0.154.0 or newer is required;
   when the queue command is unavailable or unsupported, Clawd copies the reply
   to the clipboard without injecting text or Enter. If Clawd cannot derive the
-  session's Codex store, a Windows CLI session retains the Console path instead.
+  session's Codex store, a Windows CLI session retains the Console path instead,
+  while a Codex Desktop session uses clipboard fallback rather than guessing an
+  ambient store. An existing saved thread that is not currently loaded may
+  accept the durable queue entry without starting a turn until the thread is
+  opened or resumed; the queued acknowledgement means the queue accepted the
+  reply, not that a turn has started.
   While at least one current completion mapping remains replyable, Clawd retains
   the completed Codex session beyond the normal idle-session cutoff. Mapping
   expiry, submission, route changes, or disabling Direct Send restores normal
@@ -148,8 +153,9 @@ ids, proxy addresses, or Telegram response bodies.
 - Outside the Codex queue path, WSL, remote, headless, and non-Windows sessions
   use clipboard fallback, as do sessions without a usable agent PID and replies
   containing multiple lines. A Codex CLI session whose store cannot be derived
-  keeps the Windows Console path when available. Clipboard fallback never injects
-  paste or Enter.
+  keeps the Windows Console path when available; a Codex Desktop session whose
+  store cannot be derived uses clipboard fallback. Clipboard fallback never
+  injects paste or Enter.
 - Before writing input, Clawd rechecks that the mapped session is still the same
   live, completed local session and is not waiting for an interactive permission
   decision. A reused session id or changed session state is not submitted to a
