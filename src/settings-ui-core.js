@@ -1815,34 +1815,37 @@
   }
 
   function fetchThemes() {
-    const officialPromise = fetchOfficialThemes();
+    // Official metadata is network-backed. Start it beside the local scan, but
+    // never join it to the promise that gates the Theme tab's first paint.
+    void Promise.resolve()
+      .then(() => fetchOfficialThemes())
+      .then(() => {
+        if (state.activeTab === "theme") requestRender({ content: true, preserveScroll: true });
+      })
+      .catch(() => {});
     if (!window.settingsAPI || typeof window.settingsAPI.listThemes !== "function") {
       runtime.themeList = [];
-      return officialPromise.then(() => []);
+      return Promise.resolve([]);
     }
     const previousThemeList = Array.isArray(runtime.themeList) ? runtime.themeList : [];
-    return Promise.all([
-      window.settingsAPI.listThemes().then((list) => {
-        const nextThemeList = Array.isArray(list) ? list : [];
-        // Built-in themes make an empty successful list impossible in a healthy
-        // install. Main also returns [] when enumeration throws, so preserve an
-        // already-rendered list instead of blanking the entire Theme tab.
-        if (nextThemeList.length === 0 && previousThemeList.length > 0) {
-          return previousThemeList;
-        }
-        runtime.themeList = nextThemeList;
-        return runtime.themeList;
-      }).catch((err) => {
-        console.warn("settings: listThemes failed", err);
-        runtime.themeList = previousThemeList;
+    return window.settingsAPI.listThemes().then((list) => {
+      const nextThemeList = Array.isArray(list) ? list : [];
+      // Built-in themes make an empty successful list impossible in a healthy
+      // install. Main also returns [] when enumeration throws, so preserve an
+      // already-rendered list instead of blanking the entire Theme tab.
+      if (nextThemeList.length === 0 && previousThemeList.length > 0) {
         return previousThemeList;
-      }),
-      officialPromise,
-    ]).then(([themes]) => themes);
+      }
+      runtime.themeList = nextThemeList;
+      return runtime.themeList;
+    }).catch((err) => {
+      console.warn("settings: listThemes failed", err);
+      runtime.themeList = previousThemeList;
+      return previousThemeList;
+    });
   }
 
-  // The official catalog is fetched at the same time as the local theme list so
-  // opening the Theme tab never blocks the local first paint on the network.
+  // The official catalog is fetched independently from the local theme list.
   // A failed list keeps whatever was rendered before, exactly like listThemes.
   function fetchOfficialThemes() {
     if (!window.settingsAPI || typeof window.settingsAPI.listOfficialThemes !== "function") {
@@ -2054,7 +2057,7 @@
   function applyOfficialThemeProgress(progress) {
     if (!progress || typeof progress !== "object") return;
     runtime.officialThemeOperation = progress.phase && progress.phase !== "idle" ? progress : null;
-    if (state.activeTab === "theme") requestRender({ content: true });
+    if (state.activeTab === "theme") requestRender({ content: true, preserveScroll: true });
   }
 
   function clearTransientStateForChanges(changes) {

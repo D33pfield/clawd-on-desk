@@ -264,6 +264,48 @@ describe("official theme download", () => {
     assert.deepStrictEqual(fs.existsSync(downloadsDir()) ? fs.readdirSync(downloadsDir()) : [], []);
   });
 
+  it("maps a mid-stream ENOSPC to DOWNLOAD_DISK_FULL and removes the partial file", async () => {
+    const body = Buffer.from("disk-full-body");
+    const entry = makeEntry(body);
+    const fakeFs = Object.create(fs);
+    fakeFs.createWriteStream = (target) => {
+      const stream = new EventEmitter();
+      let closed = false;
+      fs.writeFileSync(target, "");
+      stream.write = () => {
+        throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+      };
+      stream.end = (callback) => {
+        if (typeof callback === "function") callback();
+        if (!closed) {
+          closed = true;
+          stream.emit("close");
+        }
+      };
+      stream.destroy = () => {
+        if (closed) return;
+        closed = true;
+        setImmediate(() => stream.emit("close"));
+      };
+      return stream;
+    };
+    const net = createFakeNet((req) => streamResponse(req, { chunks: [body] }));
+
+    await assert.rejects(
+      download.downloadArchive({
+        fs: fakeFs,
+        path,
+        net,
+        entry,
+        nonce: "7".repeat(32),
+        userDataDir: tmp,
+        statfs: () => 1e12,
+      }),
+      (err) => err.code === download.DOWNLOAD_ERROR_CODES.DOWNLOAD_DISK_FULL,
+    );
+    assert.deepStrictEqual(fs.existsSync(downloadsDir()) ? fs.readdirSync(downloadsDir()) : [], []);
+  });
+
   it("stops a stalled download with a stable error", async () => {
     const body = Buffer.from("abc");
     const entry = makeEntry(body);

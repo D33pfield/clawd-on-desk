@@ -102,8 +102,9 @@ function createHarness(options = {}) {
     getActiveTheme: () => (activeId ? { _id: activeId } : null),
     waitForThemeReloadSettled: () => Promise.resolve({ status: options.settleStatus || "settled" }),
     rebuildAllMenus: () => {},
-    sendToSettingsWindow: () => {},
+    sendToSettingsWindow: options.sendToSettingsWindow || (() => {}),
     getAppVersion: () => APP_VERSION,
+    now: options.now,
     fetchCatalogText: options.fetchCatalogText
       || (() => Promise.resolve(JSON.stringify(catalog))),
     downloadArchive: options.downloadArchive,
@@ -178,6 +179,34 @@ describe("official theme main", () => {
     fs.writeFileSync(path.join(tmp, "themes", "hash-sage", "theme.json"), "{}");
     const result = await manager.installTheme("hash-sage");
     assert.strictEqual(result.code, MANAGER_ERROR_CODES.TARGET_CONFLICT);
+  });
+
+  it("rejects a catalog entry that collides with a built-in theme id", async () => {
+    const zip = hashSageFixture();
+    const entry = buildZipEntry(zip);
+    entry.id = "clawd";
+    entry.name = { en: "Imposter Clawd" };
+    entry.archive.url = "https://github.com/rullerzhou-afk/clawd-themes/releases/download/clawd-v1.0.0/clawd-1.0.0.clawd-theme.zip";
+    entry.showcase.url = "https://clawd-art.pages.dev/progress/";
+    entry.license.noticeUrl = `https://github.com/rullerzhou-afk/clawd-themes/blob/${"1".repeat(40)}/themes/clawd/LICENSE`;
+    const { manager } = createHarness({ zip, entry });
+
+    const listing = await manager.listOfficialThemes();
+    assert.strictEqual(listing.themes.some((theme) => theme.id === "clawd"), false);
+    const builtin = manager.decorateThemeMetadata({ id: "clawd", name: "Clawd", builtin: true });
+    assert.strictEqual(builtin.officialTheme, undefined, "catalog collision must not relabel the built-in card");
+
+    const result = await manager.installTheme("clawd");
+    assert.strictEqual(result.code, MANAGER_ERROR_CODES.TARGET_CONFLICT);
+    assert.strictEqual(fs.existsSync(path.join(tmp, "themes", "clawd")), false);
+
+    const commit = manager.commitStagedInstall({
+      themeId: "clawd",
+      version: entry.version,
+      archiveSha256: entry.archive.sha256,
+      nonce: NONCE,
+    });
+    assert.strictEqual(commit.code, MANAGER_ERROR_CODES.TARGET_CONFLICT, "in-lock check repeats the rejection");
   });
 
   it("derives repair-required for a marker-owned theme that fails shape validation on restart", async () => {
@@ -328,6 +357,61 @@ describe("official theme main", () => {
     release();
     const result = await first;
     assert.strictEqual(result.status, "ok", result.message);
+  });
+
+  it("clears install single-flight after a catalog failure so retry is possible", async () => {
+    let fetches = 0;
+    const { manager } = createHarness({
+      fetchCatalogText: () => {
+        fetches += 1;
+        return Promise.reject(Object.assign(new Error("offline"), { code: catalogModule.ERROR_CODES.CATALOG_OFFLINE }));
+      },
+    });
+
+    const first = await manager.installTheme("hash-sage");
+    const second = await manager.installTheme("hash-sage");
+    assert.strictEqual(first.code, MANAGER_ERROR_CODES.CATALOG_UNAVAILABLE);
+    assert.strictEqual(second.code, MANAGER_ERROR_CODES.CATALOG_UNAVAILABLE);
+    assert.strictEqual(fetches, 2);
+    assert.strictEqual(manager._state.installInFlight, false);
+  });
+
+  it("throttles sub-percent progress bursts while preserving phase and final updates", async () => {
+    const events = [];
+    const realDownload = downloadModule.downloadArchive;
+    const { manager } = createHarness({
+      now: () => 1000,
+      sendToSettingsWindow: (channel, payload) => events.push({ channel, payload }),
+      downloadArchive: async (options) => {
+        for (let received = 1; received <= 100; received += 1) {
+          options.onProgress({
+            receivedBytes: received,
+            totalBytes: options.entry.archive.bytes,
+          });
+        }
+        return realDownload(options);
+      },
+    });
+
+    const result = await manager.installTheme("hash-sage");
+    assert.strictEqual(result.status, "ok", result.message);
+    const live = events.filter((event) => event.payload && event.payload.id === "hash-sage");
+    assert.ok(live.length < 30, `expected throttled progress, got ${live.length} events`);
+    assert.ok(live.some((event) => event.payload.phase === "extracting"));
+    assert.ok(live.some((event) => event.payload.phase === "installing"));
+  });
+
+  it("does not claim cancellation once the in-lock install phase has started", () => {
+    const { manager } = createHarness();
+    let aborted = false;
+    manager._state.operation = {
+      id: "hash-sage",
+      phase: "installing",
+      controller: { abort: () => { aborted = true; } },
+    };
+    const result = manager.cancelInstall();
+    assert.deepStrictEqual(result, { status: "ok", cancelled: false, id: "hash-sage" });
+    assert.strictEqual(aborted, false);
   });
 });
 

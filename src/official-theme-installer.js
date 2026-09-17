@@ -594,20 +594,33 @@ function commitStagedInstall(options = {}) {
 // On a failed final readback, only delete the target we just created and only
 // when its marker is complete. If deletion also fails, report repair-required
 // and leave the scene alone.
-function cleanupFailedCommit({ fs, path, targetDir, marker }) {
+function cleanupFailedCommit({ fs, path, targetDir, marker, errors = [] }) {
+  const readbackErrors = Array.isArray(errors) ? errors.filter(Boolean) : [];
   const targetMarker = readOfficialThemeMarker(targetDir, { fs, path });
   if (!targetMarker || !markersMatch(targetMarker, marker)) {
-    return { status: "repair-required", repairRequired: true, errors: ["marker mismatch after failed readback"] };
+    return {
+      status: "repair-required",
+      repairRequired: true,
+      errors: [...readbackErrors, "marker mismatch after failed readback"],
+    };
   }
   try {
     fs.rmSync(targetDir, { recursive: true, force: true });
   } catch {
-    return { status: "repair-required", repairRequired: true, errors: ["could not remove failed install"] };
+    return {
+      status: "repair-required",
+      repairRequired: true,
+      errors: [...readbackErrors, "could not remove failed install"],
+    };
   }
   if (fs.existsSync(targetDir)) {
-    return { status: "repair-required", repairRequired: true, errors: ["failed install directory still present"] };
+    return {
+      status: "repair-required",
+      repairRequired: true,
+      errors: [...readbackErrors, "failed install directory still present"],
+    };
   }
-  return { status: "failed", repairRequired: false, errors: [] };
+  return { status: "failed", repairRequired: false, errors: readbackErrors };
 }
 
 module.exports = {

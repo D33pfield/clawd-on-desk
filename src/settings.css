@@ -5318,7 +5318,7 @@ html, body {
   height: 100%;
   width: 0;
   border-radius: 3px;
-  background: var(--accent-color, #4c8bf5);
+  background: var(--accent);
   transition: width 160ms ease;
 }
 .theme-official-download-btn,
@@ -5344,8 +5344,8 @@ html, body {
 }
 .theme-official-download-btn,
 .theme-official-retry-btn {
-  border: 1px solid var(--accent-color, #4c8bf5);
-  background: color-mix(in srgb, var(--accent-color, #4c8bf5) 14%, transparent);
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
   color: inherit;
 }
 .theme-official-cancel-btn {

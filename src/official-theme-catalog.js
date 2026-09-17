@@ -22,6 +22,8 @@ const CATALOG_HOST = "raw.githubusercontent.com";
 const SCHEMA_VERSION = 1;
 const MAX_CATALOG_BYTES = 256 * 1024;
 const MAX_CATALOG_ENTRIES = 200;
+const DEFAULT_CATALOG_STALL_TIMEOUT_MS = 10 * 1000;
+const DEFAULT_CATALOG_TOTAL_TIMEOUT_MS = 30 * 1000;
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -108,12 +110,11 @@ function validateArchiveUrl(rawUrl, { id, version }) {
   if (url.hostname !== "github.com") {
     return { ok: false, errors: [`archive.url host must be github.com, got ${url.hostname}`] };
   }
-  const segments = url.pathname.split("/").filter(Boolean);
   const expectedPath = `${CATALOG_REPOSITORY}/releases/download/${id}-v${version}/${id}-${version}.clawd-theme.zip`;
   if (url.search) {
     errors.push("archive.url must not contain a query string");
   }
-  if (`${segments.join("/")}` !== expectedPath) {
+  if (url.pathname !== `/${expectedPath}`) {
     errors.push(`archive.url path must be ${expectedPath}`);
   }
   return { ok: errors.length === 0, errors, url };
@@ -386,7 +387,15 @@ function catalogVersionRegression(nextVersion, lastKnownGoodVersion) {
 // move the request to an unvetted host. The response is streamed and aborted as
 // soon as it exceeds MAX_CATALOG_BYTES, so a hostile/broken server cannot make
 // main buffer an unbounded body.
-function fetchCatalogText({ net, signal, requestImpl } = {}) {
+function fetchCatalogText({
+  net,
+  signal,
+  requestImpl,
+  stallTimeoutMs = DEFAULT_CATALOG_STALL_TIMEOUT_MS,
+  totalTimeoutMs = DEFAULT_CATALOG_TOTAL_TIMEOUT_MS,
+  setTimeoutFn = setTimeout,
+  clearTimeoutFn = clearTimeout,
+} = {}) {
   return new Promise((resolve, reject) => {
     const request = typeof requestImpl === "function"
       ? requestImpl
@@ -398,15 +407,51 @@ function fetchCatalogText({ net, signal, requestImpl } = {}) {
       return;
     }
     let settled = false;
+    let req = null;
+    let response = null;
+    let stallTimer = null;
+    let totalTimer = null;
+    let abortListenerAttached = false;
+    const clearTimers = () => {
+      if (stallTimer !== null) clearTimeoutFn(stallTimer);
+      if (totalTimer !== null) clearTimeoutFn(totalTimer);
+      stallTimer = null;
+      totalTimer = null;
+    };
+    const detachSignal = () => {
+      if (!signal || !abortListenerAttached) return;
+      signal.removeEventListener("abort", onAbort);
+      abortListenerAttached = false;
+    };
+    const cleanup = () => {
+      clearTimers();
+      detachSignal();
+    };
     const finish = (fn) => (value) => {
       if (settled) return;
       settled = true;
+      cleanup();
       fn(value);
     };
     const fail = finish(reject);
     const succeed = finish(resolve);
+    const abortNetwork = () => {
+      try { if (response && typeof response.destroy === "function") response.destroy(); } catch {}
+      try { if (req && typeof req.abort === "function") req.abort(); } catch {}
+    };
+    const failOffline = (message) => {
+      fail(Object.assign(new Error(message), { code: ERROR_CODES.CATALOG_OFFLINE }));
+      abortNetwork();
+    };
+    const armStallTimer = () => {
+      if (stallTimer !== null) clearTimeoutFn(stallTimer);
+      if (!(stallTimeoutMs > 0)) return;
+      stallTimer = setTimeoutFn(() => {
+        stallTimer = null;
+        failOffline("catalog request stalled");
+      }, stallTimeoutMs);
+    };
 
-    let req;
     try {
       req = request({
         method: "GET",
@@ -430,14 +475,22 @@ function fetchCatalogText({ net, signal, requestImpl } = {}) {
       return;
     }
 
-    const onAbort = () => {
-      try { if (typeof req.abort === "function") req.abort(); } catch {}
-      fail(Object.assign(new Error("catalog request aborted"), { code: ERROR_CODES.CATALOG_OFFLINE }));
-    };
+    function onAbort() {
+      failOffline("catalog request aborted");
+    }
     if (signal) {
       if (signal.aborted) { onAbort(); return; }
       signal.addEventListener("abort", onAbort, { once: true });
+      abortListenerAttached = true;
     }
+
+    if (totalTimeoutMs > 0) {
+      totalTimer = setTimeoutFn(() => {
+        totalTimer = null;
+        failOffline("catalog request exceeded its total deadline");
+      }, totalTimeoutMs);
+    }
+    armStallTimer();
 
     req.on("redirect", () => {
       try { if (typeof req.abort === "function") req.abort(); } catch {}
@@ -450,7 +503,10 @@ function fetchCatalogText({ net, signal, requestImpl } = {}) {
         code: ERROR_CODES.CATALOG_OFFLINE,
       }));
     });
-    req.on("response", (response) => {
+    req.on("response", (incomingResponse) => {
+      if (settled) return;
+      response = incomingResponse;
+      armStallTimer();
       const statusCode = response && response.statusCode;
       if (statusCode !== 200) {
         try { if (typeof response.resume === "function") response.resume(); } catch {}
@@ -463,6 +519,7 @@ function fetchCatalogText({ net, signal, requestImpl } = {}) {
       let total = 0;
       response.on("data", (chunk) => {
         if (settled) return;
+        armStallTimer();
         total += chunk.length;
         if (total > MAX_CATALOG_BYTES) {
           try { if (typeof response.destroy === "function") response.destroy(); } catch {}
@@ -497,9 +554,14 @@ function catalogCachePath(userDataDir, pathModule = defaultPath) {
 
 function readCatalogCache({ fs = defaultFs, path = defaultPath, userDataDir } = {}) {
   if (!userDataDir) return null;
+  const cachePath = catalogCachePath(userDataDir, path);
+  const discard = () => {
+    try { fs.rmSync(cachePath, { force: true }); } catch {}
+    return null;
+  };
   let raw;
   try {
-    raw = fs.readFileSync(catalogCachePath(userDataDir, path), "utf8");
+    raw = fs.readFileSync(cachePath, "utf8");
   } catch {
     return null;
   }
@@ -507,15 +569,16 @@ function readCatalogCache({ fs = defaultFs, path = defaultPath, userDataDir } = 
   try {
     doc = JSON.parse(raw);
   } catch {
-    return null;
+    return discard();
   }
+  if (!isPlainObject(doc) || !isPlainObject(doc.catalog)) return discard();
   const result = validateCatalogDocument({ schemaVersion: SCHEMA_VERSION, ...doc.catalog });
   if (!result.ok || doc.schemaVersion !== SCHEMA_VERSION || !Number.isInteger(doc.catalogVersion)) {
-    return null;
+    return discard();
   }
   // Cache version must match the embedded catalog version: a tampered or torn
   // cache is discarded rather than trusted.
-  if (doc.catalogVersion !== result.catalog.catalogVersion) return null;
+  if (doc.catalogVersion !== result.catalog.catalogVersion) return discard();
   return {
     catalogVersion: result.catalog.catalogVersion,
     themes: result.catalog.themes,
@@ -575,6 +638,8 @@ module.exports = {
   SCHEMA_VERSION,
   MAX_CATALOG_BYTES,
   MAX_CATALOG_ENTRIES,
+  DEFAULT_CATALOG_STALL_TIMEOUT_MS,
+  DEFAULT_CATALOG_TOTAL_TIMEOUT_MS,
   PREVIEW_MAX_BYTES,
   REDIRECT_HOST_ALLOWLIST,
   LIMITS,

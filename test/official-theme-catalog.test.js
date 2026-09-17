@@ -2,6 +2,7 @@
 
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert");
+const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -105,6 +106,9 @@ describe("official theme catalog validation", () => {
       "https://user:pass@github.com/rullerzhou-afk/clawd-themes/releases/download/hash-sage-v1.0.0/hash-sage-1.0.0.clawd-theme.zip",
       "https://github.com:8443/rullerzhou-afk/clawd-themes/releases/download/hash-sage-v1.0.0/hash-sage-1.0.0.clawd-theme.zip",
       "https://github.com/rullerzhou-afk/clawd-themes/releases/download/hash-sage-v1.0.0/hash-sage-1.0.0.clawd-theme.zip#frag",
+      "https://github.com//rullerzhou-afk/clawd-themes/releases/download/hash-sage-v1.0.0/hash-sage-1.0.0.clawd-theme.zip",
+      "https://github.com/rullerzhou-afk/clawd-themes//releases/download/hash-sage-v1.0.0/hash-sage-1.0.0.clawd-theme.zip",
+      `${VALID_URL}/`,
     ];
     for (const url of cases) {
       const entry = validEntry();
@@ -299,6 +303,16 @@ describe("official theme catalog cache", () => {
     fs.mkdirSync(catalog.catalogCacheDir(tmp), { recursive: true });
     fs.writeFileSync(catalog.catalogCachePath(tmp), "{broken", "utf8");
     assert.strictEqual(catalog.readCatalogCache({ userDataDir: tmp }), null);
+    assert.strictEqual(fs.existsSync(catalog.catalogCachePath(tmp)), false, "malformed cache self-heals");
+  });
+
+  it("self-heals valid JSON values that are not catalog cache objects", () => {
+    fs.mkdirSync(catalog.catalogCacheDir(tmp), { recursive: true });
+    for (const raw of ["null", "[]", "\"x\"", "5", "{}", '{"catalog":null}']) {
+      fs.writeFileSync(catalog.catalogCachePath(tmp), raw, "utf8");
+      assert.strictEqual(catalog.readCatalogCache({ userDataDir: tmp }), null, raw);
+      assert.strictEqual(fs.existsSync(catalog.catalogCachePath(tmp)), false, `${raw} removed`);
+    }
   });
 });
 
@@ -307,6 +321,54 @@ function fakeRequest(handler) {
 }
 
 describe("official theme catalog fetch", () => {
+  it("times out a request that never produces a response", async () => {
+    let aborted = 0;
+    await assert.rejects(
+      catalog.fetchCatalogText({
+        stallTimeoutMs: 15,
+        totalTimeoutMs: 100,
+        requestImpl: fakeRequest(() => {
+          const req = {
+            on: () => req,
+            end: () => {},
+            abort: () => { aborted += 1; },
+          };
+          return req;
+        }),
+      }),
+      (err) => err && err.code === catalog.ERROR_CODES.CATALOG_OFFLINE && /stalled/.test(err.message),
+    );
+    assert.strictEqual(aborted, 1);
+  });
+
+  it("enforces a total deadline even when a response keeps dripping bytes", async () => {
+    let ticker = null;
+    await assert.rejects(
+      catalog.fetchCatalogText({
+        stallTimeoutMs: 20,
+        totalTimeoutMs: 35,
+        requestImpl: fakeRequest(() => {
+          const req = new EventEmitter();
+          req.abort = () => {};
+          req.end = () => {
+            const response = new EventEmitter();
+            response.statusCode = 200;
+            response.destroy = () => {
+              if (ticker) clearInterval(ticker);
+              ticker = null;
+            };
+            response.resume = () => {};
+            req.emit("response", response);
+            ticker = setInterval(() => response.emit("data", Buffer.from(" ")), 5);
+          };
+          return req;
+        }),
+      }),
+      (err) => err && err.code === catalog.ERROR_CODES.CATALOG_OFFLINE && /total deadline/.test(err.message),
+    );
+    assert.strictEqual(ticker, null);
+  });
+
   it("sends the strict request options and reads a small body", async () => {
     let seenOptions = null;
     const body = Buffer.from(JSON.stringify(validCatalog()));

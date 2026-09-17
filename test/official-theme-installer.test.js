@@ -363,6 +363,7 @@ describe("official theme commit", () => {
       validateTarget: () => ({ ok: false, errors: ["readback failed"] }),
     });
     assert.strictEqual(result.status, "failed");
+    assert.deepStrictEqual(result.errors, ["readback failed"]);
     assert.strictEqual(fs.existsSync(targetDir), false);
   });
 
@@ -383,6 +384,7 @@ describe("official theme commit", () => {
       });
       assert.strictEqual(result.status, "repair-required");
       assert.strictEqual(result.repairRequired, true);
+      assert.deepStrictEqual(result.errors, ["readback failed", "could not remove failed install"]);
     } finally {
       fs.rmSync = realRm;
     }

@@ -57,6 +57,9 @@ jobs:
           # for this PR. It is validated as 40-hex inside the script; it is
           # never spliced into a shell string.
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Audit the contributor branch itself, not Actions' synthetic merge
+          # commit, so unrelated base-branch changes cannot become PR findings.
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: npm run audit:pr-history-assets
       - uses: actions/upload-artifact@v4
         if: always()

@@ -913,6 +913,10 @@
         : 0;
       const bar = document.createElement("div");
       bar.className = "theme-official-progress";
+      bar.setAttribute("role", "progressbar");
+      bar.setAttribute("aria-valuemin", "0");
+      bar.setAttribute("aria-valuemax", "100");
+      bar.setAttribute("aria-valuenow", String(pct));
       const inner = document.createElement("div");
       inner.className = "theme-official-progress-bar";
       inner.style.width = `${pct}%`;
@@ -921,7 +925,14 @@
       if (progress.phase === "downloading") pushText(formatOfficialMessage("themeOfficialDownloading", pct));
       else if (progress.phase === "extracting") pushText(t("themeOfficialVerifying"));
       else pushText(t("themeOfficialInstalling"));
-      pushButton(t("themeOfficialCancel"), "theme-official-cancel-btn", () => handleCancelOfficialThemeInstall());
+      if (progress.phase !== "installing") {
+        pushButton(
+          t("themeOfficialCancel"),
+          "theme-official-cancel-btn",
+          () => handleCancelOfficialThemeInstall(),
+          { focusKey: `official-cancel:${theme.id}` },
+        );
+      }
       return nodes;
     }
 
@@ -942,7 +953,12 @@
         pushText(formatOfficialMessage("themeOfficialUpdateAvailable", theme.officialThemeVersion));
       }
       if (theme.officialThemeCanUninstall) {
-        pushButton(t("themeOfficialUninstall"), "theme-uninstall-btn", () => handleUninstallOfficialTheme(theme));
+        pushButton(
+          t("themeOfficialUninstall"),
+          "theme-uninstall-btn",
+          () => handleUninstallOfficialTheme(theme),
+          { focusKey: `official-uninstall:${theme.id}` },
+        );
       }
       return nodes;
     }
@@ -950,7 +966,12 @@
     if (state === "repair-required") {
       pushText(t("themeOfficialRepairRequired"));
       if (theme.officialThemeCanUninstall) {
-        pushButton(t("themeOfficialUninstall"), "theme-uninstall-btn", () => handleUninstallOfficialTheme(theme));
+        pushButton(
+          t("themeOfficialUninstall"),
+          "theme-uninstall-btn",
+          () => handleUninstallOfficialTheme(theme),
+          { focusKey: `official-uninstall:${theme.id}` },
+        );
       }
       return nodes;
     }
@@ -971,6 +992,7 @@
     }
     pushButton(t("themeOfficialRetry"), "theme-official-retry-btn", () => handleInstallOfficialTheme(theme), {
       disabled: !!runtime.officialThemePendingThemeId,
+      focusKey: `official-retry:${theme.id}`,
     });
     return nodes;
   }
@@ -985,7 +1007,7 @@
       receivedBytes: 0,
       totalBytes: Number.isFinite(theme.officialThemeBytes) ? theme.officialThemeBytes : 0,
     };
-    if (state.activeTab === "theme") ops.requestRender({ content: true });
+    if (state.activeTab === "theme") ops.requestRender({ content: true, preserveScroll: true });
     window.settingsAPI.installOfficialTheme(theme.id)
       .then((result) => {
         if (!result || result.status !== "ok") {
@@ -1016,15 +1038,12 @@
   function handleCancelOfficialThemeInstall() {
     if (!window.settingsAPI || typeof window.settingsAPI.cancelOfficialThemeInstall !== "function") return;
     window.settingsAPI.cancelOfficialThemeInstall()
-      .then(() => {
-        ops.showToast(t("toastOfficialThemeCancelled"));
+      .then((result) => {
+        if (result && result.cancelled === true) {
+          ops.showToast(t("toastOfficialThemeCancelled"));
+        }
       })
-      .catch(() => {})
-      .finally(() => {
-        runtime.officialThemeOperation = null;
-        runtime.officialThemePendingThemeId = null;
-        if (state.activeTab === "theme") ops.requestRender({ content: true });
-      });
+      .catch(() => {});
   }
 
   function handleUninstallOfficialTheme(theme) {

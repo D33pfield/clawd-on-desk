@@ -92,16 +92,17 @@ describe("PR-history asset audit analysis", () => {
     assert.deepStrictEqual(ok.findings, []);
   });
 
-  it("fails any themes/hash-sage/assets blob unconditionally", () => {
+  it("fails any themes/hash-sage blob unconditionally", () => {
     const report = audit.analyzePrHistoryAssets({
       blobs: [
         { path: "themes/hash-sage/assets/idle.apng", oid: "e".repeat(40), bytes: 10 },
         { path: "themes/hash-sage/assets/big.apng", oid: "f".repeat(40), bytes: 10 * 1024 * 1024 },
+        { path: "themes/hash-sage/README.md", oid: "1".repeat(40), bytes: 10 },
       ],
       policy: POLICY,
       allowlist: [{ path: "themes/hash-sage/assets/idle.apng", oid: "e".repeat(40), bytes: 10, owner: "theme-runtime", reason: "nope" }],
     });
-    assert.strictEqual(report.findings.length, 2);
+    assert.strictEqual(report.findings.length, 3);
     for (const finding of report.findings) assert.strictEqual(finding.rule, "hash-sage-asset-in-history");
   });
 
@@ -109,6 +110,14 @@ describe("PR-history asset audit analysis", () => {
     assert.strictEqual(audit.validateBaseSha("a".repeat(40)), "a".repeat(40));
     for (const bad of ["", "zz".repeat(20), "A".repeat(40), "a".repeat(39), null]) {
       assert.throws(() => audit.validateBaseSha(bad));
+    }
+  });
+
+  it("allows only HEAD or an exact lowercase head SHA", () => {
+    assert.strictEqual(audit.validateHeadRef("HEAD"), "HEAD");
+    assert.strictEqual(audit.validateHeadRef("b".repeat(40)), "b".repeat(40));
+    for (const bad of ["", "main", "--help", "B".repeat(40), "b".repeat(39), null]) {
+      assert.throws(() => audit.validateHeadRef(bad));
     }
   });
 });

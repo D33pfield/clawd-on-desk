@@ -24,6 +24,8 @@ const OFFICIAL_THEME_DIALOG_MAX_BYTES = 256 * 1024 * 1024;
 const ORPHAN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const DELETE_RETRY_BACKOFF_MS = [40, 120, 320];
 const RELOAD_SETTLE_TIMEOUT_MS = 8000;
+const PROGRESS_MIN_INTERVAL_MS = 250;
+const PREVIEW_RESOLVE_CONCURRENCY = 4;
 
 const MANAGER_ERROR_CODES = Object.freeze({
   BUSY: "OFFICIAL_THEME_BUSY",
@@ -55,6 +57,21 @@ function sleep(ms) {
 
 function isBusyFsError(err) {
   return !!err && (err.code === "EBUSY" || err.code === "EPERM" || err.code === "EACCES");
+}
+
+async function mapWithConcurrency(items, limit, mapper) {
+  const values = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      values[index] = await mapper(items[index], index);
+    }
+  }
+  const workerCount = Math.min(Math.max(1, limit), items.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return values;
 }
 
 // Bounded, backoff retry for Windows rename/rm that briefly holds a file handle
@@ -118,6 +135,7 @@ function createOfficialThemeMain(options = {}) {
     lastFetchMs: 0,
     maxCatalogVersion: 0,
     previewPromises: new Map(),
+    builtinThemeIds: null,
   };
 
   // ── Catalog ──
@@ -125,6 +143,17 @@ function createOfficialThemeMain(options = {}) {
   function catalogEntry(id) {
     if (!state.catalog) return null;
     return state.catalog.themes.find((entry) => entry.id === id) || null;
+  }
+
+  function isBuiltinThemeId(themeId) {
+    if (!state.builtinThemeIds) {
+      state.builtinThemeIds = new Set(
+        themeLoader.discoverThemes()
+          .filter((theme) => theme && theme.builtin === true)
+          .map((theme) => theme.id),
+      );
+    }
+    return state.builtinThemeIds.has(themeId);
   }
 
   function readCache() {
@@ -227,6 +256,7 @@ function createOfficialThemeMain(options = {}) {
     }
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      if (isBuiltinThemeId(entry.name)) continue;
       const themeDir = path.join(dirs.themes, entry.name);
       const marker = installerModule.readOfficialThemeMarker(themeDir, { fs, path });
       if (!marker) continue;
@@ -287,7 +317,27 @@ function createOfficialThemeMain(options = {}) {
     };
   }
 
-  function broadcastProgress() {
+  function progressPercent(operation) {
+    if (!operation || !(operation.totalBytes > 0)) return 0;
+    return Math.min(100, Math.floor((operation.receivedBytes / operation.totalBytes) * 100));
+  }
+
+  function broadcastProgress({ throttled = false } = {}) {
+    if (throttled && state.operation) {
+      const currentMs = now();
+      const percent = progressPercent(state.operation);
+      const lastPercent = Number.isInteger(state.operation.lastBroadcastPercent)
+        ? state.operation.lastBroadcastPercent
+        : -1;
+      const lastMs = Number.isFinite(state.operation.lastBroadcastAt)
+        ? state.operation.lastBroadcastAt
+        : 0;
+      const finalByte = state.operation.totalBytes > 0
+        && state.operation.receivedBytes >= state.operation.totalBytes;
+      if (!finalByte && percent <= lastPercent && currentMs - lastMs < PROGRESS_MIN_INTERVAL_MS) {
+        return false;
+      }
+    }
     try {
       sendToSettingsWindow("officialTheme:progress", {
         id: state.operation ? state.operation.id : null,
@@ -296,6 +346,11 @@ function createOfficialThemeMain(options = {}) {
         totalBytes: state.operation ? state.operation.totalBytes || 0 : 0,
       });
     } catch {}
+    if (state.operation) {
+      state.operation.lastBroadcastPercent = progressPercent(state.operation);
+      state.operation.lastBroadcastAt = now();
+    }
+    return true;
   }
 
   function errorFor(id) {
@@ -348,20 +403,24 @@ function createOfficialThemeMain(options = {}) {
     const baseById = new Map(base.map((theme) => [theme.id, theme]));
     const ids = new Set();
     if (state.catalog) {
-      for (const entry of state.catalog.themes) ids.add(entry.id);
+      for (const entry of state.catalog.themes) {
+        if (!isBuiltinThemeId(entry.id)) ids.add(entry.id);
+      }
     }
-    for (const id of state.installed.keys()) ids.add(id);
+    for (const id of state.installed.keys()) {
+      if (!isBuiltinThemeId(id)) ids.add(id);
+    }
 
-    const themes = [];
-    for (const id of ids) {
+    const themes = await mapWithConcurrency([...ids], PREVIEW_RESOLVE_CONCURRENCY, async (id) => {
       const entry = catalogEntry(id);
       const installed = state.installed.get(id) || null;
       const baseTheme = baseById.get(id) || null;
+      const builtinConflict = !!(baseTheme && baseTheme.builtin === true);
       const remotePreviewPath = !baseTheme || !baseTheme.previewFileUrl
         ? await resolvePreviewPath(entry)
         : null;
       const themeDir = path.join(dirs.themes, id);
-      const conflict = !installed && dirExists(themeDir);
+      const conflict = builtinConflict || (!installed && dirExists(themeDir));
       let derived;
       if (conflict) {
         derived = { state: "conflict" };
@@ -398,8 +457,8 @@ function createOfficialThemeMain(options = {}) {
         card.officialThemeDescription = entry.description;
         card.officialThemeMinAppVersion = entry.minAppVersion;
       }
-      themes.push(card);
-    }
+      return card;
+    });
     themes.sort((a, b) => String(a.id).localeCompare(String(b.id)));
     return {
       status: "ok",
@@ -415,6 +474,7 @@ function createOfficialThemeMain(options = {}) {
   // directory becomes a single "conflict" card and is never claimed/deleted.
   function decorateThemeMetadata(theme) {
     if (!theme || typeof theme.id !== "string" || !theme.id) return theme;
+    if (theme.builtin === true) return theme;
     ensureScan();
     const installed = state.installed.get(theme.id);
     if (installed) {
@@ -515,6 +575,13 @@ function createOfficialThemeMain(options = {}) {
         message: `theme requires Clawd ${entry.minAppVersion}`,
       };
     }
+    if (isBuiltinThemeId(themeId)) {
+      return {
+        status: "error",
+        code: MANAGER_ERROR_CODES.TARGET_CONFLICT,
+        message: `official theme id "${themeId}" conflicts with a built-in theme`,
+      };
+    }
     scanInstalled();
     const installed = state.installed.get(themeId);
     if (installed && !installed.repairRequired) {
@@ -553,6 +620,8 @@ function createOfficialThemeMain(options = {}) {
       controller,
       nonce,
       version: entry.version,
+      lastBroadcastPercent: 0,
+      lastBroadcastAt: now(),
     };
     broadcastProgress();
 
@@ -570,7 +639,7 @@ function createOfficialThemeMain(options = {}) {
           if (!state.operation || state.operation.id !== themeId) return;
           state.operation.receivedBytes = progress.receivedBytes;
           state.operation.totalBytes = progress.totalBytes;
-          broadcastProgress();
+          broadcastProgress({ throttled: true });
         },
       });
       partPath = download.partPath;
@@ -657,6 +726,9 @@ function createOfficialThemeMain(options = {}) {
     if (!state.operation || !state.operation.controller) {
       return { status: "ok", cancelled: false };
     }
+    if (state.operation.phase === "installing") {
+      return { status: "ok", cancelled: false, id: state.operation.id };
+    }
     const id = state.operation.id;
     state.operation.controller.abort();
     return { status: "ok", cancelled: true, id };
@@ -674,6 +746,13 @@ function createOfficialThemeMain(options = {}) {
     }
     if (!state.catalog) {
       return { status: "error", code: MANAGER_ERROR_CODES.CATALOG_UNAVAILABLE, message: "official theme catalog is unavailable" };
+    }
+    if (isBuiltinThemeId(themeId)) {
+      return {
+        status: "error",
+        code: MANAGER_ERROR_CODES.TARGET_CONFLICT,
+        message: `official theme id "${themeId}" conflicts with a built-in theme`,
+      };
     }
     const entry = catalogEntry(themeId);
     // Re-resolve URL/version/bytes/sha from the validated catalog; the caller's
@@ -709,8 +788,8 @@ function createOfficialThemeMain(options = {}) {
         id: themeId,
         marker,
         validateStaging: (dir) => themeLoader.validateThemeShape(themeId, { themeDir: dir }),
-        validateTarget: () => {
-          const shape = themeLoader.validateThemeShape(themeId);
+        validateTarget: (dir) => {
+          const shape = themeLoader.validateThemeShape(themeId, { themeDir: dir });
           if (!shape || !shape.ok) return shape || { ok: false, errors: ["readback failed"] };
           try {
             themeLoader.loadTheme(themeId, { strict: true });
@@ -734,9 +813,12 @@ function createOfficialThemeMain(options = {}) {
     const code = result.status === "repair-required"
       ? MANAGER_ERROR_CODES.REPAIR_REQUIRED
       : MANAGER_ERROR_CODES.INSTALL_FAILED;
+    const details = Array.isArray(result.errors) && result.errors.length > 0
+      ? `: ${result.errors.join("; ")}`
+      : "";
     const message = result.status === "repair-required"
-      ? "theme install left an incomplete directory; uninstall and retry"
-      : "theme install could not be committed";
+      ? `theme install left an incomplete directory; uninstall and retry${details}`
+      : `theme install could not be committed${details}`;
     state.lastError = { id: themeId, code, message };
     return { status: "error", code, message };
   }
@@ -978,4 +1060,5 @@ module.exports = createOfficialThemeMain;
 module.exports.MANAGER_ERROR_CODES = MANAGER_ERROR_CODES;
 module.exports.ORPHAN_MAX_AGE_MS = ORPHAN_MAX_AGE_MS;
 module.exports.OFFICIAL_THEME_DIALOG_MAX_BYTES = OFFICIAL_THEME_DIALOG_MAX_BYTES;
-module.exports.__test = { rmWithRetry, isBusyFsError };
+module.exports.PROGRESS_MIN_INTERVAL_MS = PROGRESS_MIN_INTERVAL_MS;
+module.exports.__test = { rmWithRetry, isBusyFsError, mapWithConcurrency };

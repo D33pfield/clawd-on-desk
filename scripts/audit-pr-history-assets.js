@@ -20,7 +20,7 @@
 //   - an early-added blob that a later commit deletes (unreachable from HEAD,
 //     but still present in the intermediate commit).
 //
-// Any occurrence of `themes/hash-sage/assets/**` fails unconditionally — the
+// Any occurrence of `themes/hash-sage/**` fails unconditionally — the
 // Hash Sage art is distributed as a downloadable official theme, never in this
 // repo. Other newly changed binary media above the shared
 // `largeTrackedBinaryMediaBytes` threshold fails unless it matches an exact,
@@ -33,8 +33,9 @@ const { execFileSync } = require("node:child_process");
 const { BINARY_MEDIA_EXTENSIONS } = require("./audit-repository-assets");
 
 const BASE_SHA_ENV = "PR_BASE_SHA";
+const HEAD_SHA_ENV = "PR_HEAD_SHA";
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
-const HASH_SAGE_ASSET_PREFIX = "themes/hash-sage/assets/";
+const HASH_SAGE_ASSET_PREFIX = "themes/hash-sage/";
 const DEFAULT_HEAD = "HEAD";
 
 function normalizePath(value) {
@@ -46,6 +47,17 @@ function validateBaseSha(raw) {
     throw new Error(
       `PR base SHA must be a 40-character lowercase hex string; got ${JSON.stringify(raw)}. `
       + `Pass it via ${BASE_SHA_ENV} (the workflow gives github.event.pull_request.base.sha).`,
+    );
+  }
+  return raw;
+}
+
+function validateHeadRef(raw) {
+  if (raw === DEFAULT_HEAD) return raw;
+  if (typeof raw !== "string" || !SHA_PATTERN.test(raw)) {
+    throw new Error(
+      `PR head must be HEAD or a 40-character lowercase hex string; got ${JSON.stringify(raw)}. `
+      + `Pass the pull request head SHA via ${HEAD_SHA_ENV}.`,
     );
   }
   return raw;
@@ -286,7 +298,7 @@ function analyzePrHistoryAssets({ blobs, allowlist = [], policy, owners } = {}) 
         rule: "hash-sage-asset-in-history",
         path: blob.path,
         oid: blob.oid,
-        message: "themes/hash-sage/assets/** must never appear in PR-reachable history",
+        message: "themes/hash-sage/** must never appear in PR-reachable history",
       });
       continue;
     }
@@ -318,7 +330,12 @@ function analyzePrHistoryAssets({ blobs, allowlist = [], policy, owners } = {}) 
 }
 
 function parseArgs(argv) {
-  const args = { base: process.env[BASE_SHA_ENV] || null, head: DEFAULT_HEAD, output: null, policy: null };
+  const args = {
+    base: process.env[BASE_SHA_ENV] || null,
+    head: process.env[HEAD_SHA_ENV] || DEFAULT_HEAD,
+    output: null,
+    policy: null,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const value = argv[i];
     if (value === "--base") args.base = argv[++i];
@@ -341,7 +358,7 @@ function loadPolicy(repoRoot, policyPath) {
 function runAudit(options = {}) {
   const repoRoot = path.resolve(options.repoRoot || path.join(__dirname, ".."));
   const baseSha = validateBaseSha(options.base);
-  const headRef = options.head || DEFAULT_HEAD;
+  const headRef = validateHeadRef(options.head || DEFAULT_HEAD);
   const resolvedHead = revParse(repoRoot, headRef);
   // Confirm the base is actually an ancestor; a wrong/foreign base would make
   // the range mean something else entirely.
@@ -385,8 +402,8 @@ if (require.main === module) {
     const args = parseArgs(process.argv.slice(2));
     if (args.help) {
       process.stdout.write(
-        "Usage: node scripts/audit-pr-history-assets.js --base <40-hex-sha> [--head <ref>] [--output FILE]\n"
-        + "       (or set PR_BASE_SHA)\n",
+        "Usage: node scripts/audit-pr-history-assets.js --base <40-hex-sha> [--head <40-hex-sha>] [--output FILE]\n"
+        + "       (or set PR_BASE_SHA and PR_HEAD_SHA)\n",
       );
       process.exit(0);
     }
@@ -405,6 +422,7 @@ if (require.main === module) {
 
 module.exports = {
   BASE_SHA_ENV,
+  HEAD_SHA_ENV,
   HASH_SAGE_ASSET_PREFIX,
   analyzePrHistoryAssets,
   collectBlobs,
@@ -420,4 +438,5 @@ module.exports = {
   runAudit,
   validateAllowlistEntries,
   validateBaseSha,
+  validateHeadRef,
 };

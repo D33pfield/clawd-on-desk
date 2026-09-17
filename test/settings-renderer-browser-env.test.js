@@ -12631,6 +12631,10 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(hashCards[0].getAttribute("aria-checked"), "true");
     assert.ok(hashCards[0].classList.contains("active"));
     assert.ok(hashCards[0].querySelector(".theme-card-footer-official"));
+    assert.strictEqual(
+      hashCards[0].querySelector(".theme-uninstall-btn").getAttribute("data-settings-focus-key"),
+      "official-uninstall:hash-sage",
+    );
   });
 
   it("shows official download, progress and uninstall affordances", async () => {
@@ -12697,11 +12701,40 @@ describe("settings renderer browser environment", () => {
     };
     harness.renderContent();
     const cancel = harness.content.querySelector(".theme-official-cancel-btn");
+    const progress = harness.content.querySelector(".theme-official-progress");
     assert.ok(cancel);
     assert.ok(harness.content.querySelector(".theme-official-progress-bar"));
+    assert.strictEqual(cancel.getAttribute("data-settings-focus-key"), "official-cancel:hash-sage");
+    assert.strictEqual(progress.getAttribute("role"), "progressbar");
+    assert.strictEqual(progress.getAttribute("aria-valuenow"), "20");
     cancel.dispatchEvent({ type: "click" });
     await Promise.resolve();
     assert.deepStrictEqual(cancelCalls, ["cancel"]);
+
+    harness.core.runtime.officialThemeOperation = {
+      id: "hash-sage",
+      phase: "installing",
+      receivedBytes: 5 * 1024 * 1024,
+      totalBytes: 5 * 1024 * 1024,
+    };
+    harness.renderContent();
+    assert.strictEqual(harness.content.querySelector(".theme-official-cancel-btn"), null);
+  });
+
+  it("gives retry a stable keyboard focus key", () => {
+    const harness = loadThemeTabForTest({
+      themes: [{ id: "clawd", name: "Clawd", builtin: true, active: true }],
+      officialThemes: [{
+        id: "hash-sage",
+        name: "Hash Sage",
+        officialTheme: true,
+        officialThemeState: "error",
+        officialThemeError: { message: "offline" },
+      }],
+    });
+    const retry = harness.content.querySelector(".theme-official-retry-btn");
+    assert.ok(retry);
+    assert.strictEqual(retry.getAttribute("data-settings-focus-key"), "official-retry:hash-sage");
   });
 
   it("shows a list-level offline note without hiding installed official cards", () => {
@@ -13013,6 +13046,35 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(result, previousThemeList);
     assert.strictEqual(harness.core.runtime.themeList, previousThemeList);
     assert.strictEqual(harness.content.querySelectorAll(".theme-card").length, 1);
+  });
+
+  it("does not let a pending official catalog block the local theme first paint", async () => {
+    let resolveOfficial;
+    const officialPending = new Promise((resolve) => { resolveOfficial = resolve; });
+    const localThemes = [{ id: "clawd", name: "Clawd", builtin: true, active: true }];
+    const harness = loadThemeTabForTest({
+      themes: localThemes,
+      settingsAPI: {
+        listThemes: () => Promise.resolve(localThemes),
+        listOfficialThemes: () => officialPending,
+      },
+    });
+
+    let settled = false;
+    let result = null;
+    harness.core.ops.fetchThemes().then((themes) => {
+      settled = true;
+      result = themes;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.strictEqual(settled, true);
+    assert.deepStrictEqual(result, localThemes);
+
+    resolveOfficial({ status: "ok", catalogStatus: "ok", catalogVersion: 1, themes: [] });
+    await Promise.resolve();
+    await Promise.resolve();
   });
 
   it("opens the active pet detail and saves color independently for that theme", async () => {
