@@ -2399,6 +2399,41 @@ describe("checkAgentIntegrations", () => {
     assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "omp" });
   });
 
+  it("recognizes the OMP community bridge without offering an ineffective Fix", () => {
+    const descriptor = ompDescriptor();
+    const bridgePath = path.join(path.dirname(descriptor.configPath), "clawd-on-desk-omp.ts");
+    fs.mkdirSync(path.dirname(bridgePath), { recursive: true });
+    fs.writeFileSync(bridgePath, "// community bridge\n", "utf8");
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "manual-managed");
+    assert.strictEqual(detail.level, "info");
+    assert.strictEqual(detail.standaloneBridge, bridgePath);
+    assert.match(detail.detail, /community bridge is active/);
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+
+  it("flags duplicate managed OMP and community bridge copies as repairable", () => {
+    const descriptor = ompDescriptor();
+    writeJson(path.join(descriptor.configPath, ".clawd-managed.json"), {
+      app: "clawd-on-desk",
+      integration: "omp",
+      managed: true,
+    });
+    fs.writeFileSync(path.join(descriptor.configPath, "index.ts"), "export default function() {}\n", "utf8");
+    fs.writeFileSync(path.join(descriptor.configPath, "omp-extension-core.js"), "module.exports = {}\n", "utf8");
+    const bridgePath = path.join(path.dirname(descriptor.configPath), "clawd-on-desk-omp.ts");
+    fs.writeFileSync(bridgePath, "// community bridge\n", "utf8");
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "broken-path");
+    assert.strictEqual(detail.standaloneBridge, bridgePath);
+    assert.match(detail.detail, /both active/);
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "omp" });
+  });
+
   it("reports a Pi-owned directory as needs-review for OMP and vice versa", () => {
     // The marker names the integration that wrote the files. A directory
     // carrying the other agent's marker is foreign — Clawd must not report it
@@ -2455,10 +2490,11 @@ describe("checkAgentIntegrations", () => {
     assert.match(withOther.detail, /not managed here \(work\)/);
     assert.deepStrictEqual(withOther.unmanagedOmpProfiles, ["work"]);
 
-    // Once Clawd's own environment selects that profile, it is the managed one
-    // and nothing is left to report.
+    // Once Clawd's own environment selects that profile, the default agent
+    // directory becomes the unmanaged environment and must be named too.
     const selected = runOne(descriptor, { homeDir, env: { OMP_PROFILE: "work" } });
-    assert.ok(!/profile/i.test(selected.detail), `no note expected: ${selected.detail}`);
+    assert.match(selected.detail, /not managed here \(default\)/);
+    assert.deepStrictEqual(selected.unmanagedOmpProfiles, ["default"]);
   });
 
   it("reports opencode stale absolute plugin paths", () => {

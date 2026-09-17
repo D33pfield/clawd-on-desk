@@ -128,14 +128,14 @@ OMP (oh-my-pi) uses a per-agent extension directory — `~/.omp/agent/extensions
 | tool_call | PreToolUse | working |
 | tool_result (ok) | PostToolUse | working |
 | tool_result (isError) | PostToolUseFailure | error |
-| session_stop | Stop | attention |
+| session_stop candidate + following agent_end (`willContinue !== true`) | Stop | attention |
 | session_before_compact | PreCompact | sweeping |
 | session_compact | PostCompact | attention |
 | session_shutdown | SessionEnd | remove session; idle if no live sessions |
 
 Three behaviours differ from the Pi extension deliberately:
 
-- **Completion binds to `session_stop`, never `agent_end`.** OMP fires `agent_end` at every agent-loop boundary — scheduling pauses with background jobs still running, queued follow-ups, settles that left tool calls in flight — so reporting completion from it makes Clawd play the finish chime mid-turn. `session_stop` is the settled turn.
+- **Completion is committed across `session_stop` and the following `agent_end`.** `session_stop` is a pre-settle aggregation hook: another extension can still request a hidden continuation after Clawd's handler runs. Clawd records a main-session candidate there, then commits it only when OMP's following `agent_end` does not carry `willContinue: true`. Scheduling pauses, built-in retries and extension continuations therefore do not play the finish chime.
 - **`session_switch` / `session_branch` are reported, and the session being left is retired** with a synthetic `SessionEnd`. OMP can move an interactive terminal to another conversation with no shutdown for the old one, which would otherwise leave a live HUD row for a session nothing reports on again.
 - **A `session_title` is always sent.** Several interactive OMP sessions legitimately share one working directory, and the folder-name fallback would render every row — and every jump target — identically.
 

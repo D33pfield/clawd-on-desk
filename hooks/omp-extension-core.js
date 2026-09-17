@@ -28,13 +28,13 @@ const NESTED_TERMINAL_ENV = [
   "ZELLIJ",
 ];
 
-// Difference 1 vs the Pi core: completion is bound to `session_stop`, not
-// `agent_end`. OMP fires `agent_end` at every agent-loop boundary, including
-// scheduling pauses — background jobs still running, queued follow-ups, settles
-// that left tool calls in flight — so reporting completion from it makes Clawd
-// play the finish chime while the session is still working. `session_stop` is
-// the settled turn: it never fires for task/subagent sessions and it defers
-// until agent-owned background jobs are idle.
+// Difference 1 vs the Pi core: completion is a two-event commit. `session_stop`
+// marks a main-session candidate only; OMP then aggregates every extension's
+// stop result and emits `agent_end` with `willContinue: true` when any built-in
+// or extension continuation was scheduled. Clawd commits the candidate only on
+// the following non-continuing `agent_end`. This preserves session_stop's
+// main-agent/subagent boundary without announcing completion before another
+// extension's continuation decision is known.
 //
 // Difference 2: `session_switch` and `session_branch` are reported. OMP can move
 // an interactive session without a shutdown/start pair, and without these the
@@ -44,7 +44,6 @@ const DEFAULT_EVENT_BINDINGS = Object.freeze([
   Object.freeze(["session_switch", "SessionStart", "idle"]),
   Object.freeze(["session_branch", "SessionStart", "idle"]),
   Object.freeze(["before_agent_start", "UserPromptSubmit", "thinking"]),
-  Object.freeze(["session_stop", "Stop", "attention"]),
   Object.freeze(["session_before_compact", "PreCompact", "sweeping"]),
   Object.freeze(["session_compact", "PostCompact", "attention"]),
   Object.freeze(["session_shutdown", "SessionEnd", "sleeping"]),
@@ -247,6 +246,7 @@ function attach(omp, deps = {}) {
   const buildPayloadFn = typeof deps.buildPayload === "function" ? deps.buildPayload : buildPayload;
   const postStateFn = typeof deps.postState === "function" ? deps.postState : () => false;
   const deliveryChains = new Map();
+  const pendingCompletions = new Map();
   // The last payload reported for the live session, used only to close it out
   // when OMP switches away. Cleared on a real SessionEnd so a shutdown is never
   // followed by a second, synthetic one.
@@ -260,21 +260,22 @@ function attach(omp, deps = {}) {
     return drainAll ? drainDeliveries(deliveryChains) : tail;
   }
 
-  function send(state, event, nativeEvent, ctx, waitForDelivery = false, drainAll = false) {
+  function preparePayload(state, event, nativeEvent, ctx) {
     let report;
     try {
       report = shouldReportFn(ctx);
     } catch {
       report = false;
     }
-    if (!report) return waitForDelivery ? Promise.resolve(false) : false;
-    let payload;
+    if (!report) return null;
     try {
-      payload = buildPayloadFn({ state, event, nativeEvent, ctx });
+      return buildPayloadFn({ state, event, nativeEvent, ctx });
     } catch {
-      return waitForDelivery ? Promise.resolve(false) : false;
+      return null;
     }
+  }
 
+  function dispatchPayload(payload, waitForDelivery = false, drainAll = false) {
     // session_switch / session_branch move the terminal to another
     // conversation without a shutdown for the one being left. Retire it
     // explicitly, or Clawd keeps a live row for a session nothing will report
@@ -282,19 +283,51 @@ function attach(omp, deps = {}) {
     if (current && payload && current.session_id !== payload.session_id) {
       deliver({ ...current, event: "SessionEnd", state: "sleeping" }, false);
     }
-    current = event === "SessionEnd" ? null : payload;
+    current = payload && payload.event === "SessionEnd" ? null : payload;
 
     return deliver(payload, waitForDelivery, drainAll);
   }
 
-  for (const [nativeName, clawdEvent, state] of DEFAULT_EVENT_BINDINGS) {
-    // A completion or a shutdown is the last thing a session says; await
-    // delivery so the process cannot exit with it still queued. A shutdown
-    // additionally drains every other session's tail — see drainDeliveries.
-    const wait = nativeName === "session_stop" || nativeName === "session_shutdown";
-    const drainAll = nativeName === "session_shutdown";
-    omp.on(nativeName, (nativeEvent, ctx) => send(state, clawdEvent, nativeEvent, ctx, wait, drainAll));
+  function send(state, event, nativeEvent, ctx, waitForDelivery = false, drainAll = false) {
+    const payload = preparePayload(state, event, nativeEvent, ctx);
+    if (!payload) return waitForDelivery ? Promise.resolve(false) : false;
+    return dispatchPayload(payload, waitForDelivery, drainAll);
   }
+
+  for (const [nativeName, clawdEvent, state] of DEFAULT_EVENT_BINDINGS) {
+    // A shutdown is the last thing a session says; await delivery so the
+    // process cannot exit with it still queued, and drain every other session's
+    // tail — see drainDeliveries.
+    const wait = nativeName === "session_shutdown";
+    const drainAll = nativeName === "session_shutdown";
+    omp.on(nativeName, (nativeEvent, ctx) => {
+      if (nativeName === "session_shutdown") pendingCompletions.clear();
+      return send(state, clawdEvent, nativeEvent, ctx, wait, drainAll);
+    });
+  }
+
+  // session_stop handlers run before OMP knows whether a later extension will
+  // request a hidden continuation. Keep a candidate but return no result — a
+  // state-reporting extension must never influence OMP's continuation union.
+  omp.on("session_stop", (nativeEvent, ctx) => {
+    const payload = preparePayload("attention", "Stop", nativeEvent, ctx);
+    if (payload && payload.session_id) pendingCompletions.set(payload.session_id, payload);
+    return undefined;
+  });
+
+  // OMP emits this after aggregating session_stop and every other automatic
+  // continuation source. A continuing boundary cancels the candidate; a real
+  // terminal settle commits it once. agent_end without a main-session
+  // session_stop candidate (including subagents) is deliberately ignored.
+  omp.on("agent_end", (nativeEvent, ctx) => {
+    const probe = preparePayload("attention", "Stop", nativeEvent, ctx);
+    if (!probe || !probe.session_id) return undefined;
+    const candidate = pendingCompletions.get(probe.session_id);
+    if (!candidate) return undefined;
+    pendingCompletions.delete(probe.session_id);
+    if (nativeEvent && nativeEvent.willContinue === true) return undefined;
+    return dispatchPayload(candidate, true);
+  });
 
   omp.on("tool_call", (nativeEvent, ctx) => {
     try {

@@ -230,6 +230,10 @@ describe("omp-install", () => {
       assert.strictEqual(resolve({ PI_CODING_AGENT_DIR: elsewhere }), elsewhere);
       assert.strictEqual(extensionDirFor({ PI_CODING_AGENT_DIR: elsewhere }),
         path.join(elsewhere, "extensions", "clawd-on-desk"));
+
+      const spaced = `${elsewhere} `;
+      assert.strictEqual(resolve({ PI_CODING_AGENT_DIR: spaced }), spaced,
+        "OMP treats surrounding whitespace as part of the directory value");
     });
 
     it("follows a named profile, and derives it from PI_PROFILE when OMP_PROFILE is unset", () => {
@@ -248,6 +252,37 @@ describe("omp-install", () => {
       );
     });
 
+    it("treats default/empty OMP_PROFILE as an explicit default instead of inheriting PI_PROFILE", () => {
+      const defaultDir = path.join(homeDir, ".omp", "agent");
+      for (const ompProfile of ["default", "", "   ", "Work", "con"]) {
+        assert.strictEqual(
+          resolve({ OMP_PROFILE: ompProfile, PI_PROFILE: "work" }),
+          defaultDir,
+          `OMP_PROFILE=${JSON.stringify(ompProfile)}`
+        );
+      }
+      assert.strictEqual(resolve({ PI_PROFILE: "default" }), defaultDir);
+    });
+
+    it("drops a profile-derived agent override when OMP_PROFILE explicitly selects default", () => {
+      const inheritedProfileDir = path.join(homeDir, ".omp", "profiles", "work", "agent");
+      const defaultDir = path.join(homeDir, ".omp", "agent");
+      for (const ompProfile of ["default", ""]) {
+        assert.strictEqual(resolve({
+          OMP_PROFILE: ompProfile,
+          PI_PROFILE: "work",
+          PI_CODING_AGENT_DIR: inheritedProfileDir,
+        }), defaultDir);
+      }
+
+      const customDir = path.join(homeDir, "genuinely-custom");
+      assert.strictEqual(resolve({
+        OMP_PROFILE: "default",
+        PI_PROFILE: "work",
+        PI_CODING_AGENT_DIR: customDir,
+      }), customDir, "a non-profile override remains valid in default mode");
+    });
+
     it("ignores PI_CODING_AGENT_DIR while a profile is active", () => {
       // OMP's own resolver returns no agentDirOverride when a profile is set,
       // so the profile's directory wins over the override.
@@ -260,6 +295,11 @@ describe("omp-install", () => {
 
     it("moves the config root with PI_CONFIG_DIR, keeping it under the home directory", () => {
       assert.strictEqual(resolve({ PI_CONFIG_DIR: "omp-alt" }), path.join(homeDir, "omp-alt", "agent"));
+      assert.strictEqual(
+        resolve({ PI_CONFIG_DIR: " omp-alt " }),
+        path.join(homeDir, " omp-alt ", "agent"),
+        "OMP does not trim the configured directory name"
+      );
       assert.strictEqual(
         resolve({ PI_CONFIG_DIR: "omp-alt", OMP_PROFILE: "work" }),
         path.join(homeDir, "omp-alt", "profiles", "work", "agent")
@@ -297,6 +337,20 @@ describe("omp-install", () => {
         "the default tree must not be created when a profile is active");
     });
 
+    it("installs the default sentinel into <home>/.omp/agent without creating a default profile tree", () => {
+      const result = ompInstall.registerOmpExtension({
+        homeDir,
+        env: { OMP_PROFILE: "default", PI_PROFILE: "work" },
+        silent: true,
+        ompCommandAvailable: true,
+      });
+
+      const expected = path.join(homeDir, ".omp", "agent", "extensions", "clawd-on-desk");
+      assert.strictEqual(result.extensionDir, expected);
+      assert.ok(fs.existsSync(path.join(expected, ompInstall.EXTENSION_FILE)));
+      assert.ok(!fs.existsSync(path.join(homeDir, ".omp", "profiles", "default")));
+    });
+
     it("names the other profiles it does not manage", () => {
       const profilesDir = path.join(homeDir, ".omp", "profiles");
       for (const name of ["work", "personal"]) {
@@ -315,6 +369,21 @@ describe("omp-install", () => {
         ompInstall.listOtherOmpProfileAgentDirs({ homeDir, env: { OMP_PROFILE: "work" } })
           .map((entry) => entry.profile),
         ["personal"]
+      );
+
+      fs.mkdirSync(path.join(homeDir, ".omp", "agent"), { recursive: true });
+      assert.deepStrictEqual(
+        ompInstall.listOtherOmpProfileAgentDirs({ homeDir, env: { OMP_PROFILE: "work" } })
+          .map((entry) => entry.profile),
+        ["default", "personal"]
+      );
+
+      // "default" is a sentinel, not a loadable named profile.
+      fs.mkdirSync(path.join(profilesDir, "default", "agent"), { recursive: true });
+      assert.deepStrictEqual(
+        ompInstall.listOtherOmpProfileAgentDirs({ homeDir, env: {} })
+          .map((entry) => entry.profile),
+        ["personal", "work"]
       );
     });
 

@@ -526,9 +526,9 @@ opencode、MiMo Code、OpenClaw、Hermes 和 DeepSeek Harness 是 plugin 形式�
 ## OMP Notes
 
 - OMP (oh-my-pi) 是 Pi 所基于 coding agent 的 fork，因此 extension API 与事件词汇一致；`hooks/omp-extension.ts` 与 `hooks/pi-extension.ts` 只差三行（package import、core import、导出函数名），全部 OMP 特有逻辑都在 `hooks/omp-extension-core.js`
-- Extension 目录不是固定路径：OMP 按 **active agent directory** 解析 —— 默认 `~/.omp/agent`，`PI_CONFIG_DIR` 改 config root，`PI_CODING_AGENT_DIR` 改无 profile 时的默认值，`OMP_PROFILE` / `PI_PROFILE` 选中 `~/.omp/profiles/<name>/agent`。`hooks/omp-install.js` 的 `resolveOmpAgentDir()` 是唯一解析入口，install / uninstall / cleanup / `doctor-detectors` 描述符 / 安装探测全部走它，否则会出现"安装成功但 OMP 永远不加载"的假成功
-- Clawd 只管理它自己环境解析出的那一个目录；同机其他 profile 不被安装，Doctor 会在 healthy 时附带列出未纳管的 profile 名，而不是给出无条件的 verified
-- 完成事件绑定 `session_stop`，**绝不绑定 `agent_end`**：OMP 的 `agent_end` 在每个 agent-loop 边界都会触发（后台任务未完成、排队 follow-up、仍有 tool call 在飞），绑它会让 Clawd 在回合中途播完成动效
+- Extension 目录不是固定路径：OMP 按 **active agent directory** 解析 —— 默认 `~/.omp/agent`，`PI_CONFIG_DIR` 改 config root，`PI_CODING_AGENT_DIR` 改无 profile 时的默认值；只有 `OMP_PROFILE` 未定义时才回退 `PI_PROFILE`，`default` / 显式空值选中默认 profile，具名 profile 选中 `~/.omp/profiles/<name>/agent`。`hooks/omp-install.js` 的 `resolveOmpAgentDir()` 是唯一解析入口，install / uninstall / cleanup / `doctor-detectors` 描述符 / 安装探测全部走它，否则会出现"安装成功但 OMP 永远不加载"的假成功
+- Clawd 只管理它自己进程环境解析出的那一个目录；OMP 还会读取 home/config/agent/project `.env`，其中 project override 会随工作目录变化，必须在目标环境中手动安装。Doctor 会在 healthy / community-bridge-owned 时附带列出磁盘上其他默认或具名 profile，而不是给出无条件的 verified
+- 完成事件采用两阶段确认：主会话 `session_stop` 只记录候选，等随后的 `agent_end` 确认 `willContinue !== true` 才上报 Stop；这样既保留 `session_stop` 的主会话/子代理边界，也不会在其他 extension 请求隐藏续跑时误播完成动效
 - `session_switch` / `session_branch` 会上报，并对被离开的 session 补发合成 `SessionEnd`；否则 HUD 会留下一条再也不会更新的事件行
 - 始终发送 `session_title`：多个交互式 OMP session 会共用同一工作目录，仅靠文件夹名回退会让每一行与每个跳转目标显示成同一个名字
 - `session_shutdown` 会 drain 所有 session 的投递链尾部（`drainDeliveries`），而不只是自己那条链：切换时被离开 session 的合成 `SessionEnd` 在旧链上，若只 await 自己的链，进程可能在其投递完成前退出

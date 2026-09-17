@@ -148,20 +148,23 @@ function hasOmpCommand(options = {}) {
 
 // OMP resolves user extensions through the ACTIVE agent directory, not a fixed
 // path: the config root is <home>/<PI_CONFIG_DIR or ".omp">, a named profile
-// (OMP_PROFILE ?? PI_PROFILE) lives one level deeper under profiles/<name>, and
-// PI_CODING_AGENT_DIR relocates the profile-less default. Mirroring that here is
-// what keeps install, uninstall, the installation detector and Doctor pointing
-// at the same directory — and at the directory an OMP session will actually
-// load. A directory OMP never reads would otherwise report a successful install.
+// selected by the PRESENCE of OMP_PROFILE (falling back to PI_PROFILE only when
+// it is undefined) lives under profiles/<name>, and PI_CODING_AGENT_DIR
+// relocates the profile-less default. OMP treats "default" as the default
+// profile sentinel. Mirroring those details here keeps install, uninstall, the
+// installation detector and Doctor pointing at the directory OMP actually
+// loads. A directory OMP never reads would otherwise report a successful
+// install.
 //
-// A profile name is a validated slug; OMP ignores an invalid one rather than
-// erroring, so an invalid value is treated as "no profile" here too.
+// A profile name is a validated slug. OMP's module-load resolver catches an
+// invalid value and uses the default profile, so this non-CLI installer does the
+// same rather than throwing before Settings can report a result.
 const PROFILE_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const WINDOWS_RESERVED_NAME_PATTERN = /^(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(?:\..*)?$/i;
 
 function normalizeOmpProfileName(value) {
   const name = typeof value === "string" ? value.trim() : "";
-  if (!name) return null;
+  if (!name || name === "default") return null;
   if (name === "." || name === ".." || name.endsWith(".")) return null;
   if (!PROFILE_NAME_PATTERN.test(name)) return null;
   if (WINDOWS_RESERVED_NAME_PATTERN.test(name)) return null;
@@ -173,12 +176,12 @@ function resolveOmpEnvironment(options = {}) {
   const homeDir = typeof options.homeDir === "string" && options.homeDir
     ? options.homeDir
     : os.homedir();
-  const configuredRoot = typeof env.PI_CONFIG_DIR === "string" ? env.PI_CONFIG_DIR.trim() : "";
+  const configuredRoot = typeof env.PI_CONFIG_DIR === "string" ? env.PI_CONFIG_DIR : "";
   // OMP always joins the name under the home directory, even when the value
   // looks absolute, so an absolute-looking value must not escape it here.
   const root = path.join(homeDir, configuredRoot || OMP_CONFIG_DIR_NAME);
-  const profile = normalizeOmpProfileName(env.OMP_PROFILE)
-    || normalizeOmpProfileName(env.PI_PROFILE);
+  const rawProfile = env.OMP_PROFILE !== undefined ? env.OMP_PROFILE : env.PI_PROFILE;
+  const profile = normalizeOmpProfileName(rawProfile);
   return {
     env,
     homeDir,
@@ -191,14 +194,24 @@ function resolveOmpEnvironment(options = {}) {
 // The agent directory OMP would load extensions from for this environment.
 function resolveOmpAgentDir(options = {}) {
   if (typeof options.parentDir === "string" && options.parentDir) return options.parentDir;
-  const { env, configRoot, profile } = resolveOmpEnvironment(options);
+  const { env, root, configRoot, profile } = resolveOmpEnvironment(options);
   const defaultAgentDir = path.join(configRoot, AGENT_DIR_NAME);
   // An active profile owns its directory outright: OMP ignores
   // PI_CODING_AGENT_DIR while one is set.
   if (profile) return defaultAgentDir;
-  const override = typeof env.PI_CODING_AGENT_DIR === "string"
-    ? env.PI_CODING_AGENT_DIR.trim()
+  let override = typeof env.PI_CODING_AGENT_DIR === "string"
+    ? env.PI_CODING_AGENT_DIR
     : "";
+  // setProfile("work") exports PI_PROFILE=work together with the derived
+  // PI_CODING_AGENT_DIR. A child can explicitly select the default profile via
+  // OMP_PROFILE=default/empty while inheriting both legacy values. OMP detects
+  // that derived override and discards it; otherwise default mode would keep
+  // loading the profile directory it explicitly bypassed.
+  const legacyProfile = normalizeOmpProfileName(env.PI_PROFILE);
+  const legacyProfileAgentDir = legacyProfile
+    ? path.join(root, PROFILES_DIR_NAME, legacyProfile, AGENT_DIR_NAME)
+    : null;
+  if (legacyProfileAgentDir && override === legacyProfileAgentDir) override = "";
   return override ? path.resolve(override) : defaultAgentDir;
 }
 
@@ -210,22 +223,28 @@ function listOtherOmpProfileAgentDirs(options = {}) {
   const fsImpl = options.fs || fs;
   const { root } = resolveOmpEnvironment(options);
   const managed = path.resolve(resolveOmpAgentDir(options));
+  const dirs = [];
+  const defaultAgentDir = path.join(root, AGENT_DIR_NAME);
+  if (path.resolve(defaultAgentDir) !== managed && dirExists(defaultAgentDir, fsImpl)) {
+    dirs.push({ profile: "default", agentDir: defaultAgentDir });
+  }
   const profilesDir = path.join(root, PROFILES_DIR_NAME);
   let entries;
   try {
     entries = fsImpl.readdirSync(profilesDir, { withFileTypes: true });
   } catch {
     // No profiles directory (the common case) or an fs double without
-    // readdirSync: nothing to report.
-    return [];
+    // readdirSync: the default profile above may still need reporting.
+    return dirs;
   }
-  const dirs = [];
   for (const entry of entries) {
     if (!entry || typeof entry.isDirectory !== "function" || !entry.isDirectory()) continue;
-    const agentDir = path.join(profilesDir, entry.name, AGENT_DIR_NAME);
+    const profile = normalizeOmpProfileName(entry.name);
+    if (!profile) continue;
+    const agentDir = path.join(profilesDir, profile, AGENT_DIR_NAME);
     if (path.resolve(agentDir) === managed) continue;
     if (!dirExists(agentDir, fsImpl)) continue;
-    dirs.push({ profile: entry.name, agentDir });
+    dirs.push({ profile, agentDir });
   }
   // readdir order is filesystem-defined; the Doctor detail renders this list,
   // so pin it to a stable order instead of whatever the directory happens to

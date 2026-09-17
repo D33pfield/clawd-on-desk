@@ -44,6 +44,8 @@ const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "codewhale",
   "opencode",
   "mimocode",
+  "pi",
+  "omp",
   "hermes",
   "qoder",
   "reasonix",
@@ -719,6 +721,19 @@ async function repairAgentIntegration(payload, deps) {
     });
     if (result === false) {
       return { status: "error", message: `No automatic integration repair is available for ${agentId}` };
+    }
+    if (
+      agentId === "omp"
+      && result
+      && typeof result === "object"
+      && result.status === "skipped"
+      && result.reason === "standalone-bridge-present"
+    ) {
+      return {
+        status: "ok",
+        ...integrationResultMetadata(result),
+        message: resultMessage(result, "OMP community bridge is active; no managed repair is needed"),
+      };
     }
     if (result && typeof result === "object" && result.status && result.status !== "ok") {
       return {

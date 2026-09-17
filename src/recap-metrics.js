@@ -39,9 +39,9 @@ const AGENT_METRIC_POLICIES = Object.freeze({
   opencode: policy(null, STANDARD_COMPLETION, null),
   mimocode: policy(null, STANDARD_COMPLETION, null),
   pi: policy(null, STANDARD_COMPLETION, STANDARD_TOOL_START),
-  // OMP binds completion to session_stop, which fires only once the turn has
-  // settled and agent-owned background jobs are idle, so Stop is a proven
-  // completed-turn boundary here (see hooks/omp-extension-core.js).
+  // OMP records a main-session completion candidate at session_stop and emits
+  // Stop only after the following agent_end proves willContinue !== true, so
+  // accepted Stop remains a completed-turn boundary here.
   omp: policy(null, STANDARD_COMPLETION, STANDARD_TOOL_START),
   openclaw: policy(null, STANDARD_COMPLETION, STANDARD_TOOL_START),
   // Hermes normalizes both post_llm_call and on_session_end to Stop. The first

@@ -24,7 +24,7 @@ const {
   KIMI_HOOK_EVENTS,
 } = require("../../hooks/kimi-install");
 const { parseTomlSections: parseCodewhaleTomlSections } = require("../../hooks/codewhale-install");
-const { listOtherOmpProfileAgentDirs } = require("../../hooks/omp-install");
+const { findStandaloneBridge, listOtherOmpProfileAgentDirs } = require("../../hooks/omp-install");
 const { getAgentDescriptors } = require("./agent-descriptors");
 const {
   commandContainsFragment,
@@ -2434,8 +2434,24 @@ function checkExtensionMode(descriptor, options) {
   const markerPath = path.join(extensionDir, descriptor.markerFile || ".clawd-managed.json");
   const extensionPath = path.join(extensionDir, descriptor.marker || "index.ts");
   const corePath = path.join(extensionDir, descriptor.coreFile || `${integrationId}-extension-core.js`);
+  const extensionDirExists = dirExists(options.fs, extensionDir);
+  const standaloneBridge = integrationId === "omp"
+    ? findStandaloneBridge({ extensionDir, fs: options.fs })
+    : null;
 
-  if (!dirExists(options.fs, extensionDir)) {
+  if (!extensionDirExists && standaloneBridge) {
+    return makeDetail(descriptor, "manual-managed", {
+      level: "info",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: standaloneBridge,
+      extensionDir,
+      standaloneBridge,
+      detail: `${standaloneBridge} community bridge is active; the Clawd-managed OMP extension is intentionally absent`,
+    });
+  }
+
+  if (!extensionDirExists) {
     return makeDetail(descriptor, "not-connected", {
       level: "warning",
       parentDirExists: true,
@@ -2447,6 +2463,18 @@ function checkExtensionMode(descriptor, options) {
   }
 
   const marker = readJsonIfPresent(options.fs, markerPath);
+  if (standaloneBridge && isExtensionManagedMarker(marker, integrationId)) {
+    return makeDetail(descriptor, "broken-path", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: extensionDir,
+      extensionDir,
+      markerPath,
+      standaloneBridge,
+      detail: `${extensionDir} and ${standaloneBridge} are both active; Fix retires Clawd's managed copy to prevent duplicate OMP events`,
+    });
+  }
   if (!isExtensionManagedMarker(marker, integrationId)) {
     return makeDetail(descriptor, "needs-review", {
       level: "warning",
@@ -2455,7 +2483,10 @@ function checkExtensionMode(descriptor, options) {
       configPath: extensionDir,
       extensionDir,
       markerPath,
-      detail: `${extensionDir} exists but is not Clawd-managed`,
+      standaloneBridge,
+      detail: standaloneBridge
+        ? `${extensionDir} is not Clawd-managed and ${standaloneBridge} also exists; OMP may report duplicate events`
+        : `${extensionDir} exists but is not Clawd-managed`,
     });
   }
 
@@ -2730,7 +2761,7 @@ function withKimiLegacyPermissionModeSupplement(detail, descriptor, options) {
 // names the unmanaged profiles (setting OMP_PROFILE for Clawd, or re-running
 // the installer from that profile's shell, is the fix). Never masks a finding.
 function withOmpProfileNotice(detail, options) {
-  if (detail.status !== "ok") return detail;
+  if (detail.status !== "ok" && detail.status !== "manual-managed") return detail;
   const unmanaged = listOtherOmpProfileAgentDirs({
     env: options.env,
     homeDir: options.homeDir,

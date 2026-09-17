@@ -174,23 +174,47 @@ describe("omp-extension-core", () => {
       }
     });
 
-    // The reason this core exists separately from pi-extension-core: OMP fires
-    // agent_end at every agent-loop boundary, including scheduling pauses with
-    // work still in flight. Binding completion to it makes Clawd play the
-    // finish chime mid-turn. session_stop is the settled turn.
-    it("takes completion from session_stop and never from agent_end", async () => {
+    // session_stop runs before OMP has aggregated every extension's continuation
+    // result. The following agent_end carries that aggregate as willContinue.
+    it("commits a session_stop candidate only at a terminal agent_end", async () => {
       const bound = core.DEFAULT_EVENT_BINDINGS.map(([native]) => native);
-      assert.ok(bound.includes("session_stop"));
-      assert.ok(!bound.includes("agent_end"), "agent_end must not be a completion source");
+      assert.ok(!bound.includes("session_stop"), "completion uses a correlated custom handler");
+      assert.ok(!bound.includes("agent_end"), "completion uses a correlated custom handler");
 
       const omp = makeOmp();
       const { posted } = attachRecorder(omp);
-      assert.ok(!omp.handlers.has("agent_end"), "no handler may be registered for agent_end");
+      assert.ok(omp.handlers.has("session_stop"));
+      assert.ok(omp.handlers.has("agent_end"));
 
-      await omp.fire("session_stop", {}, makeCtx());
+      const firstStopResult = omp.fire("session_stop", {}, makeCtx());
+      assert.strictEqual(firstStopResult, undefined, "state reporting must not affect OMP's stop result union");
+      await flush();
+      assert.strictEqual(posted.length, 0, "pre-settle session_stop must not announce completion");
+
+      await omp.fire("agent_end", { willContinue: true }, makeCtx());
+      assert.strictEqual(posted.length, 0, "an automatic continuation cancels the candidate");
+
+      omp.fire("session_stop", {}, makeCtx());
+      await omp.fire("agent_end", {}, makeCtx());
       assert.strictEqual(posted.length, 1);
       assert.strictEqual(posted[0].event, "Stop");
       assert.strictEqual(posted[0].state, "attention");
+
+      await omp.fire("agent_end", {}, makeCtx());
+      assert.strictEqual(posted.length, 1, "agent_end without a main-session candidate is ignored");
+    });
+
+    it("ignores subagent-style agent_end events that have no session_stop candidate", async () => {
+      const omp = makeOmp();
+      const { posted } = attachRecorder(omp);
+
+      await omp.fire("agent_end", {}, makeCtx({ hasUI: false }));
+      await omp.fire("agent_end", {}, makeCtx({
+        hasUI: true,
+        sessionManager: { getSessionId: () => "subagent-only" },
+      }));
+
+      assert.deepStrictEqual(posted, []);
     });
 
     it("treats a session switch or branch as a new session start", async () => {
@@ -294,7 +318,8 @@ describe("omp-extension-core", () => {
       });
       const ctx = makeCtx();
       omp.fire("before_agent_start", {}, ctx);
-      await omp.fire("session_stop", {}, ctx);
+      omp.fire("session_stop", {}, ctx);
+      await omp.fire("agent_end", {}, ctx);
       assert.deepStrictEqual(order, ["UserPromptSubmit", "Stop"]);
     });
 
