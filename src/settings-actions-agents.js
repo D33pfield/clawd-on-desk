@@ -311,6 +311,18 @@ function integrationResultMetadata(result) {
     if (typeof result[key] === "string" && result[key]) metadata[key] = result[key];
   }
   if (result.manualInspectionRequired === true) metadata.manualInspectionRequired = true;
+  // #1026 additive, type-guarded passthrough. Other agents simply omit these.
+  for (const key of ["registrationRemoved", "activeEntryRemaining", "managedFilesRemoved"]) {
+    if (typeof result[key] === "boolean" || result[key] === null) metadata[key] = result[key];
+  }
+  if (Array.isArray(result.warnings)) {
+    const warnings = result.warnings.filter((warning) => typeof warning === "string" && warning);
+    if (warnings.length) metadata.warnings = warnings;
+  }
+  if (Array.isArray(result.residualPaths)) {
+    const residualPaths = result.residualPaths.filter((p) => typeof p === "string" && p);
+    if (residualPaths.length) metadata.residualPaths = residualPaths;
+  }
   return metadata;
 }
 
@@ -630,6 +642,24 @@ async function uninstallAgentIntegration(payload, deps = {}) {
         message: resultMessage(result, `Failed to uninstall ${agentId}`),
       };
     }
+    // #1026 §7.2: an uninstall only commits when the active registration is
+    // gone. `undefined` preserves the legacy status-only path for the other
+    // cleaners; `false`/`null` means an active (or unconfirmable) entry
+    // remains, so no commit and no runtime teardown.
+    if (result && typeof result === "object" && result.registrationRemoved === false) {
+      return {
+        status: "error",
+        ...integrationResultMetadata(result),
+        message: resultMessage(result, `Failed to uninstall ${agentId}: an active integration entry is still registered`),
+      };
+    }
+    if (result && typeof result === "object" && result.registrationRemoved === null) {
+      return {
+        status: "error",
+        ...integrationResultMetadata(result),
+        message: resultMessage(result, `Failed to uninstall ${agentId}: could not confirm the active registration was removed`),
+      };
+    }
     if (typeof deps.stopMonitorForAgent === "function") deps.stopMonitorForAgent(agentId);
     if (typeof deps.clearSessionAutomationByAgent === "function") {
       deps.clearSessionAutomationByAgent(agentId);
@@ -638,6 +668,7 @@ async function uninstallAgentIntegration(payload, deps = {}) {
     if (typeof deps.dismissPermissionsByAgent === "function") deps.dismissPermissionsByAgent(agentId);
     return {
       status: "ok",
+      ...integrationResultMetadata(result),
       message: resultMessage(result, `Uninstalled ${agentId}`),
       commit: {
         ...buildAgentCommit(snapshot, agentId, {

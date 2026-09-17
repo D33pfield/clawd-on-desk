@@ -247,10 +247,17 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       },
       opencode: {
         ...common,
+        // #1026: managed generations live under the target home. Without
+        // homeDir the uninstaller would fall back to the real profile or be
+        // unable to locate the generation for cleanup.
+        homeDir,
+        managedRoot: options.managedRoot,
         configPath: path.join(homeDir, ".config", "opencode", "opencode.json"),
       },
       mimocode: {
         ...common,
+        homeDir,
+        managedRoot: options.managedRoot,
         configPath: path.join(homeDir, ".config", "mimocode", "mimocode.jsonc"),
       },
       pi: {
@@ -446,6 +453,12 @@ async function cleanupIntegrations(options = {}) {
       notes: [],
       error: null,
       result: null,
+      // #1026 additive structured fields; other cleaners omit them entirely
+      // (undefined lets the About-cleanup commit fall back to status).
+      registrationRemoved: undefined,
+      activeEntryRemaining: undefined,
+      managedFilesRemoved: undefined,
+      residualPaths: [],
     };
 
     try {
@@ -494,9 +507,38 @@ async function cleanupIntegrations(options = {}) {
         agent.warnings = warningsFromResult(agentId, result);
         agent.notes = notesFromResult(agentId, result);
         agent.result = result;
+        if (result && (result.registrationRemoved === true || result.registrationRemoved === false || result.registrationRemoved === null)) {
+          agent.registrationRemoved = result.registrationRemoved;
+        }
+        if (result && (result.activeEntryRemaining === true || result.activeEntryRemaining === false || result.activeEntryRemaining === null)) {
+          agent.activeEntryRemaining = result.activeEntryRemaining;
+        }
+        if (result && typeof result.managedFilesRemoved === "boolean") {
+          agent.managedFilesRemoved = result.managedFilesRemoved;
+        }
+        if (result && Array.isArray(result.residualPaths)) {
+          for (const residualPath of result.residualPaths) {
+            if (typeof residualPath === "string" && residualPath) agent.residualPaths.push(residualPath);
+          }
+        }
+        // A buggy/legacy cleaner can return status "ok" while an active
+        // registration remains (#1026 r1 P0). Those structured signals are
+        // authoritative: the cleanup failed even if status says otherwise.
+        const registrationStillActive = result && (
+          result.registrationRemoved === false
+          || result.registrationRemoved === null
+          || result.activeEntryRemaining === true
+          || result.activeEntryRemaining === null
+        );
         if (result && result.status === "error") {
           agent.status = "failed";
           agent.error = result.message || `Failed to clean ${agent.displayName} integration`;
+          failed++;
+          if (changed || removed > 0) agentsAffected++;
+        } else if (registrationStillActive) {
+          agent.status = "failed";
+          agent.error = result.message
+            || `Failed to clean ${agent.displayName} integration: an active registration remains`;
           failed++;
           if (changed || removed > 0) agentsAffected++;
         } else if (changed || removed > 0) {

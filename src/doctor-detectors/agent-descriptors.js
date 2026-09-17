@@ -272,6 +272,10 @@ const AGENT_DESCRIPTORS = Object.freeze([
     ),
     marker: "opencode-plugin",
     detection: "opencode-plugin",
+    // #1026: managedOpenCode Doctor branch + target home for the managed
+    // generation inspector. Never inferred from the registry path elsewhere.
+    managedMaterialization: getFamilyConfig("opencode").managedMaterialization === true,
+    managedHomeDir: path.resolve(opencode.DEFAULT_PARENT_DIR, "..", ".."),
   }),
   Object.freeze({
     agentId: "mimocode",
@@ -296,6 +300,8 @@ const AGENT_DESCRIPTORS = Object.freeze([
     // not-connected (R8 P2).
     marker: getFamilyConfig("mimocode").pluginDirName,
     detection: "opencode-plugin",
+    managedMaterialization: getFamilyConfig("mimocode").managedMaterialization === true,
+    managedHomeDir: path.resolve(mimocode.DEFAULT_PARENT_DIR, "..", ".."),
   }),
   Object.freeze({
     agentId: "pi",
