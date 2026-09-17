@@ -53,6 +53,7 @@ const {
   resolveCodexOfficialHookState,
 } = require("./server-codex-official-turns");
 const { createDshStateSequenceFence } = require("./dsh-state-sequence");
+const createGrokTurnFence = require("./grok-turn-fence");
 const {
   HOOK_EVENT_RING_SIZE_PER_AGENT,
   createSingleRequestHookEventRecorder,
@@ -154,6 +155,8 @@ let lastClaudeHookGuardNotice = null;
 let claudeStatuslineIngressSuppressed = false;
 const codexOfficialTurns = new Map();
 const dshStateSequenceFence = createDshStateSequenceFence();
+// Grok Build turn-order fence: bounded, in-memory, injected into /state.
+const grokTurnFence = createGrokTurnFence();
 const recentHookEvents = new Map();
 
 function isClaudeStatuslineMetadataAllowed() {
@@ -497,11 +500,22 @@ function setClaudeQuotaCollectionEnabled(callOptions = {}) {
         message: "Enable the Claude Code integration before collecting its usage metadata",
       };
     }
-    const result = registerClaudeStatusline({ backup: true, silent: true });
+    if (callOptions.chainExisting === true
+      && !/^[a-f0-9]{64}$/.test(callOptions.expectedStatuslineFingerprint || "")) {
+      return { status: "error", message: "Confirm the current Claude statusline before enabling coexistence" };
+    }
+    const result = registerClaudeStatusline({
+      backup: true, silent: true,
+      ...(callOptions.chainExisting === true ? {
+        chainExisting: true,
+        expectedStatuslineFingerprint: callOptions.expectedStatuslineFingerprint,
+      } : {}),
+    });
     if (result.skippedExisting) {
       return {
         status: "error",
         reason: "statusline-occupied",
+        statuslineFingerprint: result.statuslineFingerprint,
         message: "Claude Code already has a custom statusline; Clawd left it unchanged",
       };
     }
@@ -774,6 +788,7 @@ function routeHttpRequest(req, res, remoteProfile = null) {
         shouldDropForDnd,
         codexOfficialTurns,
         dshStateSequenceFence,
+        grokTurnFence,
         captureForegroundWindowsTerminal: ctx.captureForegroundWindowsTerminal,
         isWinHost: isWindowsHost,
         windowsProcessChainRuntime,

@@ -4,7 +4,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 
 ## Project Overview
 
-Clawd 是一个 Electron 桌宠：通过 hook、日志轮询、plugin 和 extension 感知 AI coding agent 的工作状态，并播放像素风动画。当前支持 Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Antigravity CLI (agy)、Cursor Agent、CodeBuddy、WorkBuddy、Kiro CLI、Kimi Code CLI (Kimi-CLI)、Qwen Code、ZCode、CodeWhale、opencode、MiMo Code、Pi、OpenClaw、Hermes Agent、Qoder、QoderWork、QwenWork (千问办公)、Reasonix、DeepSeek Harness、TraeCode (Trae CN)；内置 Clawd / Calico / Cloudling 三套主题，支持用户主题；平台覆盖 Windows、macOS、Linux，UI 支持 en / zh / zh-TW / ko / ja / pt-BR / es。
+Clawd 是一个 Electron 桌宠：通过 hook、日志轮询、plugin 和 extension 感知 AI coding agent 的工作状态，并播放像素风动画。当前支持 Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Antigravity CLI (agy)、Cursor Agent、CodeBuddy、WorkBuddy、Grok Build、Kiro CLI、Kimi Code CLI (Kimi-CLI)、Qwen Code、ZCode、CodeWhale、opencode、MiMo Code、Pi、OpenClaw、Hermes Agent、Qoder、QoderWork、QwenWork (千问办公)、Reasonix、DeepSeek Harness、TraeCode (Trae CN)；内置 Clawd / Calico / Cloudling 三套主题，支持用户主题，并可经 Settings 从独立 `rullerzhou-afk/clawd-themes` 仓库下载可选官方主题（Hash Sage，external theme 权限、可卸载）；平台覆盖 Windows、macOS、Linux，UI 支持 en / zh / zh-TW / ko / ja / pt-BR / es。
 
 ## Common Commands
 
@@ -22,6 +22,7 @@ npm test
 npm run verify:electron
 npm run verify:release
 npm run audit:assets
+npm run audit:pr-history-assets
 npm run audit:native-package -- --app-root <extracted-app-root> --target <target-id>
 npm run create-theme
 
@@ -53,6 +54,8 @@ npm run install:reasonix-hooks
 npm run uninstall:reasonix-hooks
 npm run install:workbuddy-hooks
 npm run uninstall:workbuddy-hooks
+npm run install:grok-hooks
+npm run uninstall:grok-hooks
 npm run install:dsh
 npm run uninstall:dsh
 npm run install:codex-hooks
@@ -70,7 +73,7 @@ bash test-macos.sh
 bash test-oneshot-gate.sh [state] [seconds]
 ```
 
-新安装默认只把 Claude Code 和 Codex 标记为已安装并启用；其他 agent 默认未安装、未启用。正常启动时，Clawd 只会为 `integrationInstalled=true` 且 `enabled=true` 的 agent 自动同步 Claude / Codex / Copilot / Gemini / Antigravity / Cursor / CodeBuddy / WorkBuddy / Kiro / Kimi / Qwen / ZCode / CodeWhale / Qoder / QoderWork / QwenWork / Reasonix / TraeCode hooks、opencode / MiMo Code / OpenClaw / Hermes plugins 和 Pi extension。Settings Agent 页的 Install 会安装并启用该集成；Uninstall 会卸载 Clawd 管理的 hook/plugin/extension，并同时把该 agent 设为未安装、未启用。单独关闭 enabled 只会跳过启动同步并屏蔽事件/权限入口，不卸载用户已有 hooks / plugins / extensions；重新启用未安装 agent 只打开事件入口，不会写本机集成文件。手动安装命令主要用于调试、重装或远程部署。
+新安装默认只把 Claude Code 和 Codex 标记为已安装并启用；其他 agent 默认未安装、未启用。正常启动时，Clawd 只会为 `integrationInstalled=true` 且 `enabled=true` 的 agent 自动同步 Claude / Codex / Copilot / Gemini / Antigravity / Cursor / CodeBuddy / WorkBuddy / Grok Build / Kiro / Kimi / Qwen / ZCode / CodeWhale / Qoder / QoderWork / QwenWork / Reasonix / TraeCode hooks、opencode / MiMo Code / OpenClaw / Hermes plugins 和 Pi extension。Settings Agent 页的 Install 会安装并启用该集成；Uninstall 会卸载 Clawd 管理的 hook/plugin/extension，并同时把该 agent 设为未安装、未启用。单独关闭 enabled 只会跳过启动同步并屏蔽事件/权限入口，不卸载用户已有 hooks / plugins / extensions；重新启用未安装 agent 只打开事件入口，不会写本机集成文件。手动安装命令主要用于调试、重装或远程部署。
 Settings 注册的自定义 HTTP Agent 是独立模型：`customApplications` 是注册真相，对应 `agents[customId]` 必须显式保持 `integrationInstalled=false`。注册只分配 ID 和状态入口，不安装 hook、不观察进程；v1 仅允许已注册且启用的 ID 向 `/state` 上报，`/permission` 永远不提供决定。删除或伪造的 `custom-` ID 必须直接拒绝，不能降级成 Claude Code subagent。
 Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-based 增量合并只接管含 `copilot-hook.js` 标记的条目，用户其他 entry / 其他 `hooks/*.json` 文件原样保留；hooks.json 或 `settings.json` 顶层 `disableAllHooks: true` 时 doctor 报 warning（不挂 Fix 按钮）。详见 `docs/guides/copilot-setup.md`。
 
@@ -124,7 +127,8 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 | `src/dashboard-quick-mode.js` | 完整 Dashboard 的 1–9 键盘模式（**macOS/Windows only**）：quick 宿主、opacity/input parking、轮次栅栏与冻结数字映射；Windows 显式取消与页面失效的来源恢复在 `src/quick-select-origin-focus.js`，quick 宿主的退出清理挂在 `before-quit` |
 | `src/session-hud.js` + `src/session-hud-renderer.js` | 桌宠旁轻量会话 HUD、折叠行、点击跳转 |
 | `src/session-alias.js` | session alias key 规范化、TTL pruning、Kiro cwd scope |
-| `src/theme-loader.js` + `src/theme-runtime.js` | stateless 主题加载/消毒与唯一 active-theme owner |
+| `src/theme-loader.js` + `src/theme-runtime.js` | stateless 主题加载/消毒与唯一 active-theme owner；`waitForThemeReloadSettled` 完成信号 |
+| `src/official-theme-catalog.js` / `-download.js` / `-installer.js` / `-main.js` | 官方可下载主题：严格 catalog/cache、Electron `net.request` 流式下载、受限流式 ZIP 解压与 marker-before-rename、main owner/IPC/共享 `theme` lock |
 | `src/prefs.js` | 偏好 schema、load/save/migrate/validate，设置持久化入口 |
 | `src/settings-actions*.js` + `src/settings-effect-router.js` | 设置 validators / commands / pre-commit gates 与 post-commit runtime effects |
 | `src/settings-controller.js` | 设置系统唯一写入者 |
@@ -156,6 +160,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 | `hooks/codex-hook.js` / `hooks/codex-install.js` | Codex official hooks 状态与权限审批、安装 / 卸载 |
 | `hooks/cursor-install.js` / `gemini-install.js` / `antigravity-install.js` / `kiro-install.js` / `kimi-install.js` / `qwen-code-install.js` / `codewhale-install.js` / `codebuddy-install.js` / `workbuddy-install.js` / `opencode-install.js` / `pi-install.js` / `openclaw-install.js` / `hermes-install.js` / `qoder-install.js` / `qoderwork-install.js` / `reasonix-install.js` | 各 agent 集成安装逻辑 |
 | `hooks/workbuddy-hook.js` | WorkBuddy state + Notification command hook；无 session_id 时返回合法 stdout 后丢弃事件 |
+| `hooks/grok-hook.js` / `hooks/grok-install.js` | Grok Build state + Notification command hook；写入 `<GROK_HOME 或 ~/.grok>/hooks/clawd-on-desk.json`；`env` marker `CLAWD_GROK_HOOK=v1` 所有权；无 session id 时丢弃；不注册 `/permission` |
 | `hooks/zcode-hook.js` / `hooks/zcode-install.js` | ZCode 状态 + 阻塞式 PermissionRequest hooks（`hookSpecificOutput` 决定 / `{}` 无决定）、`hooks.events.*` 按事件超时增量注册与 Claude-imported Clawd hook 清理 |
 | `hooks/qoder-hook.js` | Qoder state-only 状态上报脚本（Phase 1，stdout 恒为 `{}`） |
 | `hooks/codex-remote-monitor.js` | 远程 Codex JSONL 轮询并通过 SSH 隧道回传（含 token_count 订阅配额的 metadata_only 上报） |
@@ -171,6 +176,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - permission automation（off / auto-tools / unattended）和 per-session grant 会在 bubble 渲染前产生真实 allow/answer。agent/family eligibility 是显式白名单；工具分类则因 mode/adapter 而异：auto-tools 对 Claude/Qwen 的未知 built-in fail closed，但其他已知 adapter 不都使用逐工具白名单，unattended 还会有意自动放行可作 Allow/Deny 的未知请求。新增 agent、工具或交互类型必须审查 policy + tests，不能从 `permissionApproval` 推导资格或笼统假设“未知请求都会 defer”
 - Telegram / 飞书 Lark 与本地 bubble 是并行决策通道。远程通道超时、断连、未配置或发送失败不得产生远程决定，更不得转成 deny；有本地 bubble 时请求继续 pending，只有 remote-only 且所有可用 client 都无决定时，整体请求才 no-decision 并回到 agent 原生流程
 - WorkBuddy 通过 `~/.workbuddy/settings.json` 的 Claude Code 兼容 command hooks 做 **state + Notification only** 集成：不注册 `/permission`，审批始终留在 WorkBuddy 原生沙箱与 GUI；无 `session_id` 的事件返回合法 stdout 后直接丢弃。当前只支持 macOS/Windows 桌面应用，没有已验证的 Linux/WSL CLI；不要把裸 `Electron` 当 WorkBuddy 进程。
+- Grok Build（agent id `grok-build`）通过 `<GROK_HOME 或 ~/.grok>/hooks/clawd-on-desk.json` 的 Claude Code 兼容 command hooks 做 **local / main-session / state + Notification only** 集成（Phase 1）：stdin 为 camelCase（`sessionId` / `toolName`），`hookEventName` 是 camelCase key + snake_case value，`hook_event_name` 是 snake_case key + PascalCase value。**逐 handler 的 `env` 结构化 marker `CLAWD_GROK_HOOK=v1` 是唯一所有权凭据**；文件名/substring（含 `grok-hook.js.backup`）只用于诊断告警，永不授权改写或删除。安装/卸载只增删含该 marker 的 handler，保留 unknown 顶层键、其他 event、foreign matcher group 与 sibling handler；没有 marker 的既有文件一律原样拒绝。`SessionEnd` 不写 `timeout`（继承 Grok 1.5s teardown），其余事件 5s。Windows 用 `windowsWrapper:"portable"` 形态，不得用 `&` / `-EncodedCommand` / 自造 `shell` 字段。Grok 没有 `PermissionRequest`，不注册 `/permission`，adapter 始终输出 `{}`。子代理事件（`subagentType`）直接丢弃；不注册 `SubagentStart` / `SubagentStop`。Grok 默认会扫 `~/.claude/settings.json`，所以 `clawd-hook.js` / `cursor-hook.js` / `auto-start.js` 只在非空官方 `GROK_HOOK_EVENT` 下直接退出，`GROK_HOME` / `GROK_SESSION_ID` / 无关 `GROK_*` 不得触发。`Stop` 只有精确 `reason === "end_turn"` 且无 background task / session cron / `stopHookActive` 才算完成，其余由 adapter 本地判定；`channel_closed` / `shutdown` 等 session-end 形态的 Stop 在 fence 之前丢弃。turn 顺序由 `src/grok-turn-fence.js` 的 bounded in-memory fence 仲裁（晚到旧 turn、重复 terminal、continuation Stop、Stop→StopCancelled 纠正）。不进入 subagent / WSL / Remote SSH / startup recovery / terminal focus / quota / context / recap turn 指标。`~/.grok/hooks/clawd.json` 是未发布的 PR preview 路径，只做 warning，不得自动接管或删除。
 - Codex 的阻塞式权限审批走 official `PermissionRequest` command hook：hook 脚本长连接 `POST /permission`，只允许 stdout 返回 sanitized `behavior/message`，`updatedInput` / `updatedPermissions` / `interrupt` 必须 omit
 - hook 脚本只允许依赖 Node 内置模块，以及同目录 `hooks/` 下、且登记在 `src/remote-ssh-deploy.js` 的 `HOOK_FILES` 部署清单中的纯 Node helper（如 `server-config.js` / `shared-process.js` / `json-utils.js` / `codex-originator.js` / `codex-subagent-fields.js` / `context-usage.js` / `state-payload-size.js` / `quota-bucket.js` / `claude-rate-limits.js` / `codex-rate-limits.js` / `antigravity-context-usage.js`）；manifest-consistency 测试强制检查依赖闭包，新增 helper 必须登记
 - CJS hook 脚本需要稳定终端 PID 时，必须复用 `hooks/shared-process.js` 的 `createPidResolver()` 及其 lifecycle context；不要复制进程树 walk 或用 `process.ppid` 简化。`getStablePid()` 只是 opencode-family plugin 的内部 resolver
@@ -191,7 +197,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - CodeBuddy PermissionRequest hook 的所有权只认本机 managed URL 或 marker `clawd-on-desk.permission.v1`；纯 `name:"clawd"` 不能触发改写/删除。裸 CLI 和 WSL 默认 preserve，Settings/startup/repair 必须显式传 local/custom permission target
 - Remote SSH 的远端 Node 探测要求 Node >= 14；Node discovery/version validation 只在 `src/remote-ssh-node.js`，ordinary tunnel health 与 serialized readiness 在 `src/remote-ssh-runtime.js`，不得互相复制或从已停用脚本另起实现
 - 注册 Claude Code hook 必须 marker-scoped merge：只可更新/删除含 `clawd-hook.js` / `auto-start.js` marker 的 Clawd-owned entry，不得整体覆盖数组或改动无 marker 的用户 entry
-- 注册 Claude Code statusLine 时只接管空槽或自己的槽（marker `claude-statusline.js`）；远程部署可用 profile 的 `chainStatusline` opt-in 串联既有第三方 statusline（`--chain-existing`），显式关闭时必须从 sidecar 恢复原 statusLine。订阅配额通过 `metadata_only` POST 进入 session-independent `updateAccountQuota` per-source store；不要把 quota 塞进 `updateSession` opts，也不要以 session 存活作为摄入前提
+- 注册 Claude Code statusLine 默认只接管空槽或自己的槽（marker `claude-statusline.js`）；本机 Settings 显式开启采集遇到第三方槽时，必须经共存确认并复核原槽指纹，使用 `--local-chain` 和独立的 `clawd-statusline-local-chain.json` 保存/恢复完整原对象。启动/自动修复不得自行取得第三方槽；恢复记录缺失、损坏或不匹配时 fail closed 并保留现场。远程部署仍用 profile 的 `chainStatusline` opt-in 和既有 `--chain` sidecar，不与本机记录混用。订阅配额通过 `metadata_only` POST 进入 session-independent `updateAccountQuota` per-source store；不要把 quota 塞进 `updateSession` opts，也不要以 session 存活作为摄入前提
 - Copilot CLI hooks 走按需自动同步：`hooks/copilot-install.js` 在本地启动仅当 Copilot CLI 已安装且已启用时调用；远端由 Settings Remote SSH deploy controller 调用。路径解析尊重 `COPILOT_HOME` env（trimmed 非空才生效，否则 fallback 到 `~/.copilot`）；`hooks/copilot-hook.js` 的 session-state resolver 同样走 env
 - Remote SSH 的 effective transport 由 `ssh -G` 只读检查决定：ordinary SSH 在没有 retained serialized occupancy 时保持 `context:null` 的 parallel 路径；serialized transport 以有效 target key（不是 profile id）互斥。所有 serialized managed SSH/SCP child 必须持 coordinator 发出的有效 connection/operation context，并通过其 pre-spawn gateway 启动；用户交互终端只有命中 serialized/retained occupancy 时才要求 coordinator 判定 target 完全 idle
 - serialized persistent tunnel 使用同一条 SSH 内嵌 readiness；暂停通过 stdin EOF 请求自然退出并等待 `close`。强杀或带 signal 的 outer `ssh.exe` close 不能证明 nested ProxyCommand 已 drain；timeout/未验证 drain 必须 quarantine，期间禁止新 child、mutation、resume 或 interactive terminal
@@ -208,6 +214,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - 需要编辑发布素材时，先复制到 `assets/source/` 再改，不要直接改工作素材来源不明的文件
 - `assets/source/cloudling-pointer-bridge/` 是 Cloudling 指针桥素材的保留源文件目录；运行时逻辑已内联进主题 SVG，不要把这个 source 目录当临时文件清理
 - 主题状态、sleep/DND、mini mode、状态映射的细节在 `docs/project/theme-state-ui.md`
+- 官方可下载主题（`official-theme-*`）是受管分发层，不是 built-in、也不提升信任：catalog 是固定远端小目录（renderer 只能传 themeId），下载走 Electron main `net.request` 的 manual redirect + 精确 CDN host allowlist + 固定 bytes/SHA-256（未支持 host 返回稳定 `DOWNLOAD_HOST_UNSUPPORTED`，不允许 catalog 扩展 allowlist），ZIP 只在 manager 专属 staging 内流式解压并以 marker-before-rename 同卷提交，最终以 `isBuiltin=false` 加载（`trustedRuntime` 无效）。`setThemeSelection` / `removeTheme` / `officialTheme.commitInstall` / `officialTheme.uninstall` / `theme` update 共用 `lockKey="theme"`；卸载 active 主题必须等 `waitForThemeReloadSettled()`。不要把 Hash Sage APNG/第四套内置主题文案带回主仓库
 - Settings 体系里，store 是唯一真相，controller 是唯一写入者；不要绕开 `settings-controller.js`
 - Dashboard 数字快选是**完整 Dashboard 同一页面的临时键盘模式，仅 macOS/Windows**；Linux 明确 NOT SUPPORTED（不是待验证）。平台 gate 的唯一真相是 `shortcut-actions.js` 的 `supportedPlatforms` + `isShortcutActionSupported()`，Settings 展示、globalShortcut 注册/录制、设置命令和冲突占用都必须服从它；遗留的不支持绑定只忽略执行，不删用户 prefs、不占其他快捷键。darwin/win32 的 Dashboard 页面活在 `WebContentsView` 里，`BrowserWindow.fromWebContents()` 对它返回 null、BaseWindow 不触发 `ready-to-show`；页面 WC 一律从 owner 取。禁止用 `hide()`+`showInactive()` 归还已显示的普通宿主（实测会遮挡来源窗口），只能 opacity/input parking 并幂等恢复捕获值。详见 `docs/project/theme-state-ui.md`
 

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Notification, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, powerMonitor, clipboard, safeStorage } = require("electron");
+const { app, BrowserWindow, Notification, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, powerMonitor, clipboard, safeStorage, net } = require("electron");
 const { maybeRunPackageKoffiSmoke } = require("./package-koffi-smoke");
 if (maybeRunPackageKoffiSmoke({ app, BrowserWindow })) {
   return;
@@ -188,6 +188,7 @@ const createPetWindowRuntime = require("./pet-window-runtime");
 const { collectRequiredAssetFiles } = require("./theme-schema");
 const { describeGeometrySync } = require("./pet-accessory-state");
 const { createDisplayedVisualProjection } = require("./displayed-visual-projection");
+const { isVisualMirrored, resolveMirroredFile } = require("./mirrored-files");
 const { createTestReactionHandler } = require("./test-reaction");
 const createMacHideController = require("./mac-hide");
 const {
@@ -197,6 +198,7 @@ const {
 const { focusCodexThreadTarget } = require("./session-focus-handoff");
 const { isSessionInProgress } = require("./state-session-snapshot");
 const { restoreSessionsFromRecoveryLeases } = require("./session-recovery-loader");
+const { createSessionHistoryRuntime } = require("./session-history-runtime");
 const { getAllAgents, getAgent } = require("../agents/registry");
 const { getAgentIconUrl } = require("./state-agent-icons");
 // ── Autoplay policy: allow sound playback without user gesture ──
@@ -316,6 +318,7 @@ const prefsModule = require("./prefs");
 const { createSettingsController } = require("./settings-controller");
 const { loadOrCreateInstallationIdentity } = require("./remote-ssh-identity");
 const { createTranslator, i18n, SUPPORTED_LANGS } = require("./i18n");
+const { setClaudeCollectionWithConsent } = require("./claude-statusline-consent");
 const {
   getBubblePolicy,
   isAllBubblesHidden,
@@ -449,6 +452,8 @@ function _restartClawdNow() {
 
 let shortcutRuntime = null;
 let themeRuntime = null;
+// Official downloadable theme owner (created after the settings controller).
+let officialThemeMain = null;
 let agentRuntime = null;
 let sessionAutomationCoordinator = null;
 let sessionAutomationStore = null;
@@ -496,9 +501,23 @@ const _settingsController = createSettingsController({
     uninstallAutoStart: _uninstallAutoStartHook,
     resolveTextScaleDisplayKey: () => getSettingsDisplayKey(),
     syncClaudeHooksNow: () => _server.syncClawdHooks({ source: "settings", automatic: false }),
-    setClaudeQuotaCollectionEnabled: (enabled) => _server.setClaudeQuotaCollectionEnabled({
-      enabled,
-      source: "settings-quota-collection",
+    setClaudeQuotaCollectionEnabled: (enabled) => setClaudeCollectionWithConsent(enabled, {
+      setEnabled: (options) => _server.setClaudeQuotaCollectionEnabled({
+        ...options, source: "settings-quota-collection",
+      }),
+      confirm: async () => {
+        const parent = settingsWindowRuntime.getWindow();
+        const options = {
+          type: "question", noLink: true, defaultId: 1, cancelId: 1,
+          buttons: [translate("confirm"), translate("cancel")],
+          message: translate("claudeStatuslineCoexistTitle"),
+          detail: translate("claudeStatuslineCoexistDetail"),
+        };
+        const { response } = parent && !parent.isDestroyed()
+          ? await electronDialog.showMessageBox(parent, options)
+          : await electronDialog.showMessageBox(options);
+        return response === 0;
+      },
     }),
     uninstallClaudeHooksNow: _uninstallClaudeHooksNow,
     startClaudeSettingsWatcher: () => _server.startClaudeSettingsWatcher(),
@@ -573,6 +592,12 @@ const _settingsController = createSettingsController({
     getThemeInfo: (id) => themeRuntime.getThemeInfo(id),
     removeThemeDir: (id) => themeRuntime.removeThemeDir(id),
     getActiveTheme: () => themeRuntime.getActiveTheme(),
+    waitForThemeReloadSettled: (opts) => themeRuntime.waitForThemeReloadSettled(opts),
+    // Lazy getter: the official-theme owner is constructed after the controller
+    // (it depends on it), and only the command effect reads it.
+    get officialThemeManager() {
+      return officialThemeMain;
+    },
     globalShortcut,
     shortcutHandlers,
     // The controller is created before shortcutRuntime because each side needs
@@ -790,6 +815,7 @@ function safeConsoleError(...args) {
 // ── Theme loader ──
 const themeLoader = require("./theme-loader");
 const createCodexPetMain = require("./codex-pet-main");
+const createOfficialThemeMain = require("./official-theme-main");
 themeLoader.init(__dirname, app.getPath("userData"));
 themeRuntime = createThemeRuntime({
   themeLoader,
@@ -818,6 +844,7 @@ themeRuntime = createThemeRuntime({
   bumpAnimationOverridePreviewPosterGeneration,
   rebuildAllMenus: () => rebuildAllMenus(),
   isManagedTheme: (themeId) => codexPetMain && codexPetMain.isManagedTheme(themeId),
+  isOfficialManagedTheme: (themeId) => !!(officialThemeMain && officialThemeMain.isManagedTheme(themeId)),
 });
 themeLoader.bindActiveThemeRuntime(themeRuntime);
 
@@ -862,7 +889,12 @@ const settingsWindowRuntime = createSettingsWindowRuntime({
     // the display until the next commit or restart.
     endTextScalePreview();
   },
-  onAfterClosed: () => maybeDestroyIdleAnimationPreviewPosterWindow(),
+  onAfterClosed: () => {
+    // An animation preview started from Settings outlives the window otherwise:
+    // a state preview holds for the whole clip, up to a minute.
+    if (animationOverridesMain) animationOverridesMain.cancelAnimationPreview();
+    maybeDestroyIdleAnimationPreviewPosterWindow();
+  },
 });
 
 const permissionAutomationConfirmationRuntime = createPermissionAutomationConfirmationRuntime({
@@ -924,6 +956,36 @@ codexPetMain = createCodexPetMain({
   themeLoader,
 });
 const REGISTER_PROTOCOL_DEV_ARG = codexPetMain.REGISTER_PROTOCOL_DEV_ARG;
+
+// Official downloadable themes: the catalog is fetched lazily, downloads go
+// through manager-owned staging, and the final commit/uninstall run under the
+// settings controller's shared `theme` lock. All window/menu closures are lazy.
+officialThemeMain = createOfficialThemeMain({
+  app,
+  fs,
+  net,
+  path,
+  themeLoader,
+  settingsController: _settingsController,
+  getActiveTheme: () => getActiveTheme(),
+  waitForThemeReloadSettled: (opts) => themeRuntime.waitForThemeReloadSettled(opts),
+  rebuildAllMenus: () => rebuildAllMenus(),
+  sendToSettingsWindow: (channel, payload) => broadcastSettingsWindow(channel, payload),
+  getLang: () => lang,
+});
+// Startup crash recovery is intentionally narrow: only the manager's own
+// download/staging roots, only strictly valid id/version/nonce names, only
+// orphans older than the retention window.
+try {
+  const removedOrphans = officialThemeMain.cleanupOrphans();
+  if (removedOrphans.length > 0) {
+    console.log(`Clawd: cleared ${removedOrphans.length} stale official-theme artifact(s)`);
+  }
+  officialThemeMain.refreshInstalledScan();
+} catch (err) {
+  console.warn("Clawd: official theme startup cleanup failed:", err && err.message);
+}
+
 // Lenient load so a missing/corrupt user-selected theme can't brick boot.
 // If lenient fell back to "clawd" OR the variant fell back to "default",
 // hydrate prefs to match so the store stays truth.
@@ -1045,6 +1107,18 @@ function setAccessoryMirrored(mirrored) {
 }
 
 const petWindowRuntime = createPetWindowRuntime({
+  // Every stranded-lock release entry (bring to primary display, send to
+  // display, manual hide) funnels through releaseStrandedDragLock and hence
+  // through this hook: one full cross-process cleanup instead of each caller
+  // reimplementing it.
+  onStrandedDragLockReleased: () => {
+    idlePaused = false;
+    mouseOverPet = false;
+    // An alive renderer with a phantom capture (its isDragging still true
+    // because the closing event was swallowed) drops it through the normal
+    // stop path, so gesture state, drag reaction and the input gate unwind.
+    sendToHitWin("force-drag-release");
+  },
   screen,
   isWin,
   isMac,
@@ -1411,14 +1485,25 @@ function inferVisualSource(displayState, file) {
     : "state";
 }
 
+// Last free-roam walk heading sent to the renderer (roam visuals face right).
+let roamHeadingLeft = false;
+
 function requestDisplayedVisual(displayState, file, options = {}) {
   if (!displayedVisualProjection) return null;
   const activeTheme = getActiveTheme();
+  // A mirrored visual (left mini edge, leftward roam) may show a variant with
+  // pre-mirrored glyphs (theme mirroredFiles). It shares the original's
+  // silhouette, so the hit box still comes from the original file.
+  const visualFile = resolveMirroredFile(activeTheme, file, isVisualMirrored(activeTheme, displayState, {
+    miniMode: _mini.getMiniMode(),
+    miniEdge: _mini.getMiniEdge(),
+    roamHeadingLeft,
+  }));
   return displayedVisualProjection.request({
     themeId: activeTheme && activeTheme._id,
     logicalState: options.logicalState || _state.getCurrentState(),
     displayState,
-    file,
+    file: visualFile,
     hitBox: _state.resolveHitBoxForSvg(file),
     source: options.source || inferVisualSource(displayState, file),
     deliver: options.deliver || ((payload) => sendRawToRenderer("state-change", payload)),
@@ -2781,6 +2866,10 @@ agentRuntime = createAgentRuntimeMain({
   clearCodexNotifyBubbles: (...args) => clearCodexNotifyBubbles(...args),
   showCodexUserInputBubble: (...args) => showCodexUserInputBubble(...args),
   clearCodexUserInputBubbles: (...args) => clearCodexUserInputBubbles(...args),
+  loadCodexArchiveTracker: () => require("./codex-archive-tracker"),
+  onCodexArchiveLifecycleEnd: (payload) => {
+    if (sessionAutomationCoordinator) sessionAutomationCoordinator.onSessionLifecycleEnd(payload);
+  },
 });
 
 // ── HTTP server — delegated to src/server.js ──
@@ -2828,6 +2917,8 @@ const _serverCtx = {
   setState,
   updateSession: agentRuntime.updateSessionFromServer,
   updateSessionMetadata: agentRuntime.updateSessionMetadataFromServer,
+  shouldSuppressCodexArchive: (rawSessionId, opts) =>
+    agentRuntime.shouldSuppressCodexArchive(rawSessionId, opts),
   clearClaudeStatuslineAuthority: (profileId) => _state.clearClaudeStatuslineAuthority(profileId),
   clearLocalClaudeQuota: () => _state.clearLocalClaudeQuota(),
   updateAccountQuota: (host, quotas) => _state.updateAccountQuota(host, quotas),
@@ -4238,6 +4329,9 @@ function showResumeInput(t) {
 const _menuCtx = {
   get win() { return win; },
   get sessions() { return sessions; },
+  // Recovery actions must defeat a stranded drag lock (syncHitWin defers while
+  // it is held); see pet-window-runtime releaseStrandedDragLock.
+  releaseStrandedDragLock: () => petWindowRuntime.releaseStrandedDragLock(),
   get currentSize() { return currentSize; },
   set currentSize(v) { _settingsController.applyUpdate("size", v); },
   get doNotDisturb() { return doNotDisturb; },
@@ -4821,6 +4915,7 @@ const settingsIpcRuntime = registerSettingsIpc({
   ),
   themeLoader,
   codexPetMain,
+  officialThemeMain,
   getSettingsWindow,
   getActiveTheme: () => getActiveTheme(),
   getLang: () => lang,
@@ -4871,6 +4966,15 @@ const settingsIpcRuntime = registerSettingsIpc({
   getLanWsServer: () => _lanWss,
 });
 
+const sessionHistoryRuntime = createSessionHistoryRuntime({
+  getSessions: () => _state.sessions,
+  isAgentEnabled: (agentId) => (
+    _runtimeAgentGate.isAgentEnabled(agentId)
+    && _runtimeAgentGate.isAgentIntegrationInstalled(agentId)
+  ),
+  launchClaudeSession,
+});
+
 registerSessionIpc({
   ipcMain,
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
@@ -4903,6 +5007,8 @@ registerSessionIpc({
   },
   clearSessionAutomationGrant: (payload) =>
     sessionAutomationCoordinator.clearSessionAutomationGrant(payload),
+  getSessionHistory: () => sessionHistoryRuntime.getHistory(),
+  resumeSessionFromHistory: (payload) => sessionHistoryRuntime.resume(payload),
   showDashboard: (options) => showDashboard(options),
   setSessionHudPinned: (value) => {
     const result = _settingsController.applyUpdate("sessionHudPinned", !!value);
@@ -5366,7 +5472,18 @@ const _roamCtx = {
   get miniTransitioning() { return _mini.getMiniTransitioning(); },
   applyState: (state, svgOverride, opts) => _state.applyState(state, svgOverride, opts),
   setState: (state, svgOverride, opts) => _state.setState(state, svgOverride, opts),
-  setRoamHeading: (headingLeft) => sendToRenderer("roam-heading", !!headingLeft),
+  setRoamHeading: (headingLeft) => {
+    const turned = roamHeadingLeft !== !!headingLeft;
+    roamHeadingLeft = !!headingLeft;
+    sendToRenderer("roam-heading", roamHeadingLeft);
+    // A turn between walks keeps the "roam" state, so setState() sends no new
+    // visual; re-request it when the theme has a mirrored variant to swap.
+    const roamSvg = _state.getCurrentSvg();
+    if (turned && _state.getCurrentState() === "roam"
+      && resolveMirroredFile(getActiveTheme(), roamSvg, true) !== roamSvg) {
+      sendToRenderer("state-change", "roam", roamSvg);
+    }
+  },
   // #640: hold still while the user types into a bubble text field (macOS)
   isImeEditingActive: () => pendingPermissions.some(
     (p) => p
@@ -5775,6 +5892,10 @@ if (!gotTheLock) {
     }
     if (quitCleanupStarted) return;
     quitCleanupStarted = true;
+    // Cancel any live official-theme download and drop this round's `.part`.
+    if (officialThemeMain) {
+      try { officialThemeMain.cancelInstall(); } catch {}
+    }
     trayBalloonOwner.dispose();
     holidayAccessoryRuntime.dispose();
     if (systemWakeRecovery) systemWakeRecovery.dispose();
