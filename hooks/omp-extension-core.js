@@ -114,6 +114,10 @@ function readSessionId(ctx) {
   return "default";
 }
 
+function scopedSessionId(ctx) {
+  return `${OMP_AGENT_ID}:${readSessionId(ctx)}`;
+}
+
 function basename(value) {
   const text = safeString(value, "");
   if (!text) return "";
@@ -152,7 +156,7 @@ function buildPayload(options = {}) {
     hook_source: OMP_HOOK_SOURCE,
     event: safeString(options.event, "SessionStart"),
     state: safeString(options.state, "idle"),
-    session_id: `${OMP_AGENT_ID}:${readSessionId(ctx)}`,
+    session_id: scopedSessionId(ctx),
     session_title: readSessionTitle(ctx),
   };
 
@@ -301,7 +305,7 @@ function attach(omp, deps = {}) {
     const wait = nativeName === "session_shutdown";
     const drainAll = nativeName === "session_shutdown";
     omp.on(nativeName, (nativeEvent, ctx) => {
-      if (nativeName === "session_shutdown") pendingCompletions.clear();
+      if (nativeName === "session_shutdown") pendingCompletions.delete(scopedSessionId(ctx));
       return send(state, clawdEvent, nativeEvent, ctx, wait, drainAll);
     });
   }
@@ -320,13 +324,30 @@ function attach(omp, deps = {}) {
   // terminal settle commits it once. agent_end without a main-session
   // session_stop candidate (including subagents) is deliberately ignored.
   omp.on("agent_end", (nativeEvent, ctx) => {
-    const probe = preparePayload("attention", "Stop", nativeEvent, ctx);
-    if (!probe || !probe.session_id) return undefined;
-    const candidate = pendingCompletions.get(probe.session_id);
+    let report;
+    try {
+      report = shouldReportFn(ctx);
+    } catch {
+      report = false;
+    }
+    if (!report) return undefined;
+
+    // Do not build a second payload here. The real builder resolves process
+    // metadata synchronously; agent_end is frequent and usually has no
+    // main-session completion candidate. The OMP session id is sufficient to
+    // correlate the already-built session_stop payload.
+    const sessionKey = scopedSessionId(ctx);
+    const candidate = pendingCompletions.get(sessionKey);
     if (!candidate) return undefined;
-    pendingCompletions.delete(probe.session_id);
+    pendingCompletions.delete(sessionKey);
     if (nativeEvent && nativeEvent.willContinue === true) return undefined;
-    return dispatchPayload(candidate, true);
+
+    // A switch/branch may have retired this session between session_stop and
+    // agent_end. Never let the delayed candidate retire or overwrite the new
+    // live session, and do not reopen the session that was just retired.
+    if (current && current.session_id !== candidate.session_id) return undefined;
+    current = candidate;
+    return deliver(candidate, true);
   });
 
   omp.on("tool_call", (nativeEvent, ctx) => {

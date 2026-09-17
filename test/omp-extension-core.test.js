@@ -182,20 +182,29 @@ describe("omp-extension-core", () => {
       assert.ok(!bound.includes("agent_end"), "completion uses a correlated custom handler");
 
       const omp = makeOmp();
-      const { posted } = attachRecorder(omp);
+      let buildCount = 0;
+      const { posted } = attachRecorder(omp, {
+        buildPayload: (options) => {
+          buildCount += 1;
+          return core.buildPayload(options);
+        },
+      });
       assert.ok(omp.handlers.has("session_stop"));
       assert.ok(omp.handlers.has("agent_end"));
 
       const firstStopResult = omp.fire("session_stop", {}, makeCtx());
       assert.strictEqual(firstStopResult, undefined, "state reporting must not affect OMP's stop result union");
+      assert.strictEqual(buildCount, 1, "session_stop builds the completion candidate once");
       await flush();
       assert.strictEqual(posted.length, 0, "pre-settle session_stop must not announce completion");
 
       await omp.fire("agent_end", { willContinue: true }, makeCtx());
+      assert.strictEqual(buildCount, 1, "agent_end must not rebuild payload or process metadata");
       assert.strictEqual(posted.length, 0, "an automatic continuation cancels the candidate");
 
       omp.fire("session_stop", {}, makeCtx());
       await omp.fire("agent_end", {}, makeCtx());
+      assert.strictEqual(buildCount, 2, "terminal agent_end reuses the second session_stop candidate");
       assert.strictEqual(posted.length, 1);
       assert.strictEqual(posted[0].event, "Stop");
       assert.strictEqual(posted[0].state, "attention");
@@ -206,7 +215,13 @@ describe("omp-extension-core", () => {
 
     it("ignores subagent-style agent_end events that have no session_stop candidate", async () => {
       const omp = makeOmp();
-      const { posted } = attachRecorder(omp);
+      let buildCount = 0;
+      const { posted } = attachRecorder(omp, {
+        buildPayload: (options) => {
+          buildCount += 1;
+          return core.buildPayload(options);
+        },
+      });
 
       await omp.fire("agent_end", {}, makeCtx({ hasUI: false }));
       await omp.fire("agent_end", {}, makeCtx({
@@ -215,6 +230,24 @@ describe("omp-extension-core", () => {
       }));
 
       assert.deepStrictEqual(posted, []);
+      assert.strictEqual(buildCount, 0, "candidate-free agent_end must not resolve process metadata");
+    });
+
+    it("clears only the shutting-down session's completion candidate", async () => {
+      const omp = makeOmp();
+      const { posted } = attachRecorder(omp);
+      const first = makeCtx({ sessionManager: { getSessionId: () => "first" } });
+      const second = makeCtx({ sessionManager: { getSessionId: () => "second" } });
+
+      omp.fire("session_stop", {}, first);
+      omp.fire("session_stop", {}, second);
+      await omp.fire("session_shutdown", {}, first);
+      await omp.fire("agent_end", {}, second);
+
+      assert.deepStrictEqual(
+        posted.map((payload) => [payload.session_id, payload.event]),
+        [["omp:first", "SessionEnd"], ["omp:second", "Stop"]]
+      );
     });
 
     it("treats a session switch or branch as a new session start", async () => {
@@ -290,6 +323,30 @@ describe("omp-extension-core", () => {
       omp.fire("before_agent_start", {}, makeCtx());
       await flush();
       assert.deepStrictEqual(posted.map((p) => p.event), ["SessionStart", "UserPromptSubmit"]);
+    });
+
+    it("drops a delayed completion candidate after switching to another session", async () => {
+      const omp = makeOmp();
+      const { posted, attached } = attachRecorder(omp);
+      const first = makeCtx({ sessionManager: { getSessionId: () => "first" } });
+      const second = makeCtx({ sessionManager: { getSessionId: () => "second" } });
+
+      omp.fire("session_start", {}, first);
+      await flush();
+      omp.fire("session_stop", {}, first);
+      omp.fire("session_switch", {}, second);
+      await flush();
+      await omp.fire("agent_end", {}, first);
+
+      assert.deepStrictEqual(
+        posted.map((payload) => [payload.session_id, payload.event]),
+        [
+          ["omp:first", "SessionStart"],
+          ["omp:first", "SessionEnd"],
+          ["omp:second", "SessionStart"],
+        ]
+      );
+      assert.strictEqual(attached.getCurrent().session_id, "omp:second");
     });
 
     it("does not follow a real shutdown with a synthetic one", async () => {

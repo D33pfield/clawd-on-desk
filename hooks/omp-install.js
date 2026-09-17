@@ -215,10 +215,10 @@ function resolveOmpAgentDir(options = {}) {
   return override ? path.resolve(override) : defaultAgentDir;
 }
 
-// Every OTHER profile on this machine, i.e. the agent directories this
-// installation does NOT manage. Clawd resolves exactly one, so a machine that
-// runs OMP under a profile loads nothing from it; Doctor says so rather than
-// reporting bare "verified".
+// Every OTHER loadable profile on this machine, i.e. the agent directories
+// this installation does NOT manage. Clawd resolves exactly one, so a machine
+// that runs OMP under a profile loads nothing from it; Doctor says so rather
+// than reporting bare "verified".
 function listOtherOmpProfileAgentDirs(options = {}) {
   const fsImpl = options.fs || fs;
   const { root } = resolveOmpEnvironment(options);
@@ -240,8 +240,11 @@ function listOtherOmpProfileAgentDirs(options = {}) {
   for (const entry of entries) {
     if (!entry || typeof entry.isDirectory !== "function" || !entry.isDirectory()) continue;
     const profile = normalizeOmpProfileName(entry.name);
-    if (!profile) continue;
-    const agentDir = path.join(profilesDir, profile, AGENT_DIR_NAME);
+    // normalizeOmpProfileName mirrors OMP's env parser, which trims names.
+    // A filesystem entry such as "work " can therefore never be selected as
+    // that directory: OMP resolves OMP_PROFILE="work " to profiles/work.
+    if (!profile || profile !== entry.name) continue;
+    const agentDir = path.join(profilesDir, entry.name, AGENT_DIR_NAME);
     if (path.resolve(agentDir) === managed) continue;
     if (!dirExists(agentDir, fsImpl)) continue;
     dirs.push({ profile, agentDir });

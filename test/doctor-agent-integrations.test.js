@@ -94,11 +94,12 @@ function baseDescriptor(overrides = {}) {
 }
 
 function runOne(descriptor, options = {}) {
+  const descriptorTestHome = descriptor && descriptor.__testHomeDir;
   return checkAgentIntegrations({
     fs,
     platform: options.platform,
-    env: options.env,
-    homeDir: options.homeDir,
+    env: options.env === undefined && descriptorTestHome ? {} : options.env,
+    homeDir: options.homeDir === undefined ? descriptorTestHome : options.homeDir,
     prefs: options.prefs || {},
     descriptors: [descriptor],
     server: options.server || null,
@@ -2340,8 +2341,9 @@ describe("checkAgentIntegrations", () => {
   // with no Fix button at all.
   function ompDescriptor() {
     const root = makeTempDir();
-    const parentDir = path.join(root, ".omp", "agent");
-    return baseDescriptor({
+    const homeDir = path.join(root, "home");
+    const parentDir = path.join(homeDir, ".omp", "agent");
+    const descriptor = baseDescriptor({
       agentId: "omp",
       agentName: "OMP",
       eventSource: "extension",
@@ -2352,6 +2354,12 @@ describe("checkAgentIntegrations", () => {
       coreFile: "omp-extension-core.js",
       markerFile: ".clawd-managed.json",
     });
+    // The OMP Doctor supplement scans other profiles independently of the
+    // descriptor's install path. Keep every helper-created descriptor pinned
+    // to the same synthetic home so tests never inspect the developer's OMP
+    // installation or process environment.
+    Object.defineProperty(descriptor, "__testHomeDir", { value: homeDir });
+    return descriptor;
   }
 
   it("reports missing OMP extension as repairable not-connected", () => {
@@ -2490,9 +2498,23 @@ describe("checkAgentIntegrations", () => {
     assert.match(withOther.detail, /not managed here \(work\)/);
     assert.deepStrictEqual(withOther.unmanagedOmpProfiles, ["work"]);
 
-    // Once Clawd's own environment selects that profile, the default agent
-    // directory becomes the unmanaged environment and must be named too.
-    const selected = runOne(descriptor, { homeDir, env: { OMP_PROFILE: "work" } });
+    // Once Clawd itself is installed for that selected profile, the default
+    // agent directory becomes the unmanaged environment and must be named too.
+    const selectedAgentDir = path.join(homeDir, ".omp", "profiles", "work", "agent");
+    const selectedDescriptor = {
+      ...descriptor,
+      parentDir: selectedAgentDir,
+      configPath: path.join(selectedAgentDir, "extensions", "clawd-on-desk"),
+    };
+    writeJson(path.join(selectedDescriptor.configPath, ".clawd-managed.json"), {
+      app: "clawd-on-desk",
+      integration: "omp",
+      managed: true,
+    });
+    fs.writeFileSync(path.join(selectedDescriptor.configPath, "index.ts"), "export default function() {}\n", "utf8");
+    fs.writeFileSync(path.join(selectedDescriptor.configPath, "omp-extension-core.js"), "module.exports = {}\n", "utf8");
+    const selected = runOne(selectedDescriptor, { homeDir, env: { OMP_PROFILE: "work" } });
+    assert.strictEqual(selected.status, "ok", selected.detail);
     assert.match(selected.detail, /not managed here \(default\)/);
     assert.deepStrictEqual(selected.unmanagedOmpProfiles, ["default"]);
   });

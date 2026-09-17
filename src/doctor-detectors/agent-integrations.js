@@ -2755,8 +2755,9 @@ function withKimiLegacyPermissionModeSupplement(detail, descriptor, options) {
 }
 
 // Clawd installs into the ONE OMP agent directory it resolves for its own
-// environment. A machine that also runs OMP under a named profile therefore has
-// sessions that load nothing from it — the extension directory is per-profile.
+// environment. A machine that also runs OMP under another profile (including
+// the default profile) therefore has sessions that load nothing from it — the
+// extension directory is per-profile.
 // Reporting a bare "verified" there is a claim Clawd cannot make, so the note
 // names the unmanaged profiles (setting OMP_PROFILE for Clawd, or re-running
 // the installer from that profile's shell, is the fix). Never masks a finding.

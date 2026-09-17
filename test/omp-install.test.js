@@ -380,6 +380,9 @@ describe("omp-install", () => {
 
       // "default" is a sentinel, not a loadable named profile.
       fs.mkdirSync(path.join(profilesDir, "default", "agent"), { recursive: true });
+      // OMP trims env profile names before resolving the directory, so this
+      // entry can never be selected as profiles/"work ".
+      fs.mkdirSync(path.join(profilesDir, "work ", "agent"), { recursive: true });
       assert.deepStrictEqual(
         ompInstall.listOtherOmpProfileAgentDirs({ homeDir, env: {} })
           .map((entry) => entry.profile),
