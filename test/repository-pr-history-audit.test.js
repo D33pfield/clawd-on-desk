@@ -194,6 +194,33 @@ describe("PR-history asset audit on a real git range", () => {
     assert.strictEqual(report2.findings[0].path, "assets/new/fresh.png");
   });
 
+  it("uses the merge-base when the PR head is behind the current base tip", () => {
+    const branchPoint = git("rev-parse", "HEAD").trim();
+    git("checkout", "-q", "-b", "feature");
+    fs.writeFileSync(path.join(repo, "feature-large.png"), Buffer.alloc(4096, 8));
+    git("add", ".");
+    git("commit", "-qm", "feature large asset");
+    const featureHead = git("rev-parse", "HEAD").trim();
+
+    git("checkout", "-q", "main");
+    fs.writeFileSync(path.join(repo, "base-update.txt"), "base advanced");
+    git("add", ".");
+    git("commit", "-qm", "advance base");
+    const eventBase = git("rev-parse", "HEAD").trim();
+
+    const report = audit.runAudit({
+      repoRoot: repo,
+      base: eventBase,
+      head: featureHead,
+      policy: POLICY,
+    });
+    assert.strictEqual(report.range.base, branchPoint);
+    assert.strictEqual(report.range.eventBase, eventBase);
+    assert.strictEqual(report.range.head, featureHead);
+    assert.strictEqual(report.findings.length, 1);
+    assert.strictEqual(report.findings[0].path, "feature-large.png");
+  });
+
   it("catches a forbidden path that reuses a blob already reachable from base", () => {
     // Base owns the blob at a benign path.
     fs.mkdirSync(path.join(repo, "seed"), { recursive: true });

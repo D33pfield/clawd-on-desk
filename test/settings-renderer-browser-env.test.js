@@ -13077,6 +13077,52 @@ describe("settings renderer browser environment", () => {
     await Promise.resolve();
   });
 
+  it("does not re-enter theme fetching when the official catalog wins the first-paint race", async () => {
+    let resolveLocal;
+    const localThemes = [{ id: "clawd", name: "Clawd", builtin: true, active: true }];
+    const localPending = new Promise((resolve) => { resolveLocal = resolve; });
+    let localCalls = 0;
+    let officialCalls = 0;
+    const harness = loadThemeTabForTest({
+      themes: [],
+      settingsAPI: {
+        listThemes: () => {
+          localCalls += 1;
+          return localPending;
+        },
+        listOfficialThemes: () => {
+          officialCalls += 1;
+          return Promise.resolve({ status: "ok", catalogStatus: "ok", catalogVersion: 1, themes: [] });
+        },
+      },
+    });
+    let requestedRenders = 0;
+    harness.core.ops.installRenderHooks({
+      content: () => {
+        requestedRenders += 1;
+        harness.renderContent();
+      },
+    });
+    harness.core.runtime.themeList = null;
+    harness.renderContent();
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.strictEqual(localCalls, 1);
+    assert.strictEqual(officialCalls, 1);
+    assert.strictEqual(requestedRenders, 0, "official completion must not render before local themes settle");
+
+    resolveLocal(localThemes);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.strictEqual(localCalls, 1);
+    assert.strictEqual(officialCalls, 1);
+    assert.strictEqual(requestedRenders, 1);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.core.runtime.themeList)), localThemes);
+  });
+
   it("opens the active pet detail and saves color independently for that theme", async () => {
     const harness = loadThemeTabForTest({
       themes: [

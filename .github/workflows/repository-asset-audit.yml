@@ -53,9 +53,10 @@ jobs:
       - name: Audit PR-reachable history for large binary assets
         if: github.event_name == 'pull_request'
         env:
-          # The event payload's base SHA is the only stable, non-drifting base
-          # for this PR. It is validated as 40-hex inside the script; it is
-          # never spliced into a shell string.
+          # Both event SHAs are validated as 40-hex inside the script and are
+          # never spliced into a shell string. The audit derives their
+          # merge-base so a base-branch advance does not break or widen the
+          # contributor-only range.
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           # Audit the contributor branch itself, not Actions' synthetic merge
           # commit, so unrelated base-branch changes cannot become PR findings.

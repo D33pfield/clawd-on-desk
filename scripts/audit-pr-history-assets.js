@@ -7,11 +7,12 @@
 // stop the "add a 180 MiB blob in commit 2, delete it in commit 27" shape: the
 // final tree is clean, but every clone and fork still pays for the object.
 //
-// This audit walks every commit in `base..HEAD` (base is the PR event's
-// `github.event.pull_request.base.sha`, passed in via `PR_BASE_SHA` and
-// validated as 40-hex before use) and inspects the *changed tree paths* of each
-// commit against all of its parents (add / modify / rename / copy shapes). For
-// each changed path it resolves the blob at that commit/path.
+// This audit walks every commit in `merge-base(base, head)..head` (`base` and
+// `head` come from the PR event and are validated before use) and inspects the
+// *changed tree paths* of each commit against all of its parents (add / modify /
+// rename / copy shapes). Using the merge-base keeps the audited range scoped to
+// the contributor branch even when the base branch advances without a rebase.
+// For each changed path it resolves the blob at that commit/path.
 //
 // That shape matters for two classes the old `rev-list --objects base..HEAD`
 // scan missed:
@@ -68,6 +69,17 @@ function revParse(repoRoot, ref) {
     cwd: repoRoot,
     encoding: "utf8",
   }).trim();
+}
+
+function resolveMergeBase(repoRoot, baseSha, headSha) {
+  const mergeBase = execFileSync("git", ["merge-base", baseSha, headSha], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  }).trim();
+  if (!SHA_PATTERN.test(mergeBase)) {
+    throw new Error(`Could not resolve a valid merge-base for ${baseSha} and ${headSha}.`);
+  }
+  return mergeBase;
 }
 
 // `git rev-list --objects <base>..<head>`: lines are "<oid>" or "<oid> <path>".
@@ -360,12 +372,10 @@ function runAudit(options = {}) {
   const baseSha = validateBaseSha(options.base);
   const headRef = validateHeadRef(options.head || DEFAULT_HEAD);
   const resolvedHead = revParse(repoRoot, headRef);
-  // Confirm the base is actually an ancestor; a wrong/foreign base would make
-  // the range mean something else entirely.
-  execFileSync("git", ["merge-base", "--is-ancestor", baseSha, resolvedHead], { cwd: repoRoot });
-  const introduced = collectIntroducedBlobs(repoRoot, baseSha, resolvedHead);
+  const rangeBase = resolveMergeBase(repoRoot, baseSha, resolvedHead);
+  const introduced = collectIntroducedBlobs(repoRoot, rangeBase, resolvedHead);
   const objectMeta = readObjectMetadata(repoRoot, introduced.map((entry) => entry.oid));
-  const baseTree = readBaseTreeEntries(repoRoot, baseSha);
+  const baseTree = readBaseTreeEntries(repoRoot, rangeBase);
   const blobs = [];
   const seen = new Set();
   for (const entry of introduced) {
@@ -384,7 +394,7 @@ function runAudit(options = {}) {
     ? options.allowlist
     : (Array.isArray(policy.prHistoryAssetAllowlist) ? policy.prHistoryAssetAllowlist : []);
   const report = analyzePrHistoryAssets({ blobs, allowlist, policy });
-  report.range = { base: baseSha, head: resolvedHead };
+  report.range = { base: rangeBase, head: resolvedHead, eventBase: baseSha };
   return report;
 }
 
@@ -435,6 +445,7 @@ module.exports = {
   readBaseTreeEntries,
   readObjectMetadata,
   readRangeObjects,
+  resolveMergeBase,
   runAudit,
   validateAllowlistEntries,
   validateBaseSha,
