@@ -2509,6 +2509,15 @@ html, body {
   white-space: nowrap;
   min-width: 0;
 }
+.theme-card-description {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
+}
 .theme-card-badge {
   font-size: 10px;
   font-weight: 600;
@@ -2540,6 +2549,13 @@ html, body {
   gap: 8px;
   min-height: 26px;
   margin-top: auto;
+}
+.theme-card-footer-official {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+.theme-card-footer-official .theme-card-check:empty {
+  display: none;
 }
 .theme-card-check {
   font-size: 11px;
@@ -5278,4 +5294,68 @@ html, body {
   .mobile-action-btn {
     transition: none;
   }
+}
+
+/* Official theme cards */
+.theme-official-offline-note {
+  margin: 4px 0 12px;
+  color: var(--text-secondary, #8a8a8a);
+}
+.theme-official-note {
+  flex: 0 0 100%;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text-secondary, #8a8a8a);
+}
+.theme-official-progress {
+  flex: 0 0 100%;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+.theme-official-progress-bar {
+  height: 100%;
+  width: 0;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 160ms ease;
+}
+.theme-official-download-btn,
+.theme-official-showcase-btn,
+.theme-official-cancel-btn,
+.theme-official-retry-btn {
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.theme-official-showcase-btn {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+}
+.theme-official-showcase-btn:hover:not(:disabled) {
+  border-color: var(--text-secondary);
+}
+.theme-card-footer-official .theme-uninstall-btn {
+  white-space: nowrap;
+}
+.theme-official-download-btn,
+.theme-official-retry-btn {
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: inherit;
+}
+.theme-official-cancel-btn {
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+}
+.theme-official-download-btn:disabled,
+.theme-official-cancel-btn:disabled,
+.theme-official-retry-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
 }

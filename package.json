@@ -19,6 +19,7 @@
     "postinstall": "node scripts/verify-electron-install.js --context postinstall",
     "test": "node test/run-tests.js",
     "audit:assets": "node scripts/audit-repository-assets.js",
+    "audit:pr-history-assets": "node scripts/audit-pr-history-assets.js",
     "audit:native-package": "node scripts/audit-packaged-native.js",
     "verify:updater-metadata": "node scripts/verify-updater-metadata.js",
     "verify:winget-arch": "node scripts/verify-winget-arch-contract.js",
@@ -211,6 +212,7 @@
     "jsonc-parser": "^3.3.1",
     "koffi": "2.16.3",
     "markdown-it": "15.0.0",
-    "ws": "^8.21.0"
+    "ws": "^8.21.0",
+    "yauzl": "^2.10.0"
   }
 }

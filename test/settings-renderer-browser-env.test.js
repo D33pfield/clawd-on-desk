@@ -1366,6 +1366,8 @@ function chooseSegmentedOption(group, value) {
 
 function loadThemeTabForTest({
   themes,
+  officialThemes,
+  officialCatalogStatus,
   snapshot,
   petTintOptions,
   petAccessoryOptions,
@@ -1489,6 +1491,9 @@ function loadThemeTabForTest({
   };
   core.state.activeTab = "theme";
   core.runtime.themeList = themeListState;
+  core.runtime.officialThemeList = Array.isArray(officialThemes) ? officialThemes : null;
+  core.runtime.officialThemeListFetched = Array.isArray(officialThemes);
+  core.runtime.officialThemeCatalogStatus = officialCatalogStatus || "ok";
   core.runtime.petTintOptions = Array.isArray(petTintOptions) ? petTintOptions : [];
   core.runtime.petAccessoryOptions = Array.isArray(petAccessoryOptions)
     ? petAccessoryOptions
@@ -12447,7 +12452,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(tabSource.includes("handleRefreshThemes"));
     assert.ok(tabSource.includes("handleRemoveCodexPet"));
     assert.ok(tabSource.includes("themeUninstallPetLabel"));
-    assert.ok(tabSource.includes('footer.className = "theme-card-footer";'));
+    assert.ok(tabSource.includes('"theme-card-footer theme-card-footer-official"'));
     assert.ok(tabSource.includes('btn.className = "theme-customize-btn";'));
     assert.ok(tabSource.includes("function renderThemeDetail(parent, theme)"));
     assert.ok(tabSource.includes("function supportsThemeCustomization(theme)"));
@@ -12478,6 +12483,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(css.includes(".theme-detail-hero"));
     assert.ok(css.includes(".theme-customization-row"));
     assert.ok(/\.theme-card-footer\s*\{[^}]*min-height:\s*26px;[^}]*margin-top:\s*auto;[^}]*\}/.test(css));
+    assert.ok(/\.theme-card-footer-official\s*\{[^}]*flex-wrap:\s*wrap;[^}]*justify-content:\s*flex-start;[^}]*\}/.test(css));
+    assert.ok(css.includes(".theme-official-showcase-btn"));
     assert.ok(/\.theme-card-check\s*\{[^}]*white-space:\s*nowrap;[^}]*\}/.test(css));
     assert.ok(i18nSource.includes("themeImportPetZip"));
     assert.ok(i18nSource.includes("themeImportUserThemeZip"));
@@ -12577,8 +12584,180 @@ describe("settings renderer browser environment", () => {
     assert.deepStrictEqual(commands, []);
   });
 
-  it("renders Codex Pet atlas previews with V1, V2, and legacy grid ratios", () => {
+  it("renders official themes in their own section without duplicating an installed card", () => {
     const { content } = loadThemeTabForTest({
+      themes: [
+        { id: "clawd", name: "Clawd", builtin: true, active: true },
+        {
+          id: "hash-sage",
+          name: "Hash Sage",
+          officialTheme: true,
+          active: true,
+          officialThemeState: "installed",
+          officialThemeInstalledVersion: "1.0.0",
+          officialThemeCanUninstall: true,
+        },
+        { id: "user", name: "User Theme", active: false },
+      ],
+      officialThemes: [
+        {
+          id: "hash-sage",
+          name: "Hash Sage",
+          officialTheme: true,
+          active: false,
+          officialThemeState: "installed",
+          officialThemeInstalledVersion: "1.0.0",
+          officialThemeCanUninstall: true,
+        },
+      ],
+    });
+
+    const sections = content.querySelectorAll(".theme-section");
+    const officialSection = sections.find(
+      (section) => section.querySelector(".theme-section-title").textContent === "Official themes"
+    );
+    assert.ok(officialSection, "official section must render");
+    assert.strictEqual(officialSection.querySelectorAll(".theme-card").length, 1);
+    const userSection = sections.find(
+      (section) => section.querySelector(".theme-section-title").textContent === "User Themes"
+    );
+    assert.ok(userSection);
+    // The installed official card must not also appear as a user card.
+    const allCards = content.querySelectorAll(".theme-card");
+    const hashCards = allCards.filter(
+      (card) => card.querySelector(".theme-card-name-text").textContent === "Hash Sage"
+    );
+    assert.strictEqual(hashCards.length, 1);
+    assert.strictEqual(hashCards[0].getAttribute("aria-checked"), "true");
+    assert.ok(hashCards[0].classList.contains("active"));
+    assert.ok(hashCards[0].querySelector(".theme-card-footer-official"));
+    assert.strictEqual(
+      hashCards[0].querySelector(".theme-uninstall-btn").getAttribute("data-settings-focus-key"),
+      "official-uninstall:hash-sage",
+    );
+  });
+
+  it("shows official download, progress and uninstall affordances", async () => {
+    const installCalls = [];
+    const cancelCalls = [];
+    const openExternalCalls = [];
+    const showcaseUrl = "https://hash-sage-art.pages.dev/progress/";
+    const harness = loadThemeTabForTest({
+      themes: [{ id: "clawd", name: "Clawd", builtin: true, active: true }],
+      officialThemes: [
+        {
+          id: "hash-sage",
+          name: "Hash Sage",
+          officialTheme: true,
+          active: false,
+          officialThemeState: "available",
+          officialThemeBytes: 5 * 1024 * 1024,
+          officialThemeDescription: { en: "A cloud-riding pixel sage." },
+          officialThemeShowcaseUrl: showcaseUrl,
+        },
+      ],
+      settingsAPI: {
+        openExternal: (url) => {
+          openExternalCalls.push(url);
+          return Promise.resolve({ status: "ok" });
+        },
+        installOfficialTheme: (themeId) => {
+          installCalls.push(themeId);
+          return Promise.resolve({ status: "ok" });
+        },
+        cancelOfficialThemeInstall: () => {
+          cancelCalls.push("cancel");
+          return Promise.resolve({ status: "ok", cancelled: true });
+        },
+      },
+    });
+
+    const download = harness.content.querySelector(".theme-official-download-btn");
+    const showcaseButton = harness.content.querySelector(".theme-official-showcase-btn");
+    assert.ok(download);
+    assert.strictEqual(
+      harness.content.querySelector(".theme-card-description").textContent,
+      "A cloud-riding pixel sage."
+    );
+    assert.strictEqual(harness.content.querySelector(".theme-official-license-summary"), null);
+    assert.strictEqual(harness.content.querySelector(".theme-official-license-notice"), null);
+    assert.strictEqual(harness.content.querySelector(".theme-official-license-link"), null);
+    assert.ok(showcaseButton);
+    assert.strictEqual(showcaseButton.textContent, "View animations");
+    showcaseButton.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.deepStrictEqual(openExternalCalls, [showcaseUrl]);
+    assert.ok(download.textContent.includes("5 MB"));
+    download.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.deepStrictEqual(installCalls, ["hash-sage"]);
+
+    // A live main-owned operation renders a progress bar + cancel.
+    harness.core.runtime.officialThemeOperation = {
+      id: "hash-sage",
+      phase: "downloading",
+      receivedBytes: 1024 * 1024,
+      totalBytes: 5 * 1024 * 1024,
+    };
+    harness.renderContent();
+    const cancel = harness.content.querySelector(".theme-official-cancel-btn");
+    const progress = harness.content.querySelector(".theme-official-progress");
+    assert.ok(cancel);
+    assert.ok(harness.content.querySelector(".theme-official-progress-bar"));
+    assert.strictEqual(cancel.getAttribute("data-settings-focus-key"), "official-cancel:hash-sage");
+    assert.strictEqual(progress.getAttribute("role"), "progressbar");
+    assert.strictEqual(progress.getAttribute("aria-valuenow"), "20");
+    cancel.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.deepStrictEqual(cancelCalls, ["cancel"]);
+
+    harness.core.runtime.officialThemeOperation = {
+      id: "hash-sage",
+      phase: "installing",
+      receivedBytes: 5 * 1024 * 1024,
+      totalBytes: 5 * 1024 * 1024,
+    };
+    harness.renderContent();
+    assert.strictEqual(harness.content.querySelector(".theme-official-cancel-btn"), null);
+  });
+
+  it("gives retry a stable keyboard focus key", () => {
+    const harness = loadThemeTabForTest({
+      themes: [{ id: "clawd", name: "Clawd", builtin: true, active: true }],
+      officialThemes: [{
+        id: "hash-sage",
+        name: "Hash Sage",
+        officialTheme: true,
+        officialThemeState: "error",
+        officialThemeError: { message: "offline" },
+      }],
+    });
+    const retry = harness.content.querySelector(".theme-official-retry-btn");
+    assert.ok(retry);
+    assert.strictEqual(retry.getAttribute("data-settings-focus-key"), "official-retry:hash-sage");
+  });
+
+  it("shows a list-level offline note without hiding installed official cards", () => {
+    const { content } = loadThemeTabForTest({
+      themes: [{ id: "clawd", name: "Clawd", builtin: true, active: true }],
+      officialCatalogStatus: "offline",
+      officialThemes: [
+        {
+          id: "hash-sage",
+          name: "Hash Sage",
+          officialTheme: true,
+          active: false,
+          officialThemeState: "installed",
+          officialThemeInstalledVersion: "1.0.0",
+          officialThemeCanUninstall: true,
+        },
+      ],
+    });
+    assert.ok(content.querySelector(".theme-official-offline-note"));
+    assert.ok(content.querySelector(".theme-uninstall-btn"));
+  });
+
+  it("renders Codex Pet atlas previews with V1, V2, and legacy grid ratios", () => {    const { content } = loadThemeTabForTest({
       themes: [
         {
           id: "pet-v1",
@@ -12867,6 +13046,81 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(result, previousThemeList);
     assert.strictEqual(harness.core.runtime.themeList, previousThemeList);
     assert.strictEqual(harness.content.querySelectorAll(".theme-card").length, 1);
+  });
+
+  it("does not let a pending official catalog block the local theme first paint", async () => {
+    let resolveOfficial;
+    const officialPending = new Promise((resolve) => { resolveOfficial = resolve; });
+    const localThemes = [{ id: "clawd", name: "Clawd", builtin: true, active: true }];
+    const harness = loadThemeTabForTest({
+      themes: localThemes,
+      settingsAPI: {
+        listThemes: () => Promise.resolve(localThemes),
+        listOfficialThemes: () => officialPending,
+      },
+    });
+
+    let settled = false;
+    let result = null;
+    harness.core.ops.fetchThemes().then((themes) => {
+      settled = true;
+      result = themes;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.strictEqual(settled, true);
+    assert.deepStrictEqual(result, localThemes);
+
+    resolveOfficial({ status: "ok", catalogStatus: "ok", catalogVersion: 1, themes: [] });
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  it("does not re-enter theme fetching when the official catalog wins the first-paint race", async () => {
+    let resolveLocal;
+    const localThemes = [{ id: "clawd", name: "Clawd", builtin: true, active: true }];
+    const localPending = new Promise((resolve) => { resolveLocal = resolve; });
+    let localCalls = 0;
+    let officialCalls = 0;
+    const harness = loadThemeTabForTest({
+      themes: [],
+      settingsAPI: {
+        listThemes: () => {
+          localCalls += 1;
+          return localPending;
+        },
+        listOfficialThemes: () => {
+          officialCalls += 1;
+          return Promise.resolve({ status: "ok", catalogStatus: "ok", catalogVersion: 1, themes: [] });
+        },
+      },
+    });
+    let requestedRenders = 0;
+    harness.core.ops.installRenderHooks({
+      content: () => {
+        requestedRenders += 1;
+        harness.renderContent();
+      },
+    });
+    harness.core.runtime.themeList = null;
+    harness.renderContent();
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.strictEqual(localCalls, 1);
+    assert.strictEqual(officialCalls, 1);
+    assert.strictEqual(requestedRenders, 0, "official completion must not render before local themes settle");
+
+    resolveLocal(localThemes);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.strictEqual(localCalls, 1);
+    assert.strictEqual(officialCalls, 1);
+    assert.strictEqual(requestedRenders, 1);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.core.runtime.themeList)), localThemes);
   });
 
   it("opens the active pet detail and saves color independently for that theme", async () => {
