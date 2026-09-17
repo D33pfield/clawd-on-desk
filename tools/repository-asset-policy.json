@@ -118,6 +118,7 @@
       "retentionReason": "Canonical 512px runtime icon used by Linux packaging and served at the stable PWA icon URL."
     }
   ],
+  "prHistoryAssetAllowlist": [],
   "duplicatePayloadExemptions": [
     {
       "paths": [

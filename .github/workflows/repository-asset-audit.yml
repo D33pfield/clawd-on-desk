@@ -15,6 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # PR-history audit needs the base commit's objects, so a shallow
+          # single-commit checkout is not enough.
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
@@ -46,6 +50,14 @@ jobs:
           test/qwen-code-hook.test.js
           test/workbuddy-hook.test.js
       - run: npm run audit:assets
+      - name: Audit PR-reachable history for large binary assets
+        if: github.event_name == 'pull_request'
+        env:
+          # The event payload's base SHA is the only stable, non-drifting base
+          # for this PR. It is validated as 40-hex inside the script; it is
+          # never spliced into a shell string.
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: npm run audit:pr-history-assets
       - uses: actions/upload-artifact@v4
         if: always()
         with:

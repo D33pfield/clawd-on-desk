@@ -71,6 +71,15 @@
     parent.appendChild(subtitle);
     parent.appendChild(buildThemeActions());
 
+    // `offline` is a list-level condition, not a per-theme state: it only adds
+    // a note beside whatever cards are already known.
+    if (runtime.officialThemeListFetched && runtime.officialThemeCatalogStatus === "offline") {
+      const note = document.createElement("div");
+      note.className = "placeholder-desc theme-official-offline-note";
+      note.textContent = t("themeOfficialOffline");
+      parent.appendChild(note);
+    }
+
     if (runtime.themeList === null) {
       const loading = document.createElement("div");
       loading.className = "placeholder-desc";
@@ -111,18 +120,42 @@
   }
 
   function getThemeSections(themes) {
+    const localById = new Map(
+      (themes || [])
+        .filter((theme) => theme && theme.id)
+        .map((theme) => [theme.id, theme])
+    );
+    const officialThemes = (Array.isArray(runtime.officialThemeList) ? runtime.officialThemeList : [])
+      .map((theme) => {
+        const localTheme = theme && localById.get(theme.id);
+        if (!localTheme) return theme;
+        // The local list is the runtime authority for active selection and
+        // capabilities. The catalog list owns distribution/install metadata.
+        return {
+          ...theme,
+          active: !!localTheme.active,
+          capabilities: localTheme.capabilities || theme.capabilities,
+        };
+      });
+    const officialIds = new Set(officialThemes.map((theme) => theme && theme.id).filter(Boolean));
     const groups = {
       builtin: [],
+      official: officialThemes,
       importedCodexPets: [],
       user: [],
     };
     for (const theme of themes || []) {
-      if (theme && theme.builtin) groups.builtin.push(theme);
-      else if (theme && theme.managedCodexPet) groups.importedCodexPets.push(theme);
+      if (!theme) continue;
+      if (theme.builtin) groups.builtin.push(theme);
+      else if (theme.managedCodexPet) groups.importedCodexPets.push(theme);
+      // The official section owns every official id (installed or not); the
+      // local list entry would otherwise render a duplicate user card.
+      else if (theme.officialTheme || officialIds.has(theme.id)) continue;
       else groups.user.push(theme);
     }
     return [
       { id: "builtin", title: t("themeGroupBuiltIn"), themes: groups.builtin },
+      { id: "official", title: t("themeGroupOfficialThemes"), themes: groups.official },
       { id: "imported-codex-pets", title: t("themeGroupImportedCodexPets"), themes: groups.importedCodexPets },
       { id: "user", title: t("themeGroupUserThemes"), themes: groups.user },
     ].filter((section) => section.themes.length > 0);
@@ -229,7 +262,6 @@
   }
 
   function mirrorThemeSelectionResult(themeId, result) {
-    if (!Array.isArray(runtime.themeList)) return null;
     const runtimeCapabilities = (
       result
       && result.customizationCapabilities
@@ -238,7 +270,7 @@
     )
       ? result.customizationCapabilities
       : null;
-    runtime.themeList = runtime.themeList.map((entry) => (
+    const mirrorEntry = (entry) => (
       entry
         ? {
             ...entry,
@@ -248,7 +280,14 @@
               : entry.capabilities,
           }
         : entry
-    ));
+    );
+    // The selected theme may be an official card (which lives in the official
+    // list) or a local list entry; mirror into both so the active marker updates.
+    if (Array.isArray(runtime.themeList)) runtime.themeList = runtime.themeList.map(mirrorEntry);
+    if (Array.isArray(runtime.officialThemeList)) {
+      runtime.officialThemeList = runtime.officialThemeList.map(mirrorEntry);
+    }
+    if (!Array.isArray(runtime.themeList)) return null;
     return runtime.themeList.find((entry) => entry && entry.id === themeId) || null;
   }
 
@@ -814,6 +853,218 @@
     ev.stopPropagation();
   }
 
+  function getOfficialProgress(theme) {
+    const operation = runtime.officialThemeOperation;
+    if (operation && operation.id === theme.id) return operation;
+    return theme.officialThemeProgress || null;
+  }
+
+  function formatOfficialMessage(key, ...args) {
+    const value = t(key);
+    if (typeof value === "function") return value(...args);
+    return String(value);
+  }
+
+  function buildOfficialThemeControls(theme) {
+    const nodes = [];
+    const state = theme.officialThemeState || "available";
+    const progress = getOfficialProgress(theme);
+    const busy = progress
+      && (progress.phase === "downloading" || progress.phase === "extracting" || progress.phase === "installing");
+    const mib = Number.isFinite(theme.officialThemeBytes)
+      ? Math.max(1, Math.round(theme.officialThemeBytes / (1024 * 1024)))
+      : "?";
+
+    const pushText = (text, className = "theme-official-note") => {
+      const el = document.createElement("span");
+      el.className = className;
+      el.textContent = text;
+      nodes.push(el);
+    };
+    const pushButton = (label, className, onClick, opts = {}) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = className;
+      btn.textContent = label;
+      if (opts.title) btn.title = opts.title;
+      if (opts.focusKey) btn.setAttribute("data-settings-focus-key", opts.focusKey);
+      btn.disabled = !!opts.disabled;
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        onClick();
+      });
+      btn.addEventListener("keydown", stopThemeCardButtonKeydown);
+      nodes.push(btn);
+      return btn;
+    };
+
+    if (typeof theme.officialThemeShowcaseUrl === "string" && theme.officialThemeShowcaseUrl) {
+      pushButton(
+        t("themeOfficialViewAnimations"),
+        "theme-official-showcase-btn",
+        () => helpers.openExternalSafe(theme.officialThemeShowcaseUrl),
+        { focusKey: `official-showcase:${theme.id}` }
+      );
+    }
+
+    if (busy) {
+      const pct = progress.totalBytes > 0
+        ? Math.min(100, Math.floor((progress.receivedBytes / progress.totalBytes) * 100))
+        : 0;
+      const bar = document.createElement("div");
+      bar.className = "theme-official-progress";
+      const inner = document.createElement("div");
+      inner.className = "theme-official-progress-bar";
+      inner.style.width = `${pct}%`;
+      bar.appendChild(inner);
+      nodes.push(bar);
+      if (progress.phase === "downloading") pushText(formatOfficialMessage("themeOfficialDownloading", pct));
+      else if (progress.phase === "extracting") pushText(t("themeOfficialVerifying"));
+      else pushText(t("themeOfficialInstalling"));
+      pushButton(t("themeOfficialCancel"), "theme-official-cancel-btn", () => handleCancelOfficialThemeInstall());
+      return nodes;
+    }
+
+    if (state === "available") {
+      pushButton(
+        formatOfficialMessage("themeOfficialDownloadLabel", mib),
+        "theme-official-download-btn",
+        () => handleInstallOfficialTheme(theme),
+        { disabled: !!runtime.officialThemePendingThemeId, focusKey: `official-download:${theme.id}` }
+      );
+      return nodes;
+    }
+
+    if (state === "installed" || state === "update-available") {
+      const version = theme.officialThemeInstalledVersion || theme.officialThemeVersion;
+      pushText(formatOfficialMessage("themeOfficialInstalledVersion", version));
+      if (state === "update-available") {
+        pushText(formatOfficialMessage("themeOfficialUpdateAvailable", theme.officialThemeVersion));
+      }
+      if (theme.officialThemeCanUninstall) {
+        pushButton(t("themeOfficialUninstall"), "theme-uninstall-btn", () => handleUninstallOfficialTheme(theme));
+      }
+      return nodes;
+    }
+
+    if (state === "repair-required") {
+      pushText(t("themeOfficialRepairRequired"));
+      if (theme.officialThemeCanUninstall) {
+        pushButton(t("themeOfficialUninstall"), "theme-uninstall-btn", () => handleUninstallOfficialTheme(theme));
+      }
+      return nodes;
+    }
+
+    if (state === "update-app") {
+      pushText(formatOfficialMessage("themeOfficialUpdateApp", theme.officialThemeMinAppVersion || theme.officialThemeVersion));
+      return nodes;
+    }
+
+    if (state === "conflict") {
+      pushText(t("themeOfficialConflict"));
+      return nodes;
+    }
+
+    // error / unknown: surface the stable category and offer a retry.
+    if (theme.officialThemeError && theme.officialThemeError.message) {
+      pushText(formatOfficialMessage("themeOfficialError", theme.officialThemeError.message));
+    }
+    pushButton(t("themeOfficialRetry"), "theme-official-retry-btn", () => handleInstallOfficialTheme(theme), {
+      disabled: !!runtime.officialThemePendingThemeId,
+    });
+    return nodes;
+  }
+
+  function handleInstallOfficialTheme(theme) {
+    if (!window.settingsAPI || typeof window.settingsAPI.installOfficialTheme !== "function") return;
+    if (runtime.officialThemePendingThemeId) return;
+    runtime.officialThemePendingThemeId = theme.id;
+    runtime.officialThemeOperation = {
+      id: theme.id,
+      phase: "downloading",
+      receivedBytes: 0,
+      totalBytes: Number.isFinite(theme.officialThemeBytes) ? theme.officialThemeBytes : 0,
+    };
+    if (state.activeTab === "theme") ops.requestRender({ content: true });
+    window.settingsAPI.installOfficialTheme(theme.id)
+      .then((result) => {
+        if (!result || result.status !== "ok") {
+          ops.showToast(
+            formatOfficialMessage("toastOfficialThemeInstallFailed", (result && result.message) || "unknown error"),
+            { error: true }
+          );
+          return null;
+        }
+        ops.showToast(formatOfficialMessage("toastOfficialThemeInstallOk", localizeField(theme.name) || theme.id));
+        return null;
+      })
+      .catch((err) => {
+        ops.showToast(
+          formatOfficialMessage("toastOfficialThemeInstallFailed", (err && err.message) || "unknown error"),
+          { error: true }
+        );
+      })
+      .finally(() => {
+        runtime.officialThemePendingThemeId = null;
+        runtime.officialThemeOperation = null;
+        ops.fetchThemes().then(() => {
+          if (state.activeTab === "theme") ops.requestRender({ content: true });
+        });
+      });
+  }
+
+  function handleCancelOfficialThemeInstall() {
+    if (!window.settingsAPI || typeof window.settingsAPI.cancelOfficialThemeInstall !== "function") return;
+    window.settingsAPI.cancelOfficialThemeInstall()
+      .then(() => {
+        ops.showToast(t("toastOfficialThemeCancelled"));
+      })
+      .catch(() => {})
+      .finally(() => {
+        runtime.officialThemeOperation = null;
+        runtime.officialThemePendingThemeId = null;
+        if (state.activeTab === "theme") ops.requestRender({ content: true });
+      });
+  }
+
+  function handleUninstallOfficialTheme(theme) {
+    if (!window.settingsAPI || typeof window.settingsAPI.uninstallOfficialTheme !== "function") return;
+    const name = localizeField(theme.name) || theme.id;
+    Promise.resolve(
+      typeof window.settingsAPI.confirmUninstallOfficialTheme === "function"
+        ? window.settingsAPI.confirmUninstallOfficialTheme(theme.id)
+        : { confirmed: true }
+    )
+      .then((res) => {
+        if (!res || !res.confirmed) return null;
+        return window.settingsAPI.uninstallOfficialTheme(theme.id);
+      })
+      .then((result) => {
+        if (result == null) return;
+        if (result.status !== "ok") {
+          ops.showToast(
+            formatOfficialMessage("toastOfficialThemeUninstallFailed", (result && result.message) || "unknown error"),
+            { error: true }
+          );
+          return;
+        }
+        if (result.uninstallStatus === "retry-required") {
+          ops.showToast(formatOfficialMessage("toastOfficialThemeUninstallRetry", name), { error: true });
+        } else {
+          ops.showToast(formatOfficialMessage("toastOfficialThemeUninstallOk", name));
+        }
+        ops.fetchThemes().then(() => {
+          if (state.activeTab === "theme") ops.requestRender({ content: true });
+        });
+      })
+      .catch((err) => {
+        ops.showToast(
+          formatOfficialMessage("toastOfficialThemeUninstallFailed", (err && err.message) || "unknown error"),
+          { error: true }
+        );
+      });
+  }
+
   function buildThemeCard(theme) {
     const card = document.createElement("div");
     card.className = "theme-card";
@@ -852,7 +1103,23 @@
       badge.textContent = t("themeBadgeCodexPet");
       name.appendChild(badge);
     }
+    if (theme.officialTheme) {
+      const badge = document.createElement("span");
+      badge.className = "theme-card-badge accent";
+      badge.textContent = t("themeBadgeOfficial");
+      name.appendChild(badge);
+    }
     card.appendChild(name);
+
+    if (theme.officialTheme) {
+      const descriptionText = localizeField(theme.officialThemeDescription || theme.description);
+      if (descriptionText) {
+        const description = document.createElement("div");
+        description.className = "theme-card-description";
+        description.textContent = descriptionText;
+        card.appendChild(description);
+      }
+    }
 
     const capLabels = getThemeCapabilityBadgeLabels(theme);
     if (capLabels.length) {
@@ -867,10 +1134,16 @@
       card.appendChild(caps);
     }
 
-    const canDelete = !theme.builtin && !theme.active && !theme.managedCodexPet;
+    const isOfficial = !!theme.officialTheme;
+    const officialState = theme.officialThemeState || null;
+    const officialInstalled = isOfficial
+      && (officialState === "installed" || officialState === "update-available");
+    const canDelete = !isOfficial && !theme.builtin && !theme.active && !theme.managedCodexPet;
     const canRemoveCodexPet = !!theme.managedCodexPet;
     const footer = document.createElement("div");
-    footer.className = "theme-card-footer";
+    footer.className = isOfficial
+      ? "theme-card-footer theme-card-footer-official"
+      : "theme-card-footer";
     const indicator = document.createElement("span");
     indicator.className = "theme-card-check";
     indicator.textContent = theme.active ? t("themeActiveIndicator") : "";
@@ -892,38 +1165,42 @@
       btn.addEventListener("keydown", stopThemeCardButtonKeydown);
       footer.appendChild(btn);
     }
-    if (canDelete) {
-      const btn = document.createElement("button");
-      btn.className = "theme-delete-btn";
-      btn.type = "button";
-      btn.textContent = "\u{1F5D1}";
-      btn.title = t("themeDeleteLabel");
-      btn.setAttribute("aria-label", t("themeDeleteLabel"));
-      btn.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        handleDeleteTheme(theme);
-      });
-      btn.addEventListener("keydown", stopThemeCardButtonKeydown);
-      footer.appendChild(btn);
-    }
-    if (canRemoveCodexPet) {
-      const btn = document.createElement("button");
-      btn.className = "theme-uninstall-btn";
-      btn.type = "button";
-      btn.textContent = t("themeUninstallPetLabel");
-      btn.title = t("themeUninstallPetLabel");
-      btn.setAttribute("aria-label", t("themeUninstallPetLabel"));
-      btn.disabled = runtime.codexPetRemovalPendingThemeId === theme.id;
-      btn.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        handleRemoveCodexPet(theme);
-      });
-      btn.addEventListener("keydown", stopThemeCardButtonKeydown);
-      footer.appendChild(btn);
+    if (isOfficial) {
+      for (const node of buildOfficialThemeControls(theme)) footer.appendChild(node);
+    } else {
+      if (canDelete) {
+        const btn = document.createElement("button");
+        btn.className = "theme-delete-btn";
+        btn.type = "button";
+        btn.textContent = "\u{1F5D1}";
+        btn.title = t("themeDeleteLabel");
+        btn.setAttribute("aria-label", t("themeDeleteLabel"));
+        btn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          handleDeleteTheme(theme);
+        });
+        btn.addEventListener("keydown", stopThemeCardButtonKeydown);
+        footer.appendChild(btn);
+      }
+      if (canRemoveCodexPet) {
+        const btn = document.createElement("button");
+        btn.className = "theme-uninstall-btn";
+        btn.type = "button";
+        btn.textContent = t("themeUninstallPetLabel");
+        btn.title = t("themeUninstallPetLabel");
+        btn.setAttribute("aria-label", t("themeUninstallPetLabel"));
+        btn.disabled = runtime.codexPetRemovalPendingThemeId === theme.id;
+        btn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          handleRemoveCodexPet(theme);
+        });
+        btn.addEventListener("keydown", stopThemeCardButtonKeydown);
+        footer.appendChild(btn);
+      }
     }
     card.appendChild(footer);
 
-    if (!theme.active) {
+    if (!theme.active && (!isOfficial || officialInstalled)) {
       helpers.attachActivation(card, () => (
         Promise.resolve(window.settingsAPI.command("setThemeSelection", { themeId: theme.id }))
           .then((result) => {
