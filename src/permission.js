@@ -2174,6 +2174,24 @@ function isPermissionEntryHeadless(permEntry) {
 // behavior and a matched one ends at the human. A settings read that throws is
 // already a broken state, and the direction that costs an extra card is
 // preferable to the one that silently disarms a guard the user switched on.
+//
+// #1021 review (5), TOCTOU: the match stamp (hold/tag) is computed once, at
+// accept time, by permission-reminder.js -- a module with no ctx, so it
+// cannot read this setting at all. Whether that stamp actually holds used to
+// re-read the LIVE setting on every call, including from
+// canAutoResolvePendingPermission()/sweep(), which can run much later than
+// accept time (a session grant can arrive after the request has already been
+// sitting, displayed, for a while). That let a request already shown to a
+// human as held become sweep-resolvable the moment the setting was turned
+// off, with no human action and no re-render of the already-shown card --
+// and the reverse (turning it on) could newly hold a request that automation
+// had already committed to resolving through a path that does not re-check
+// this predicate. Freezing the decision the first time it is asked answers
+// both directions the same way a snapshot answers a race: whichever value
+// was true when this request first became eligible for automation is the
+// value it keeps for its whole pending lifetime, so the display (whenever it
+// last rendered) and the decision can never silently diverge on a request
+// that neither the human nor policy has touched.
 function permissionReminderHolds(permEntry) {
   // Scoped to the same branch the policy scopes it to. Elicitation and plan
   // entries are answered or reviewed on their own paths, and a question card
@@ -2184,16 +2202,23 @@ function permissionReminderHolds(permEntry) {
   if (intent !== INTERACTION_INTENT.TOOL_APPROVAL && intent !== INTERACTION_INTENT.UNKNOWN) {
     return false;
   }
-  const stampHolds = reminderHolds(permEntry.permissionReminder);
-  if (typeof ctx.isDestructiveReminderEnabled !== "function") return false;
-  let enabled;
-  try {
-    enabled = ctx.isDestructiveReminderEnabled() === true;
-  } catch (err) {
-    permLog(`destructive reminder: setting read failed (${err && err.message ? err.message : err}); falling back to the match`);
-    return stampHolds;
+  if (typeof permEntry._reminderHoldAtAccept === "boolean") {
+    return permEntry._reminderHoldAtAccept;
   }
-  return enabled ? stampHolds : false;
+  const stampHolds = reminderHolds(permEntry.permissionReminder);
+  let result;
+  if (typeof ctx.isDestructiveReminderEnabled !== "function") {
+    result = false;
+  } else {
+    try {
+      result = ctx.isDestructiveReminderEnabled() === true ? stampHolds : false;
+    } catch (err) {
+      permLog(`destructive reminder: setting read failed (${err && err.message ? err.message : err}); falling back to the match`);
+      result = stampHolds;
+    }
+  }
+  permEntry._reminderHoldAtAccept = result;
+  return result;
 }
 
 // Whether the reminder is the reason this request is in front of a human.
@@ -2203,6 +2228,32 @@ function permissionReminderHolds(permEntry) {
 // to reach a human regardless -- automation off, an ineligible agent, a session
 // with no grant -- and in that case the card must not claim Clawd intervened.
 // The card still shows the ordinary destructive-action hint there, as before.
+//
+// #1021 review (3): this used to re-evaluate automation policy with its own
+// partial copy of canAutoResolvePendingPermission()'s gates, which skipped the
+// entry-level ones entirely (agent/subagent enabled, headless, Codex permission
+// intercept, session-automation eligibility, live-response, DND). Reachable
+// miss: a remote-only entry with an existing session grant, where Codex
+// permission intercept or the subagent automation gate is off -- sweep()
+// would never have resolved that entry (canAutoResolvePendingPermission
+// returns false), yet this function said the reminder was why it was
+// pending, so the card rendered Tier 1 ("Held for your review") when the
+// request needed a human regardless (Tier 2 is correct).
+//
+// Fix: derive from canAutoResolvePendingPermission() itself -- the same
+// predicate sweep()/session-grant flows use -- instead of keeping a second
+// copy of its gates, but ONLY in the exact circumstance where that predicate
+// is actually consulted for real auto-resolution: a session-automation
+// override exists, or this is an interactive Codex subagent entry
+// (maybeAutoApprovePermission's own `needsLiveGate` condition, unchanged
+// here). An ordinary global-automation request is never routed through
+// canAutoResolvePendingPermission()'s entry-level gates either -- see
+// maybeAutoApprovePermission(), which auto-allows it directly once
+// evaluatePermissionAutomation() says AUTO_ALLOW -- so asking this predicate
+// to apply those gates there would claim a stronger check happened than the
+// one that actually resolves the request, which would then wrongly downgrade
+// an otherwise-correct Tier 1 card (e.g. an opencode-family session under
+// plain global automation) to Tier 2.
 function reminderIsWhyThisIsPending(permEntry) {
   if (!permissionReminderHolds(permEntry)) return false;
   let mode;
@@ -2215,12 +2266,20 @@ function reminderIsWhyThisIsPending(permEntry) {
   } else {
     mode = PERMISSION_AUTOMATION_MODE.OFF;
   }
-  return evaluatePermissionAutomation({
+  const wouldAutoAllow = evaluatePermissionAutomation({
     mode,
     interaction: permEntry.interaction,
     entry: permEntry,
     reminderHold: false,
   }) === AUTOMATION_ACTION.AUTO_ALLOW;
+  if (!wouldAutoAllow) return false;
+
+  const hasSessionOverride = typeof ctx.hasSessionAutomationOverride === "function"
+    && ctx.hasSessionAutomationOverride(permEntry);
+  const needsLiveGate = hasSessionOverride || isInteractiveCodexSubagentEntry(permEntry);
+  if (!needsLiveGate) return true;
+
+  return canAutoResolvePendingPermission(permEntry, { mode, ignoreReminderHold: true }) === true;
 }
 
 function canAutoResolvePendingPermission(permEntry, options = {}) {
@@ -2276,11 +2335,18 @@ function canAutoResolvePendingPermission(permEntry, options = {}) {
         );
   }
 
+  // ignoreReminderHold lets reminderIsWhyThisIsPending() ask "would every
+  // OTHER gate have let this through" without re-implementing them: it is
+  // the neutralize-only-the-reminder-hold view onto this exact predicate.
+  const reminderHold = options.ignoreReminderHold === true
+    ? false
+    : permissionReminderHolds(permEntry);
+
   return evaluatePermissionAutomation({
     mode,
     interaction: permEntry.interaction,
     entry: permEntry,
-    reminderHold: permissionReminderHolds(permEntry),
+    reminderHold,
   }) === AUTOMATION_ACTION.AUTO_ALLOW;
 }
 

@@ -19,6 +19,9 @@
 //      indistinguishable from "the matcher stopped recognizing it".
 //   4. Session trust is affected deliberately, not incidentally: the predicate
 //      that offers session trust is the same predicate that resolves a sweep.
+//   5. An exception covers the decision it was written for, not the request it
+//      appeared in. `npm publish --dry-run && rm -rf /` is two decisions, and
+//      the excused one does not speak for the other.
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
@@ -28,10 +31,12 @@ const path = require("node:path");
 const {
   SCAN_ERROR_TAG,
   SCAN_MAX,
+  ARGV_MAX,
   buildReminderScanInput,
   evaluatePermissionReminder,
   preparePermissionReminder,
   reminderHolds,
+  joinArgvBounded,
 } = require("../src/permission-reminder");
 const {
   AUTOMATION_ACTION,
@@ -41,6 +46,8 @@ const {
 } = require("../src/permission-automation-policy");
 const { truncateDeep, PREVIEW_MAX } = require("../src/server-permission-utils");
 const initPermission = require("../src/permission");
+const { createSessionAutomationStore } = require("../src/session-automation-store");
+const { createSessionAutomationCoordinator } = require("../src/session-automation-coordinator");
 
 const SRC = path.join(__dirname, "..", "src");
 
@@ -93,6 +100,24 @@ const UNMATCHED = [
   ["select, not drop", "psql -c 'SELECT 1'", null],
   ["drop in an echo, no db client", "echo 'DROP TABLE users'", null],
   ["reading a file", "cat package.json", null],
+];
+
+// KNOWN_MISS: distinct from UNMATCHED on purpose. UNMATCHED means "nothing
+// destructive runs here, so silence is correct." These commands ARE
+// destructive, but the matcher misses them anyway, because
+// IRREVERSIBLE_PATTERNS (bubble-format.js) is Unix-shaped only and has no
+// PowerShell/cmd-native rule. #1021 review (6): `powershell` was added to
+// SHELL_TOOLS so a PowerShell-shaped request is now SCANNED, which reads as
+// "PowerShell coverage" unless the boundary is pinned explicitly -- these
+// lanes are that pin. A future PR that adds real PowerShell/cmd patterns
+// should MOVE these into HOLD, not delete them: the failure mode this list
+// exists to catch is the coverage claim growing back silently while the
+// matcher stays the same.
+const KNOWN_MISS = [
+  ["powershell delete, canonical cmdlet", "powershell", "Remove-Item -Recurse -Force C:\\repo\\src"],
+  ["powershell delete, flags reordered", "powershell", "Remove-Item C:\\repo\\src -Recurse -Force"],
+  ["cmd.exe recursive delete", "bash", "cmd /c rmdir /s /q C:\\repo\\src"],
+  ["cmd.exe file delete", "shell", "del /f /q C:\\repo\\src\\secret.txt"],
 ];
 
 // EXCEPTION: a real match that policy deliberately does not hold. Each names the
@@ -187,6 +212,45 @@ describe("destructive reminder — unmatched requests keep today's behavior", ()
   });
 });
 
+describe("destructive reminder — known misses: PowerShell/cmd is scanned but not recognized (#1021 review 6)", () => {
+  for (const [label, tool, command] of KNOWN_MISS) {
+    it(`known miss: ${label}`, () => {
+      // Pinned as a MISS, not asserted as correct: this documents the
+      // boundary (best-effort, Unix-shaped patterns only) rather than
+      // claiming Windows destructive-command coverage. If this ever starts
+      // returning a real verdict, move the case to HOLD above -- do not
+      // just update this assertion to expect a match, or the record of what
+      // changed and why is lost.
+      assert.equal(evaluatePermissionReminder(tool, { command }), null, command);
+    });
+  }
+
+  it("control: the SAME destructive intent, expressed as a Unix command under the same PowerShell tool name, IS caught", () => {
+    // Isolates the miss to PATTERN SHAPE, not to the `powershell` tool name:
+    // powershell is scanned like any other SHELL_TOOLS entry (that is the
+    // point of #1021 review's own fix), it just has no rule for its OWN
+    // native syntax.
+    assert.deepEqual(
+      evaluatePermissionReminder("powershell", { command: "git push --force origin main" }),
+      { hold: true, tag: "force-push" }
+    );
+  });
+
+  it("an accidental match is not the same thing as real PowerShell coverage", () => {
+    // `rm -Recurse -Force` is the PowerShell "rm" ALIAS for Remove-Item,
+    // written with PowerShell-style flag names. It matches file-delete's
+    // Unix regex (/^rm\s+-[a-zA-Z]*[rf]/) purely because "Recurse" happens to
+    // contain a lowercase "r" for [a-zA-Z]*[rf] to backtrack onto -- not
+    // because any pattern here understands PowerShell flags. Pinned so a
+    // reader does not mistake this coincidence for intentional coverage: the
+    // canonical cmdlet form above (Remove-Item -Recurse -Force, no "rm"
+    // alias) gets no such accident and is a clean miss.
+    const verdict = evaluatePermissionReminder("powershell", { command: "rm -Recurse -Force C:\\repo\\src" });
+    assert.deepEqual(verdict, { hold: true, tag: "file-delete" },
+      "matches today, by accident of spelling -- not a claim that this is designed PowerShell support");
+  });
+});
+
 describe("destructive reminder — deliberate policy exceptions name themselves", () => {
   for (const [label, command, tag, exception] of EXCEPTION) {
     it(`excused (${exception}): ${label}`, () => {
@@ -204,6 +268,490 @@ describe("destructive reminder — deliberate policy exceptions name themselves"
     const never = evaluatePermissionReminder("Bash", { command: "echo npm publish" });
     assert.notDeepEqual(excused, never);
     assert.equal(never, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1-b. An exception covers its own decision, not the request it appeared in
+// ---------------------------------------------------------------------------
+
+// Every row in EXCEPTION above carries exactly one effective destructive
+// decision. That is why none of them could see this class: an exception
+// evaluated against the first match only had become an exception for the whole
+// request, and the command that rode through is one the matcher recognizes
+// perfectly well on its own -- `rm -rf /` is held when it stands alone. A miss
+// would be a matcher gap; this was a composition gap, and the fixtures could
+// not express it.
+const COMPOSED_HOLDS = [
+  ["an excused publish, then a root delete", "npm publish --dry-run && rm -rf /", "file-delete"],
+  ["an excused disposable delete, then a force push", "rm -rf node_modules; git push --force origin main", "force-push"],
+  ["an excused lease push, then a hard reset", "git push --force-with-lease && git reset --hard HEAD^", "history-rewrite"],
+  ["an excused help, then a publish", "terraform destroy --help ; npm publish", "publish"],
+  ["an excused help, then a repo delete", "npm publish --help && gh repo delete me/repo", "repo-delete"],
+  ["an excused disposable delete, then an absolute one", "rm -rf dist/* && rm -rf /etc", "file-delete"],
+  ["an excused kubectl dry run, then a real one", "kubectl delete --dry-run=client po x && kubectl delete ns prod", "infra-destroy"],
+  // Same segment, not a later one: the pattern loop stopped at its first hit
+  // too, so the remote-delete inside a lease-guarded push was never reached.
+  ["a lease-guarded push that also deletes the remote branch", "git push --force-with-lease --delete origin main", "remote-delete"],
+];
+
+// The other direction, which is the one that decides whether this is a fix or
+// just a wider net: a request whose decisions are ALL excused still passes.
+// Holding these would teach people to click through, which is the failure this
+// feature is trying not to cause.
+const COMPOSED_EXCUSED = [
+  ["two dry runs", "npm publish --dry-run && npm publish --dry-run", "publish", "dry-run"],
+  ["two disposable deletes", "rm -rf dist && rm -rf build", "file-delete", "disposable-path"],
+];
+
+describe("destructive reminder — one excused decision does not excuse the request", () => {
+  for (const [label, command, tag] of COMPOSED_HOLDS) {
+    it(`holds: ${label}`, () => {
+      const verdict = evaluatePermissionReminder("Bash", { command });
+      assert.deepEqual(verdict, { hold: true, tag }, command);
+      assert.equal(reminderHolds(verdict), true, command);
+    });
+  }
+
+  for (const [label, command, tag, exception] of COMPOSED_EXCUSED) {
+    it(`still excused: ${label}`, () => {
+      const verdict = evaluatePermissionReminder("Bash", { command });
+      assert.deepEqual(verdict, { hold: false, tag, exception }, command);
+    });
+  }
+
+  it("the command that rides through is one the matcher holds on its own", () => {
+    // Without this pair the lane above could pass because the matcher stopped
+    // recognizing `rm -rf /`, which is a different defect with the same colour.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "rm -rf /" }),
+      { hold: true, tag: "file-delete" }
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1-c. --dry-run is excused by what it MEANS, not by having a value
+// ---------------------------------------------------------------------------
+
+// `--dry-run=none` is kubectl's way of spelling out "actually do it", so a
+// matcher that accepts any value after `=` turned the most explicit statement
+// of intent into the exception that waved it through. Unknown values are not
+// assumed harmless either: this exception is shared across commands, so a value
+// it cannot vouch for fails closed.
+const DRY_RUN_EXECUTES = [
+  ["none disables kubectl's dry run", "kubectl delete namespace prod --dry-run=none", "infra-destroy"],
+  ["false", "kubectl delete namespace prod --dry-run=false", "infra-destroy"],
+  ["zero", "kubectl delete namespace prod --dry-run=0", "infra-destroy"],
+  ["an unknown value is not assumed to be non-executing", "kubectl delete namespace prod --dry-run=bogus", "infra-destroy"],
+  ["an empty value", "kubectl delete namespace prod --dry-run=", "infra-destroy"],
+  ["a non-executing value does not cover an executing one beside it", "kubectl delete ns prod --dry-run=client --dry-run=none", "infra-destroy"],
+];
+
+const DRY_RUN_PERFORMS_NOTHING = [
+  ["the bare flag", "npm publish --dry-run", "publish"],
+  ["kubectl client-side", "kubectl delete po x --dry-run=client", "infra-destroy"],
+  ["kubectl server-side", "kubectl delete po x --dry-run=server", "infra-destroy"],
+];
+
+// A bare `--` ends option parsing: what follows is a positional argument, or an
+// argument list bound for something else. `npm publish -- --dry-run` publishes.
+const AFTER_OPTION_TERMINATOR = [
+  ["a dry-run token after -- is not this command's flag", "npm publish -- --dry-run", "publish"],
+  ["and neither is a help token", "gh repo delete me/repo -- --help", "repo-delete"],
+];
+
+describe("destructive reminder — a dry run has to actually perform nothing", () => {
+  it("npm's boolean spelling is non-executing too", () => {
+    // `dry-run` is a boolean config; `--dry-run=true` performs nothing, so an
+    // allow-list of only bare/client/server held a real dry run.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "npm publish --dry-run=true" }),
+      { hold: false, tag: "publish", exception: "dry-run" }
+    );
+    // The pair that keeps that from becoming "accept anything truthy-looking":
+    // a value we cannot name still fails closed.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "npm publish --dry-run=yes" }),
+      { hold: true, tag: "publish" }
+    );
+  });
+
+  for (const [label, command, tag] of DRY_RUN_EXECUTES) {
+    it(`holds: ${label}`, () => {
+      assert.deepEqual(evaluatePermissionReminder("Bash", { command }), { hold: true, tag }, command);
+    });
+  }
+
+  for (const [label, command, tag] of DRY_RUN_PERFORMS_NOTHING) {
+    it(`still excused: ${label}`, () => {
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command }),
+        { hold: false, tag, exception: "dry-run" },
+        command
+      );
+    });
+  }
+
+  for (const [label, command, tag] of AFTER_OPTION_TERMINATOR) {
+    it(`holds: ${label}`, () => {
+      assert.deepEqual(evaluatePermissionReminder("Bash", { command }), { hold: true, tag }, command);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 1-d. An option is read from argv, not from the raw text
+// ---------------------------------------------------------------------------
+
+// The shell removes quoting before a program sees its arguments, so the same
+// four characters are an option in one spelling and data in another. A matcher
+// reading raw text is wrong in BOTH directions, and both directions are here:
+// it excused real destruction, and it held ordinary shell. The second half is
+// not cosmetic -- a reminder that fires on `npm publish "--dry-run"` is a
+// reminder people learn to click through.
+const QUOTING_HOLDS = [
+  // A wholly quoted flag NAME is held — see the bare-name lane for why, and for
+  // the control that keeps a quoted VALUE working.
+  ["a wholly quoted flag name is not a flag this command acts on", 'npm publish "--dry-run"', "publish"],
+  ["a quoted end-of-options marker still ends options", "rm -rf src '--' --dry-run", "file-delete"],
+  ["an escaped one does too", "rm -rf src \\-- --dry-run", "file-delete"],
+  ["and the same for --help", "rm -rf src '--' --help", "file-delete"],
+  ["a flag inside a quoted SQL string is data, not an option", 'psql -c "DROP TABLE users; --dry-run "', "db-destroy"],
+  ["a quoted bare force is still a bare force", 'git push --force-with-lease "--force" origin main', "force-push"],
+  ["an escaped one is too", "git push --force-with-lease \\--force origin main", "force-push"],
+];
+
+const QUOTING_EXCUSED = [
+  ["a quoted VALUE is still that value", 'kubectl delete pod api --dry-run="client"', "infra-destroy", "dry-run"],
+  ["a -- inside a quoted path does not end options", 'npm publish "./foo -- bar" --dry-run', "publish", "dry-run"],
+];
+
+describe("destructive reminder — an option is argv, not text", () => {
+  for (const [label, command, tag] of QUOTING_HOLDS) {
+    it(`holds: ${label}`, () => {
+      assert.deepEqual(evaluatePermissionReminder("Bash", { command }), { hold: true, tag }, command);
+    });
+  }
+  for (const [label, command, tag, exception] of QUOTING_EXCUSED) {
+    it(`still excused: ${label}`, () => {
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command }),
+        { hold: false, tag, exception },
+        command
+      );
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 1-e. A lone `&` separates commands
+// ---------------------------------------------------------------------------
+
+describe("destructive reminder — shell context decides whether a word is a command", () => {
+  it("a flag's NAME must be written bare", () => {
+    // `-c` takes its argument as SQL, so the quoted word is DATA and the DROP
+    // runs; reading it as a flag excused a real destructive command. What tells
+    // that apart from a genuine flag is not quoting but WHERE the quoting
+    // starts: here the whole name is quoted, so it is not a flag at all.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "psql -c '--dry-run' -c 'DROP TABLE t'" }),
+      { hold: true, tag: "db-destroy" }
+    );
+    // A here-string operand is likewise data, not an option.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "psql -c 'DROP TABLE t' <<< '--dry-run'" }),
+      { hold: true, tag: "db-destroy" }
+    );
+    // The control that keeps this from swallowing real flags: the NAME is bare
+    // and only the VALUE is quoted, which is an ordinary invocation.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: 'kubectl delete pod api --dry-run="client"' }),
+      { hold: false, tag: "infra-destroy", exception: "dry-run" }
+    );
+    // DECLARED consequence: a wholly quoted flag name is held. That matches the
+    // behaviour before this change -- the old regex needed whitespace in front
+    // of the flag and a quote is not whitespace -- so it is a pre-existing
+    // over-block left standing, in the safe direction, not a regression.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: 'npm publish "--dry-run"' }),
+      { hold: true, tag: "publish" }
+    );
+  });
+
+  it("a redirection operand is removed before the option terminator is found", () => {
+    // In `npm publish > -- --dry-run` the `--` is the redirection's FILE NAME.
+    // Searching for the terminator first truncated the command at a filename and
+    // lost the flag that actually applies.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "npm publish > -- --dry-run" }),
+      { hold: false, tag: "publish", exception: "dry-run" }
+    );
+  });
+
+  it("quoting removes an operator but not an argument", () => {
+    // These read quoting in OPPOSITE directions, which is why the tokens carry
+    // whether they were bare. `>` is syntax: quote it and it is just a word, so
+    // the --dry-run after it is still npm's option. `--` is an argument the
+    // program interprets, so quoting it does NOT stop it ending the options.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: 'npm publish ">" --dry-run' }),
+      { hold: false, tag: "publish", exception: "dry-run" }
+    );
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "npm publish \\> --dry-run" }),
+      { hold: false, tag: "publish", exception: "dry-run" }
+    );
+    // A wholly quoted flag NAME is a separate question and is held -- see the
+    // bare-name lane. Only the operator/argument distinction is tested here.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "rm -rf src '--' --dry-run" }),
+      { hold: true, tag: "file-delete" }
+    );
+  });
+
+  it("a redirection target is a file name, not an option", () => {
+    // `rm -rf ./d > "--dry-run"` writes a file called --dry-run and deletes for
+    // real. Reading tokens is what made this reachable: the old regex could not
+    // see the quoted spelling at all, so the operand has to be dropped.
+    for (const command of [
+      'rm -rf ./d > "--dry-run"',
+      'rm -rf ./d > "--help"',
+      'rm -rf ./d 2> "--dry-run"',
+      'rm -rf ./d >> "--dry-run"',
+    ]) {
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command }),
+        { hold: true, tag: "file-delete" },
+        command
+      );
+    }
+    // The control that keeps the rule from swallowing real exceptions: a genuine
+    // dry run whose output happens to be redirected is still excused.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "npm publish --dry-run > out.txt" }),
+      { hold: false, tag: "publish", exception: "dry-run" }
+    );
+  });
+
+  it("an escaped character ends the word start, with nothing in front of it", () => {
+    // Both spellings escape a space, but only one of them exercises the bug: in
+    // `echo foo\\ #` the `foo` has already cleared the word-start flag, so the
+    // branch that forgets to clear it still gets the right answer. With nothing
+    // between the command and the backslash, the flag is still set and the `#`
+    // was read as a comment -- hiding a delete the shell runs.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "echo \\ #; rm -rf ./d" }),
+      { hold: true, tag: "file-delete" }
+    );
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "echo foo\\ # & rm -rf x" }),
+      { hold: true, tag: "file-delete" }
+    );
+  });
+
+  it("a carriage return does not start a word", () => {
+    // Bash's default IFS is space, tab and newline. Treating \\r as whitespace put
+    // the following `#` at a word start and hid a delete that really runs.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "echo safe\\r#; rm -rf ./data" }),
+      { hold: true, tag: "file-delete" }
+    );
+  });
+
+  it("KNOWN MISS: a heredoc body is read as command positions", () => {
+    // A heredoc body is DATA, so `rm -rf` inside one is text being written to a
+    // file. This splitter reports it as a command anyway. The class is
+    // pre-existing -- `;` produced the same false hold before a lone `&` was
+    // added to the separator set -- and the direction is a false HOLD, which
+    // costs a human glance rather than an unreviewed deletion.
+    //
+    // A skip was written and REVERTED. It traded this cheap failure for three
+    // expensive ones, all measured: a `;` on the opener's own line was
+    // swallowed, `<<E'OF'` parsed the delimiter as `E`, and `$((1<<2))` read an
+    // arithmetic left-shift as a heredoc opener -- each hiding a command the
+    // shell runs. These lanes pin the current behaviour so that a future skip
+    // has to come back through them.
+    for (const command of [
+      "cat <<'EOF'\necho safe & rm -rf ./data\nEOF",
+      "cat <<'EOF'\necho safe; rm -rf /\nEOF",
+    ]) {
+      const verdict = evaluatePermissionReminder("Bash", { command });
+      assert.equal(verdict && verdict.hold, true, command);
+    }
+    // The three inputs the reverted skip got wrong. They are ordinary shell and
+    // the shell really does run the delete, so they must hold.
+    for (const command of [
+      "cat <<'EOF' ; rm -rf ./data",
+      "cat <<E'OF'\nharmless\nEOF\nrm -rf ./data\nE",
+      "echo $((1<<2))\nrm -rf ./data\n2",
+    ]) {
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command }),
+        { hold: true, tag: "file-delete" },
+        command
+      );
+    }
+  });
+
+  it("a subshell is a command position", () => {
+    // `echo safe; (rm -rf ./d)` left a segment starting with `(`, which the
+    // anchored patterns cannot match while the shell runs the delete.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "echo safe; (rm -rf ./d)" }),
+      { hold: true, tag: "file-delete" }
+    );
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "(rm -rf /)" }),
+      { hold: true, tag: "file-delete" }
+    );
+    // `((` is arithmetic, not a command position -- the control that keeps the
+    // two lines above from being a blanket "strip every paren".
+    assert.equal(evaluatePermissionReminder("Bash", { command: "echo $((1 & 2))" }), null);
+  });
+
+  it("a line continuation is removed, so what follows it is a command", () => {
+    // The shell DELETES `\\<newline>` before parsing. Keeping it left the segment
+    // after `;` beginning `\\<newline>rm`, which the anchored `^rm` pattern cannot
+    // match -- so a delete the shell really runs was invisible. This one predates
+    // the word-start work; it is closed by removing the continuation outright.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "echo safe;\\\nrm -rf ./d" }),
+      { hold: true, tag: "file-delete" }
+    );
+  });
+
+  it("a line continuation is transparent to word start", () => {
+    // Bash removes `\\<newline>` entirely, so the `;` before it is what decides:
+    // the `#` is at a word start and comments out the rm.
+    assert.equal(
+      evaluatePermissionReminder("Bash", { command: "echo safe;\\\n# harmless; rm -rf ./d" }),
+      null
+    );
+  });
+
+  it("KNOWN MISS: a comment inside a command substitution is not modelled", () => {
+    // Bash comments the rm out; this scanner does not parse `$(` or backticks, so
+    // it reads the inner text as ordinary command positions and holds. The
+    // direction is a false HOLD, which costs a human glance rather than an
+    // unreviewed deletion, and it is pinned here so the boundary is visible.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "echo $(# harmless; rm -rf ./d\n echo ok)" }),
+      { hold: true, tag: "file-delete" }
+    );
+    // Control: the same text with no substitution really is a comment.
+    assert.equal(
+      evaluatePermissionReminder("Bash", { command: "echo ok # harmless; rm -rf ./d" }),
+      null
+    );
+  });
+
+  it("word start is a parser state, not the previous character", () => {
+    // `echo foo\\ # & rm -rf x`: the space is ESCAPED, so `foo #` is one word and
+    // `#` opens nothing -- bash runs the rm. Reading the raw previous character
+    // saw a space, called it a comment, and discarded a command that executes.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "echo foo\\ # & rm -rf x" }),
+      { hold: true, tag: "file-delete" }
+    );
+    // `echo safe;# & rm -rf x`: no space at all, and `#` after `;` IS a comment.
+    // The same raw-character test missed this one in the other direction.
+    assert.equal(
+      evaluatePermissionReminder("Bash", { command: "echo safe;# & rm -rf x" }),
+      null
+    );
+    // Controls for both edges of the word-start rule.
+    assert.equal(evaluatePermissionReminder("Bash", { command: "echo a#b" }), null);
+    assert.equal(evaluatePermissionReminder("Bash", { command: "# rm -rf /" }), null);
+  });
+
+  it("a comment is not a command position", () => {
+    // `#` at the start of a word comments out the rest of the line, so the rm
+    // never runs. Splitting on the `&` without knowing that invented a command.
+    assert.equal(
+      evaluatePermissionReminder("Bash", { command: "echo safe # & rm -rf important" }),
+      null
+    );
+  });
+
+  it("an escaped > is an argument, so the & after it still separates", () => {
+    // One backslash: the `>` is a literal argument to echo, so `&` separates and
+    // the delete is a real command position.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "echo \\>& rm -rf important" }),
+      { hold: true, tag: "file-delete" }
+    );
+    // Two backslashes: an escaped backslash followed by a REAL redirection, so
+    // the `&` is part of `>&` and separates nothing. The pair is what makes the
+    // line above a measurement rather than a coincidence.
+    assert.equal(
+      evaluatePermissionReminder("Bash", { command: "echo \\\\>& rm -rf important" }),
+      null
+    );
+  });
+
+  it("a backslash in double quotes is literal unless it escapes $ ` \" or itself", () => {
+    // `"\\--"` is the two characters \\-- , not the end-of-options marker, so the
+    // real --dry-run after it still excuses the publish.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: 'npm publish "\\\\--" --dry-run' }),
+      { hold: false, tag: "publish", exception: "dry-run" }
+    );
+  });
+});
+
+describe("destructive reminder — a lone & starts a new command", () => {
+  it("holds: an excused publish backgrounded, then a delete", () => {
+    // `&` was not a separator, so this was ONE segment: the publish matched, its
+    // dry-run excused it, and the delete was never a command position at all.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "npm publish --dry-run & rm -rf ./important-data" }),
+      { hold: true, tag: "file-delete" }
+    );
+  });
+
+  it("a redirection is not a separator", () => {
+    // `&>` and `2>&1` carry an ampersand that separates nothing. Splitting there
+    // would invent a command position out of a redirection target.
+    assert.equal(evaluatePermissionReminder("Bash", { command: "ls -la &> out.txt" }), null);
+    assert.equal(evaluatePermissionReminder("Bash", { command: "ls -la 2>&1" }), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1-f. KNOWN MISSES — the inspection budget, asserted so the boundary is visible
+// ---------------------------------------------------------------------------
+
+// These are NOT fixed, and the lanes pin the CURRENT behavior on purpose. The
+// 4KB / 50-segment caps are deliberate (the scan input is attacker-influenced,
+// so the cost has to be bounded by construction), and a command that exhausts
+// one is not inspected past that point. That is a real way past this reminder.
+// It is written down rather than left for a reader to discover, and if anyone
+// later makes an exhausted budget hold, these lanes fail and say so instead of
+// the change landing silently.
+describe("destructive reminder — known misses at the inspection budget", () => {
+  it("KNOWN MISS: a destructive command past the segment cap is not reached", () => {
+    const command = new Array(51).fill(":").join(" ; ") + " ; rm -rf /";
+    assert.equal(
+      evaluatePermissionReminder("Bash", { command }),
+      null,
+      "documented budget boundary, not a matcher gap — see this block's comment"
+    );
+    // The control that makes the line above a boundary rather than a matcher
+    // miss: the same command, inside the cap, is held.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: ": ; rm -rf /" }),
+      { hold: true, tag: "file-delete" }
+    );
+  });
+
+  it("KNOWN MISS: a destructive command past the scan cap is not reached", () => {
+    const command = "echo " + "x".repeat(SCAN_MAX) + " ; rm -rf /";
+    assert.equal(evaluatePermissionReminder("Bash", { command }), null);
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "echo x ; rm -rf /" }),
+      { hold: true, tag: "file-delete" }
+    );
   });
 });
 
@@ -251,6 +799,77 @@ describe("destructive reminder — reads the request before display-preview trun
     const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
     assert.ok(elapsedMs < 250, `scan took ${elapsedMs}ms`);
   });
+
+  // #1021 review (4): the STRING shape above was already bounded before this
+  // review (boundCommandString runs on the raw command directly). The ARGV
+  // shape was not: parts.join(" ") ran on the FULL array before
+  // boundCommandString ever saw the result, so ARGV_MAX (which bounds
+  // element COUNT) did nothing to bound total bytes joined. A final-length
+  // assertion alone cannot see this bug -- the old code also returned a
+  // SCAN_MAX-length string, just after doing unbounded work to get there.
+  // These lanes observe the PRE-SCAN allocation/throw boundary instead.
+  describe("the argv shape is bounded the same way, before the join, not after (review 4)", () => {
+    it("256 elements at the ARGV_MAX cap, each far bigger than any reasonable request, does not throw", () => {
+      // Each element alone is bigger than V8's max string length once
+      // multiplied by 256 (~2.56GB combined) -- Array.prototype.join over
+      // the unbounded array throws RangeError: Invalid string length at
+      // this size (reproduced against the pre-fix code: 256 x 4MB (~1GB
+      // combined) already throws there). A join that is bounded BEFORE it
+      // walks the array can never reach that error, regardless of how large
+      // any single element is, because it stops as soon as it has SCAN_MAX
+      // characters.
+      const hugeArgv = new Array(ARGV_MAX).fill(0).map(() => "x".repeat(10_000_000)); // ~2.56GB unbounded
+      let scanInput;
+      assert.doesNotThrow(() => {
+        scanInput = buildReminderScanInput({ command: hugeArgv });
+      }, "a budget-respecting join must never approach V8's max string length");
+      assert.equal(scanInput.command.length, SCAN_MAX);
+      assert.equal(
+        scanInput.command,
+        hugeArgv[0].slice(0, SCAN_MAX),
+        "the first element alone already exceeds the budget, so the bounded join must equal its own prefix"
+      );
+    });
+
+    it("a wide, deep argv (many elements, each large) still scans fast", () => {
+      // Companion to "a megabyte of input stays fast" above, for the shape
+      // that lane does not cover. 256 x 1MB = 256MB of accepted input --
+      // comfortably inside what an HTTP body limit would allow through --
+      // and the reminder must not do work proportional to that 256MB.
+      const wideArgv = new Array(ARGV_MAX).fill(0).map(() => "a".repeat(1024 * 1024));
+      wideArgv[ARGV_MAX - 1] += " && rm -rf src"; // a real destructive tail, so this also proves detection still works
+      const started = process.hrtime.bigint();
+      const verdict = evaluatePermissionReminder("Bash", { command: wideArgv });
+      const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+      assert.ok(elapsedMs < 250, `scan took ${elapsedMs}ms for a 256MB argv`);
+      // The destructive tail sits past SCAN_MAX (256MB in), so it is a
+      // documented miss (same policy as "beyond the budget is a documented
+      // miss" above) -- this lane is about SPEED, not about extending reach
+      // past the existing budget.
+      assert.equal(verdict, null);
+    });
+
+    it("within budget, the bounded join is byte-for-byte the same as join-then-slice", () => {
+      // Proves the fix is a performance change, not a behavior change, for
+      // every shape that was already well-behaved before this review.
+      const cases = [
+        [],
+        ["a"],
+        ["a", "b", "c"],
+        ["git", "push", "--force", "origin", "main"],
+        ["aaaa", "bbbb"], // exercises a mid-element cut when max < combined length
+        [""],
+        ["", "x", ""],
+      ];
+      for (const parts of cases) {
+        for (const max of [1, 4, 6, 4096]) {
+          const oldWay = parts.join(" ").slice(0, max);
+          const newWay = joinArgvBounded(parts, max);
+          assert.equal(newWay, oldWay, `mismatch for parts=${JSON.stringify(parts)} max=${max}`);
+        }
+      }
+    });
+  });
 });
 
 describe("destructive reminder — a scan that cannot complete ends at the human", () => {
@@ -264,15 +883,27 @@ describe("destructive reminder — a scan that cannot complete ends at the human
   it("the display hint keeps the opposite direction, and they share one pattern list", () => {
     // bubble-format's wrapper must stay quiet on a surprise: a hint that throws
     // would break the bubble, which is what blocks tool execution.
-    const { detectIrreversible, detectIrreversibleStrict } = require("../src/bubble-format");
+    const {
+      detectIrreversible,
+      detectIrreversibleStrict,
+      detectIrreversibleMatches,
+    } = require("../src/bubble-format");
     const hostile = { get command() { throw new Error("hostile getter"); } };
     assert.equal(detectIrreversible("Bash", hostile), null);
     assert.throws(() => detectIrreversibleStrict("Bash", hostile));
     assert.equal(
-      fs.readFileSync(path.join(SRC, "permission-reminder.js"), "utf8").includes("detectIrreversibleStrict"),
+      fs.readFileSync(path.join(SRC, "permission-reminder.js"), "utf8").includes("detectIrreversibleMatches"),
       true,
       "the reminder must reuse the display matcher rather than carry a second pattern list"
     );
+    // The badge takes one decision and the gate takes all of them, but they are
+    // the same walk over the same list: pinning that by behavior rather than by
+    // the presence of a symbol name means a future second pattern list fails
+    // here even if it is spelled the same way.
+    const both = { command: "npm publish --dry-run && rm -rf /" };
+    const every = detectIrreversibleMatches("Bash", both);
+    assert.equal(every.length, 2, "both decisions in the request are returned");
+    assert.deepEqual(detectIrreversibleStrict("Bash", both), every[0], "the hint is the first of them");
   });
 });
 
@@ -748,6 +1379,294 @@ describe("destructive reminder — runtime behavior", () => {
     assert.equal(reminderField(requests[3]), null,
       "the setting off means no reminder field at all, in either tier");
     assert.doesNotMatch(requests[3].detail, /may not be recoverable/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4b. Tier 1 must require the SAME gates sweep()/session-grant flows use
+// ---------------------------------------------------------------------------
+
+describe("destructive reminder — tier 1 requires the same gates sweep uses (#1021 review 3)", () => {
+  // reminderIsWhyThisIsPending() used to re-evaluate automation policy with a
+  // PARTIAL copy of canAutoResolvePendingPermission()'s entry-level gates, so
+  // it could answer "yes, the reminder is why this is pending" (tier 1: "Held
+  // for your review") even when Codex permission intercept or the subagent
+  // automation gate was already going to hold the request regardless of the
+  // reminder. sweep()/canOfferSessionTrust() -- via
+  // canAutoResolvePendingPermission() -- would never have resolved that
+  // entry, so tier 2 ("Destructive action ... (matched)") is the honest line.
+  //
+  // The lanes above named "remote-only" never set entry.remoteOnly = true and
+  // never created a real session-automation grant, so they never modelled
+  // this shape. These lanes build a REAL session-automation-coordinator +
+  // store (the same wiring main.js uses, src/main.js ~1970-1972) and a REAL
+  // remoteOnly: true entry.
+  function makeSessionGrantRuntime(ctxOverrides = {}, entryOverrides = {}) {
+    const ctx = {
+      doNotDisturb: false,
+      lang: "en",
+      sessions: new Map([["session-grant-1", { cwd: "/repo", displayTitle: "remote" }]]),
+      isAgentEnabled: () => true,
+      isAgentPermissionsEnabled: () => true,
+      isAgentSubagentPermissionsEnabled: () => true,
+      isCodexPermissionInterceptEnabled: () => true,
+      // Global automation OFF: only the session grant below may auto-allow,
+      // which is what makes this a "remote-only + session grant" shape.
+      getPermissionAutomationMode: () => "off",
+      isDestructiveReminderEnabled: () => true,
+      getBubblePolicy: () => ({ enabled: false, autoCloseMs: 0 }),
+      ...ctxOverrides,
+    };
+    const permission = initPermission(ctx);
+    const store = createSessionAutomationStore();
+    const coordinator = createSessionAutomationCoordinator({
+      store,
+      getSession: (sid) => ctx.sessions.get(sid) || null,
+      listPending: () => permission.pendingPermissions,
+      getGlobalMode: () => ctx.getPermissionAutomationMode(),
+      canAutoResolvePendingPermission: permission.canAutoResolvePendingPermission,
+      resolvePermissionEntry: permission.resolvePermissionEntry,
+    });
+    ctx.getEffectivePermissionAutomationMode = (entry, options) => coordinator.getEffectiveMode(entry, options);
+    ctx.hasSessionAutomationOverride = (entry) => !!coordinator.getRecordForEntry(entry);
+    ctx.canOfferSessionTrust = (entry) => coordinator.canOfferSessionTrust(entry);
+
+    const identity = { agentId: "claude-code", sessionId: "session-grant-1" };
+    const grant = store.compareAndSet(identity, "auto-tools", {
+      expectedGrantId: null,
+      nextGrantId: "grant-1",
+      displayLabel: "remote",
+    });
+    assert.equal(grant.status, "applied", "test setup: the session grant itself must succeed");
+
+    const rawInput = entryOverrides.rawInput || { command: "git push --force origin main" };
+    const entry = {
+      res: liveResponse(),
+      sessionId: identity.sessionId,
+      agentId: identity.agentId,
+      toolName: "Bash",
+      toolInput: truncateDeep(rawInput),
+      ...preparePermissionReminder("Bash", rawInput),
+      interaction: classifyPermissionInteraction({ agentId: identity.agentId, toolName: "Bash" }),
+      sessionAutomationIdentity: Object.freeze({ eligible: true, reason: "eligible" }),
+      remoteOnly: true, // the real field -- this is what "remote-only" must mean
+      ...entryOverrides,
+    };
+    permission.pendingPermissions.push(entry);
+    return { ctx, permission, coordinator, store, entry, identity };
+  }
+
+  const reminderField = (req) => req.fields.find((f) => f.label === EN.approvalDetailReminder) || null;
+
+  function remoteFieldValue(rt) {
+    const requests = [];
+    const client = {
+      isEnabled: () => true,
+      requestApproval: (payload) => { requests.push(payload); return new Promise(() => {}); },
+    };
+    rt.ctx.getTelegramApprovalClient = () => client;
+    assert.equal(rt.permission.maybeStartRemoteApproval(rt.entry), true);
+    const field = reminderField(requests[0]);
+    return field ? field.value : null;
+  }
+
+  // Ground truth for "would sweep/session-grant resolve this if the reminder
+  // weren't the reason" cannot be read off canAutoResolvePendingPermission()
+  // on the LIVE entry directly: the reminder's own hold (this fixture always
+  // matches force-push) makes that predicate return false regardless of the
+  // Codex/subagent gate, which would mask exactly the signal these lanes
+  // need. So the oracle is a SEPARATE instance, identical in every gate
+  // except the destructiveActionReminder SETTING, which is off -- that
+  // forces permissionReminderHolds() to false without touching any other
+  // gate, which is the same "neutralize only the reminder hold" view
+  // reminderIsWhyThisIsPending() is supposed to compute.
+  function oracleWouldSweepResolve(gateOverrides, entryOverrides) {
+    const oracle = makeSessionGrantRuntime(
+      { ...gateOverrides, isDestructiveReminderEnabled: () => false },
+      entryOverrides
+    );
+    return oracle.permission.canAutoResolvePendingPermission(
+      oracle.entry, { sessionOnly: true, mode: "auto-tools" }
+    );
+  }
+
+  it("Codex intercept off: sweep would never resolve this, so the card must be tier 2, not tier 1", () => {
+    const gates = { isCodexPermissionInterceptEnabled: () => false };
+    const entryShape = { isCodex: true };
+
+    // Ground truth: the SAME predicate sweep()/session-grant flows call,
+    // with only the reminder's own hold neutralized.
+    assert.equal(
+      oracleWouldSweepResolve(gates, entryShape),
+      false,
+      "sweep must never resolve this entry while Codex intercept is off"
+    );
+
+    const rt = makeSessionGrantRuntime(gates, entryShape);
+    assert.equal(
+      rt.permission.buildPermissionBubblePayload(rt.entry).reminderTag,
+      null,
+      "the local card must not claim tier 1 (reminderTag null means: not the reason)"
+    );
+    assert.equal(
+      remoteFieldValue(rt),
+      EN.approvalDetailIrreversibleValue.replace("{reason}", "force-push"),
+      'the remote card must render tier 2 wording, not "Held for your review"'
+    );
+  });
+
+  it("control: Codex intercept ON -- tier 1 is correct here, and still renders", () => {
+    const gates = { isCodexPermissionInterceptEnabled: () => true };
+    const entryShape = { isCodex: true };
+
+    assert.equal(
+      oracleWouldSweepResolve(gates, entryShape),
+      true,
+      "sanity: with the gate on, sweep DOES resolve this entry (the control must discriminate)"
+    );
+
+    const rt = makeSessionGrantRuntime(gates, entryShape);
+    assert.equal(rt.permission.buildPermissionBubblePayload(rt.entry).reminderTag, "force-push");
+    assert.equal(
+      remoteFieldValue(rt),
+      EN.approvalDetailReminderValue.replace("{reason}", "force-push"),
+      "tier 1 wording"
+    );
+  });
+
+  it("subagent automation gate off: sweep would never resolve this, so the card must be tier 2", () => {
+    const gates = { isAgentSubagentPermissionsEnabled: () => false };
+    const entryShape = { subagentId: "sub-1" };
+
+    assert.equal(
+      oracleWouldSweepResolve(gates, entryShape),
+      false,
+      "sweep must never resolve a subagent entry while its automation gate is off"
+    );
+
+    const rt = makeSessionGrantRuntime(gates, entryShape);
+    assert.equal(rt.permission.buildPermissionBubblePayload(rt.entry).reminderTag, null);
+    assert.equal(
+      remoteFieldValue(rt),
+      EN.approvalDetailIrreversibleValue.replace("{reason}", "force-push")
+    );
+  });
+
+  it("control: subagent automation gate ON -- tier 1 is correct here, and still renders", () => {
+    const gates = { isAgentSubagentPermissionsEnabled: () => true };
+    const entryShape = { subagentId: "sub-1" };
+
+    assert.equal(
+      oracleWouldSweepResolve(gates, entryShape),
+      true,
+      "sanity: with the gate on, sweep DOES resolve this entry (the control must discriminate)"
+    );
+
+    const rt = makeSessionGrantRuntime(gates, entryShape);
+    assert.equal(rt.permission.buildPermissionBubblePayload(rt.entry).reminderTag, "force-push");
+    assert.equal(
+      remoteFieldValue(rt),
+      EN.approvalDetailReminderValue.replace("{reason}", "force-push")
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4c. The setting is read eagerly, and a pending entry's decision is frozen
+//     against it being toggled mid-flight (#1021 review 5)
+// ---------------------------------------------------------------------------
+
+describe("destructive reminder — the setting is scanned eagerly and pinned per pending entry (#1021 review 5)", () => {
+  it("the scan runs and stamps a verdict on the entry regardless of the setting (this module has no ctx)", () => {
+    // preparePermissionReminder()/evaluatePermissionReminder() take no ctx and
+    // so cannot read destructiveActionReminder at all -- "when it is off,
+    // nothing reads it" describes the DECISION/UI, not this call. This lane
+    // pins that the stamp is present unconditionally, so a future change that
+    // tried to make the scan itself conditional would have to touch a
+    // function signature this test grips.
+    const rawInput = { command: "git push --force origin main" };
+    const view = preparePermissionReminder("Bash", rawInput);
+    assert.deepEqual(view, { permissionReminder: { hold: true, tag: "force-push" } });
+  });
+
+  it("a request held while the setting is ON stays held after the setting is turned OFF mid-flight", () => {
+    // TOCTOU: the stamp is computed once, at accept time. Whether it HOLDS
+    // used to re-read the live setting on every call -- including from
+    // canAutoResolvePendingPermission(), which sweep()/session-grant flows
+    // call much later than accept time. That let an already-pending, already
+    // displayed "Held for your review" request become sweep-resolvable the
+    // instant the operator turned the setting off, with no human action on
+    // THIS request and no re-render of the card that was already shown.
+    let reminderEnabled = true;
+    const { permission, entry } = makeRuntime({ isDestructiveReminderEnabled: () => reminderEnabled });
+    assert.equal(entry.permissionReminder.hold, true, "fixture must actually match");
+
+    // At accept time (setting ON): a session grant must not sweep this.
+    assert.equal(
+      permission.canAutoResolvePendingPermission(entry, { sessionOnly: true, mode: "auto-tools" }),
+      false,
+      "held at accept time"
+    );
+    assert.equal(permission.buildPermissionBubblePayload(entry).reminderTag, "force-push");
+
+    // The operator turns the setting off. No human decision was made on
+    // this request, and nothing re-rendered its card.
+    reminderEnabled = false;
+
+    assert.equal(
+      permission.canAutoResolvePendingPermission(entry, { sessionOnly: true, mode: "auto-tools" }),
+      false,
+      "must STILL be held: the request's own decision was pinned at accept time, not re-read live"
+    );
+    assert.equal(
+      permission.buildPermissionBubblePayload(entry).reminderTag,
+      "force-push",
+      "the tag must stay stable too, so a late re-render (if one ever happens) agrees with the pinned decision"
+    );
+  });
+
+  it("control: a request that never matched the reminder is unaffected by the setting flipping either way", () => {
+    let reminderEnabled = false;
+    const { permission, entry } = makeRuntime(
+      { isDestructiveReminderEnabled: () => reminderEnabled },
+      { rawInput: { command: "npm test" } }
+    );
+    assert.equal(entry.permissionReminder, null, "fixture must not match anything");
+    assert.equal(
+      permission.canAutoResolvePendingPermission(entry, { sessionOnly: true, mode: "auto-tools" }),
+      true,
+      "an unmatched request resolves normally"
+    );
+    reminderEnabled = true; // flips the OTHER way after the fact
+    assert.equal(
+      permission.canAutoResolvePendingPermission(entry, { sessionOnly: true, mode: "auto-tools" }),
+      true,
+      "still resolves -- there was never a stamp for the setting to act on, so pinning changes nothing here"
+    );
+  });
+
+  it("a request accepted while the setting is OFF stays unresolvable-by-reminder even if the setting is turned ON later", () => {
+    // The symmetric direction: pinning must not accidentally make the OTHER
+    // toggle direction newly hold something it had already committed to
+    // resolving as an ordinary automatic allow.
+    let reminderEnabled = false;
+    const { permission, entry } = makeRuntime({ isDestructiveReminderEnabled: () => reminderEnabled });
+    assert.equal(entry.permissionReminder.hold, true, "fixture must actually match (the STAMP does not care about the setting)");
+
+    // Setting OFF at accept time: sweep must resolve it like any ordinary request.
+    assert.equal(
+      permission.canAutoResolvePendingPermission(entry, { sessionOnly: true, mode: "auto-tools" }),
+      true,
+      "setting off at accept time: not held"
+    );
+
+    reminderEnabled = true; // operator turns it ON while this request is still pending
+
+    assert.equal(
+      permission.canAutoResolvePendingPermission(entry, { sessionOnly: true, mode: "auto-tools" }),
+      true,
+      "must STILL resolve: pinned at accept time as not-held, so turning the setting on later does not retroactively grab this request"
+    );
   });
 });
 

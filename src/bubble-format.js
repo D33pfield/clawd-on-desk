@@ -162,6 +162,16 @@
   // `powershell` and `run_shell_command` were missing: they are Claude-compatible
   // tool names that permission automation is willing to allow on its own, so a
   // command sent under one of them was never scanned at all.
+  //
+  // #1021 review (6): adding `powershell` here means a PowerShell-shaped
+  // request is now SCANNED -- it does not mean PowerShell/cmd destructive
+  // syntax is RECOGNIZED. IRREVERSIBLE_PATTERNS above is Unix-shaped only
+  // (`git`, `rm`, `npm`, `gh`, `terraform`, `kubectl`, …); it has no rule for
+  // `Remove-Item -Recurse -Force`, `cmd /c rmdir /s /q`, `del /f`, or any
+  // other PowerShell/cmd-native destructive form, so those are silent misses
+  // under every tool name here, `powershell` included. Do not read this set
+  // as Windows destructive-command coverage -- known-miss fixtures pin the
+  // gap in test/permission-destructive-reminder.test.js.
   const SHELL_TOOLS = new Set([
     "bash",
     "exec",
@@ -188,6 +198,17 @@
     // the rest as quoted = no split = the quiet direction (precision over recall).
     const segs = [];
     let cur = "", quote = null;
+    // True only when the character just appended was an UNQUOTED, UNESCAPED '>'.
+    // `cur` ending in '>' is a different question: in `echo \\>& rm -rf x` that '>'
+    // is an argument to echo, so the '&' after it really does separate commands.
+    let lastWasRedirect = false;
+    // Whether the NEXT character starts a shell word. `#` opens a comment only
+    // there, and "there" cannot be read off the raw previous character: in
+    // `echo foo\\ # & rm -rf x` the space is escaped, so `foo #` is one word and
+    // bash really does run the rm; while in `echo safe;# & rm -rf x` there is no
+    // space at all and `#` really is a comment. Both are decided by the state
+    // machine, not by cmd[i-1].
+    let atWordStart = true;
     for (let i = 0; i < cmd.length; i++) {
       const ch = cmd[i];
       if (quote) {
@@ -196,19 +217,67 @@
         cur += ch;
         continue;
       }
+      // A backslash-newline is a LINE CONTINUATION: the shell DELETES it before the
+      // command is parsed. Keeping it in `cur` left `echo safe;\\<newline>rm -rf x`
+      // with a segment that begins `\\<newline>rm`, which the anchored `^rm`
+      // pattern cannot match — the delete the shell actually runs was invisible.
+      // Removing it also makes it transparent to word-start and redirection
+      // state, which is what the shell does.
+      if (ch === "\\" && cmd[i + 1] === "\n") { i++; continue; }
       if (ch === "\\") {                    // escaped char outside quotes = literal
         cur += ch + (cmd[i + 1] || ""); i++;  // (`echo docs\; npm publish` must not split)
+        lastWasRedirect = false;
+        // An escaped character is part of a word, so what follows it is NOT a word
+        // start: `echo \ #; rm -rf ./d` passes ` #` to echo and then runs the rm.
+        // (The line-continuation branch above returns before this and stays
+        // transparent, which is the one case where the shell removes the pair.)
+        atWordStart = false;
         continue;
       }
-      if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue; }
-      if (ch === "\n" || ch === ";" || ch === "|" || (ch === "&" && cmd[i + 1] === "&")) {
-        if (ch === "&") i++;                    // consume '&&'
+      if (ch === '"' || ch === "'") { quote = ch; cur += ch; lastWasRedirect = false; atWordStart = false; continue; }
+      // An unquoted '#' at the start of a word comments out the rest of the line,
+      // so nothing after it is a command position. Without this, splitting on a
+      // lone '&' invented one: `echo safe # & rm -rf x` runs only echo, and the
+      // matcher reported a file-delete the shell never reaches.
+      // KNOWN MISS, and a deliberate one: a heredoc body is DATA, so separators
+      // inside it are not command positions and this splitter reports them as if
+      // they were. `;` already did that before a lone `&` was added here, so the
+      // class is pre-existing and `&` widens it. The direction is a false HOLD —
+      // a human glance, not an unreviewed deletion.
+      //
+      // An attempt to skip heredoc bodies was written and REVERTED: it turned a
+      // cheap failure into three expensive ones — a `;` on the opener's own line
+      // was swallowed, `<<E'OF'` parsed the delimiter as `E`, and `$((1<<2))`
+      // read an arithmetic left-shift as a heredoc opener. Each hid a command the
+      // shell runs. Doing this correctly needs real parsing, not a scan, and that
+      // is a bigger change than this one should carry.
+      if (ch === "#" && atWordStart) {
+        const nl = cmd.indexOf("\n", i);
+        if (nl === -1) break;
+        i = nl - 1;                            // let the loop land on the newline
+        lastWasRedirect = false;
+        continue;
+      }
+      // A LONE `&` backgrounds one command and starts the next, exactly like `;`.
+      // It was not a separator here, so `npm publish --dry-run & rm -rf ./data`
+      // stayed ONE segment: only the publish matched, and a caller's exception
+      // for it then covered a delete that was never examined. `&>` and `>&` are
+      // redirections rather than separators and stay joined to their command.
+      const ampSeparates = ch === "&" && cmd[i + 1] !== ">" && !lastWasRedirect;
+      if (ch === "\n" || ch === ";" || ch === "|" || ampSeparates) {
+        if (ch === "&" && cmd[i + 1] === "&") i++;  // consume '&&' second amp
         if (cmd[i + 1] === "|" && ch === "|") i++;  // consume '||' second bar
         segs.push(cur); cur = "";
+        atWordStart = true;
         if (segs.length >= SEGMENT_MAX) return segs;  // segment cap
         continue;
       }
       cur += ch;
+      lastWasRedirect = ch === ">";
+      // Same IFS point: a carriage return does not start a new word, so it does
+      // not put a following `#` at a word start. `echo safe\r#; rm -rf ./d`
+      // runs the delete, and reading CR as whitespace hid it behind a comment.
+      atWordStart = ch === " " || ch === "\t" || ch === "\n";
     }
     segs.push(cur);
     return segs;
@@ -218,6 +287,11 @@
     const out = [];
     for (let seg of splitOutsideQuotes(cmd)) {
       seg = seg.trim();
+      // A subshell or group opens with `(` and the command starts inside it, so
+      // `echo safe; (rm -rf ./d)` had a segment beginning `(` that the anchored
+      // patterns could not match while the shell ran the delete. `((` is
+      // arithmetic rather than a command position and is left alone.
+      while (seg.startsWith("(") && !seg.startsWith("((")) seg = seg.slice(1).trim();
       let guard = 0;
       while (WRAPPER.test(seg) && guard++ < 5) seg = seg.replace(WRAPPER, "");
       if (seg) out.push(seg);
@@ -232,32 +306,60 @@
   // second caller from drifting into a second pattern list.
   // The matched `segment` is returned so a caller can apply its own carve-outs
   // (a documented `--dry-run` exception, say) without re-splitting the command.
-  function detectIrreversibleStrict(name, input) {
-    {
-      const toolName = typeof name === "string" ? name.trim().toLowerCase() : "";
-      const obj = input && typeof input === "object" ? input : {};
-      // Shell-ish tools: scan the command string, anchored per segment.
-      if (SHELL_TOOLS.has(toolName)) {
-        let cmd = firstStringValue(obj, ["command", "CommandLine", "Command", "cmd", "script"]);
-        if (!cmd) return null;
-        // Cap the scanned prefix: the command string is attacker-influenced (a
-        // prompt-injected agent controls it). Hard cap = O(4KB) by construction.
-        if (cmd.length > SCAN_MAX) cmd = cmd.slice(0, SCAN_MAX);
-        for (const seg of segmentCommands(cmd)) {
-          for (const p of IRREVERSIBLE_PATTERNS) {
-            if (p.re.test(seg)) return { tag: p.tag, segment: seg };
+  // Every destructive decision in the request, not just the first one.
+  //
+  // The badge only ever needed one: it draws a single icon, so it stops at the
+  // first match. A gate cannot stop there. `npm publish --dry-run && rm -rf /`
+  // has two decisions, and a caller that carves out the first one has to be able
+  // to see the second, or the carve-out silently covers the whole request. The
+  // same is true inside one segment: `git push --force-with-lease --delete`
+  // carries a lease-guarded force-push AND a remote-delete, and only the first
+  // was ever tested.
+  //
+  // `stopAfter` keeps the badge path exactly as cheap as it was -- it asks for
+  // one and gets one. The scan stays bounded by construction: at most
+  // SEGMENT_MAX segments times the fixed pattern list, so there is no new budget
+  // to state and nothing here grows with the accepted input.
+  function detectIrreversibleMatches(name, input, stopAfter) {
+    const limit = typeof stopAfter === "number" && stopAfter > 0 ? stopAfter : Infinity;
+    const found = [];
+    const toolName = typeof name === "string" ? name.trim().toLowerCase() : "";
+    const obj = input && typeof input === "object" ? input : {};
+    // Shell-ish tools: scan the command string, anchored per segment.
+    if (SHELL_TOOLS.has(toolName)) {
+      let cmd = firstStringValue(obj, ["command", "CommandLine", "Command", "cmd", "script"]);
+      if (!cmd) return found;
+      // Cap the scanned prefix: the command string is attacker-influenced (a
+      // prompt-injected agent controls it). Hard cap = O(4KB) by construction.
+      if (cmd.length > SCAN_MAX) cmd = cmd.slice(0, SCAN_MAX);
+      for (const seg of segmentCommands(cmd)) {
+        for (const p of IRREVERSIBLE_PATTERNS) {
+          if (p.re.test(seg)) {
+            found.push({ tag: p.tag, segment: seg });
+            if (found.length >= limit) return found;
           }
-          if (DB_CLIENTS.test(seg) && DB_DESTROY.test(seg)) return { tag: "db-destroy", segment: seg };
         }
-        return null;
+        if (DB_CLIENTS.test(seg) && DB_DESTROY.test(seg)) {
+          found.push({ tag: "db-destroy", segment: seg });
+          if (found.length >= limit) return found;
+        }
       }
-      // Explicit destructive file tools only (generic "delete" substrings would
-      // over-match MCP tools like delete_draft — stay conservative).
-      if (toolName === "delete_file" || toolName === "deletefile" || toolName === "remove_file") {
-        return { tag: "file-delete", segment: null };
-      }
-      return null;
+      return found;
     }
+    // Explicit destructive file tools only (generic "delete" substrings would
+    // over-match MCP tools like delete_draft — stay conservative).
+    if (toolName === "delete_file" || toolName === "deletefile" || toolName === "remove_file") {
+      found.push({ tag: "file-delete", segment: null });
+    }
+    return found;
+  }
+
+  // First match only, for the display hint. Delegates rather than keeping its
+  // own copy of the walk: two traversals over one pattern list is how the badge
+  // and the gate would start disagreeing about what they examined.
+  function detectIrreversibleStrict(name, input) {
+    const found = detectIrreversibleMatches(name, input, 1);
+    return found.length ? found[0] : null;
   }
 
   function detectIrreversible(name, input) {
@@ -285,7 +387,7 @@
     return { server, tool, display };
   }
 
-  const api = { formatDetail, formatAntigravityDetail, truncate, firstStringValue, parseMcpToolName, detectIrreversible, detectIrreversibleStrict, SCAN_MAX, SEGMENT_MAX };
+  const api = { formatDetail, formatAntigravityDetail, truncate, firstStringValue, parseMcpToolName, detectIrreversible, detectIrreversibleStrict, detectIrreversibleMatches, SCAN_MAX, SEGMENT_MAX };
 
   if (typeof module === "object" && module.exports) {
     module.exports = api;
