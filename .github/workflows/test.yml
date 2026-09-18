@@ -31,4 +31,9 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: npm ci
-      - run: npm test
+      - name: Run full suite
+        if: runner.os != 'Linux'
+        run: npm test
+      - name: Run full suite with a Linux display
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm test

@@ -66,10 +66,11 @@ describe("package build config", () => {
       ]);
       const setupNode = job.steps.find((step) => step.uses === "actions/setup-node@v4");
       assert.deepStrictEqual(setupNode.with, { "node-version-file": ".nvmrc" });
-      assert.deepStrictEqual(
-        job.steps.filter((step) => step.run).map((step) => step.run),
-        ["npm ci", "npm test"],
-      );
+      assert.ok(job.steps.some((step) => step.run === "npm ci"));
+      const nonLinuxTest = job.steps.find((step) => step.run === "npm test");
+      assert.strictEqual(nonLinuxTest.if, "runner.os != 'Linux'");
+      const linuxTest = job.steps.find((step) => step.run === "xvfb-run -a npm test");
+      assert.strictEqual(linuxTest.if, "runner.os == 'Linux'");
     });
 
     it("keeps tag release jobs on full tests and limits focused mode to manual dispatch", () => {

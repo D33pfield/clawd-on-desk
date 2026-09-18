@@ -445,9 +445,7 @@ function registerKimiHooksAtTarget(target, options = {}) {
  * @returns {{ added: number, skipped: number, updated: number, targets: object[] }}
  */
 function registerKimiHooks(options = {}) {
-  const missingDeps = findMissingHookDependencies(["kimi-hook.js"], {
-    hooksDir: options.hooksDir || __dirname,
-  });
+  const missingDeps = findMissingHookDependencies(["kimi-hook.js"]);
   if (missingDeps.length) {
     const error = new Error(formatMissingHookDependencies(missingDeps));
     error.code = "KIMI_HOOK_DEPENDENCY_MISSING";
