@@ -1,0 +1,43 @@
+name: C0 Exact Baseline
+
+on:
+  push:
+    branches:
+      - fix/v1.1.0-c0-baseline
+
+permissions:
+  contents: read
+
+concurrency:
+  group: c0-exact-baseline-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: npm test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    steps:
+      - name: Check out exact product baseline
+        uses: actions/checkout@v4
+        with:
+          ref: ca5c729d67c7760a2629626cf8dfbb0701aa2cca
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Assert exact product baseline
+        run: >-
+          node -e "const { execFileSync } = require('node:child_process');
+          const expected = 'ca5c729d67c7760a2629626cf8dfbb0701aa2cca';
+          const actual = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          if (actual !== expected) throw new Error('baseline mismatch: ' + actual);
+          console.log('C0 product baseline:', actual);"
+      - run: npm ci
+      - run: npm test
