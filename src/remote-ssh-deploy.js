@@ -72,6 +72,7 @@ const {
 // tombstone because it cannot participate in profile identity transactions.
 const HOOK_FILES = [
   "server-config.js",
+  "appimage-hook-materializer.js",
   "json-utils.js",
   "shared-process.js",
   "pid-cache.js",

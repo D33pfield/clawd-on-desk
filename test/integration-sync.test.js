@@ -189,6 +189,26 @@ describe("integration sync runtime", () => {
     ]);
   });
 
+  it("fallback sync surfaces a statusline {error} without failing the hooks-sync status", () => {
+    allowedIntegrationFailureWarningPatterns.push(
+      /^Clawd:\s+failed to sync Claude Code statusline:\s+boom$/
+    );
+    const { runtime } = makeRuntime({
+      ctx: { syncClawdHooksImpl: undefined, claudeQuotaCollectionEnabled: true },
+    });
+    withPatchedExport("../hooks/install.js", "registerHooks", () => ({ added: 1, updated: 0, removed: 0 }), () => {
+      withPatchedExport(
+        "../hooks/install.js",
+        "registerClaudeStatusline",
+        () => ({ installed: false, error: { reason: "invalid-appimage-path", message: "boom" } }),
+        () => {
+          const result = runtime.syncClawdHooks({ source: "startup", automatic: false });
+          assert.strictEqual(result.status, "ok");
+        }
+      );
+    });
+  });
+
   it("repairIntegrationForAgent('claude-code') syncs as an explicit, non-automatic doctor repair", () => {
     const { runtime, calls } = makeRuntime();
 
