@@ -189,6 +189,23 @@ describe("state stale cleanup decisions", () => {
     assert.deepStrictEqual(calls, [10], "dead per-event wrapper must not be probed once the agent is live");
   });
 
+  it("keeps an expired idle session when its agent is alive even if the wrapper source is dead", () => {
+    const now = 2_000_000;
+    const { result, calls } = decision(session({
+      state: "idle",
+      agentId: "claude-code",
+      agentPid: 10,
+      sourcePid: 20,
+      updatedAt: now - SESSION_STALE_MS - 1,
+    }), {
+      now,
+      alivePids: new Set([10]),
+    });
+
+    assert.deepStrictEqual(result, { action: null });
+    assert.deepStrictEqual(calls, [10], "dead per-event wrapper must not be probed once the agent is live");
+  });
+
   it("preserves source-death fallback when no reliable agent pid exists", () => {
     const now = 2_000_000;
     const { result, calls } = decision(session({

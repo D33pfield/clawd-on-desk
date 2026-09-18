@@ -166,8 +166,14 @@ function buildClaudeLaunchEnv(profile, baseEnv = process.env) {
   const normalized = normalizeClaudeProfile(profile);
   if (!normalized) throw new TypeError("launchClaudeSession: invalid Claude profile");
   const env = { ...baseEnv };
-  if (normalized.kind === "default") delete env.CLAUDE_CONFIG_DIR;
-  else env.CLAUDE_CONFIG_DIR = normalized.configDir;
+  // Windows environment keys are case-insensitive even though spreading
+  // process.env creates an ordinary case-sensitive object. Remove every case
+  // variant before either leaving the default profile unset or installing the
+  // one canonical custom value.
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === "claude_config_dir") delete env[key];
+  }
+  if (normalized.kind === "custom") env.CLAUDE_CONFIG_DIR = normalized.configDir;
   return env;
 }
 
@@ -176,6 +182,13 @@ function buildPosixClaudeProfilePrefix(profile) {
   return profile.kind === "default"
     ? "env -u CLAUDE_CONFIG_DIR "
     : `env CLAUDE_CONFIG_DIR=${quoteForPosixShellArg(profile.configDir)} `;
+}
+
+function buildPowerShellClaudeProfilePrefix(profile) {
+  if (!profile) return "";
+  return profile.kind === "default"
+    ? "Remove-Item -LiteralPath 'Env:CLAUDE_CONFIG_DIR' -ErrorAction SilentlyContinue; "
+    : `$env:CLAUDE_CONFIG_DIR = ${quoteForPowerShell(profile.configDir)}; `;
 }
 
 // Build the ordered list of terminal launch candidates. Shell-backed
@@ -193,11 +206,13 @@ function buildTerminalCandidates(claudePath, claudeArgs, plat = platform(), work
     // before cmd.exe can pass it through an npm .cmd shim's second parse.
     const cmdLine = buildCmdLaunchCommand(claudePath, claudeArgs);
     // powershell.exe -Command: call operator `&` + single-quoted PS strings.
-    const psCmd = "& " + [claudePath, ...claudeArgs].map(quoteForPowerShell).join(" ");
+    const psCmd = buildPowerShellClaudeProfilePrefix(profile)
+      + "& " + [claudePath, ...claudeArgs].map(quoteForPowerShell).join(" ");
     // wt.exe runs its commandline through CreateProcess (no shell), which cannot
     // execute an npm .cmd/.bat shim or an extensionless POSIX script directly —
-    // that raises ERROR_BAD_EXE_FORMAT (0x800700c1). Route the tab through
-    // cmd.exe (a real PE), which resolves and runs the shim.
+    // that raises ERROR_BAD_EXE_FORMAT (0x800700c1). The ordinary launch path
+    // therefore routes the tab through cmd.exe (a real PE), which resolves and
+    // runs the shim; the profile-pinned path below uses PowerShell instead.
     //
     // Two quoting hazards, both neutralized by the `call "<path>"` prefix:
     //  - Windows Terminal re-tokenizes the args after `--` and re-quotes only
@@ -209,10 +224,21 @@ function buildTerminalCandidates(claudePath, claudeArgs, plat = platform(), work
     // keeps the quoted path intact whether wt forwarded it raw or re-quoted it.
     // (We still avoid cmdLine's `/s ""..""` idiom: cmd.exe understands it but
     // wt's tokenizer mangles it.) This path still needs real-Windows validation.
+    // A profile-pinned resume must carry the assignment inside the command
+    // handed to Windows Terminal. wt.exe may forward the tab to an already
+    // running Terminal process, in which case the spawn env below is not the
+    // shell's parent environment. PowerShell's literal single-quoted command
+    // gives that tab an explicit set/unset operation before invoking Claude.
+    const wtArgs = profile
+      ? [
+        "--", "powershell.exe", "-NoExit", "-EncodedCommand",
+        Buffer.from(psCmd, "utf16le").toString("base64"),
+      ]
+      : ["--", "cmd.exe", "/d", "/v:off", "/k", "call", quoteCmdExecutablePath(claudePath), ...claudeArgs];
     return [
       {
         bin: "wt.exe",
-        args: ["--", "cmd.exe", "/d", "/v:off", "/k", "call", quoteCmdExecutablePath(claudePath), ...claudeArgs],
+        args: wtArgs,
         extraOpts: { shell: false, windowsVerbatimArguments: true },
       },
       {

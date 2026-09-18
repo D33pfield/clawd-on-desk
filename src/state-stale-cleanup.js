@@ -241,7 +241,11 @@ function getStaleSessionDecision(session, options = {}) {
   // sessionStaleMs === 0 disables the idle/non-working age cutoff entirely.
   if (sessionStaleMs > 0 && age > sessionStaleMs) {
     if (session.pidReachable && session.sourcePid) {
-      if (!isProcessAliveOnce(session.sourcePid)) {
+      // A per-event wrapper is weaker evidence than a reachable live agent.
+      // The special per-conversation desktop cutoffs above still win; for
+      // ordinary sessions, only fall back to source death when no live agent
+      // process can vouch for the session.
+      if (!agentAlive && !isProcessAliveOnce(session.sourcePid)) {
         return { action: "delete", reason: "source-exit" };
       }
       if (session.state !== "idle") {
