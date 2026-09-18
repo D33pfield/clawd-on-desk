@@ -113,8 +113,9 @@ About and every README variant.
 
 ### Validation Status
 
-After the release-candidate review and cross-platform test repairs above,
-local Gate D passed on the current release candidate: the release-version and
+After the release-candidate review, production hardening, and cross-platform
+test repairs above, local Gate D passed on the current release candidate: the
+release-version and
 17-contributor contracts passed; the source suite reported 10,769 tests
 (10,723 passed, 0 failed, 46 platform-only skips); Electron 41.10.4 was
 verified; and the repository asset audit reported 0 errors with the existing

@@ -278,7 +278,10 @@ for (const shellMode of ["default", "powershell"]) {
 it(`real local ${shellMode} child retains JSON, cwd, environment and stdout while telemetry failure stays isolated`, { skip: shellMode === "powershell" && process.platform !== "win32" }, () => {
   const f = fixture(process.platform, { type: "command", command: "placeholder", padding: 4 });
   const script = path.join(f.dir, "original script.cjs");
+  const cwdProbeName = "cwd-identity-probe.txt";
+  const cwdProbeValue = "same generated statusline directory";
   fs.writeFileSync(script, 'let text="";process.stdin.on("data",x=>text+=x);process.stdin.on("end",()=>process.stdout.write(JSON.stringify({payload:JSON.parse(text),cwd:process.cwd(),marker:process.env.CHAIN_TEST_MARKER})));');
+  fs.writeFileSync(path.join(f.dir, cwdProbeName), cwdProbeValue);
   const custom = { type: "command", command: `node ${JSON.stringify(script.replace(/\\/g, "/"))}`, padding: 4 };
   fs.writeFileSync(f.settingsPath, JSON.stringify({ ...f.settings, statusLine: custom }));
   registerClaudeStatusline({ ...f.opts, chainExisting: true });
@@ -297,6 +300,7 @@ it(`real local ${shellMode} child retains JSON, cwd, environment and stdout whil
   const actualDir = fs.statSync(output.cwd);
   assert.equal(actualDir.dev, expectedDir.dev);
   assert.equal(actualDir.ino, expectedDir.ino);
+  assert.equal(fs.readFileSync(path.join(output.cwd, cwdProbeName), "utf8"), cwdProbeValue);
 });
 }
 
