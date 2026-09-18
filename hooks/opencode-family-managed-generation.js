@@ -84,6 +84,18 @@ function resolveCanonical(target, platform, fsImpl) {
       try {
         const real = realpathSync(cursor);
         if (real) {
+          // Windows can report ENOENT (instead of ENOTDIR) for a missing path
+          // below an existing file. If we walked up at least one component,
+          // only a real directory may anchor the missing lexical suffix;
+          // otherwise a file such as ~/.config could be mistaken for a safe
+          // config-directory ancestor.
+          if (missingSuffix.length > 0) {
+            let isDirectory = false;
+            try {
+              isDirectory = fsy.statSync(real).isDirectory();
+            } catch {}
+            if (!isDirectory) break;
+          }
           normalized = normalize(missingSuffix.length
             ? modifier.join(real, ...missingSuffix)
             : real);

@@ -123,6 +123,40 @@ describe("#1026 canonicalizer", () => {
     assert.strictEqual(before.configDirHash, after.configDirHash);
     assert.strictEqual(before.targetRoot, after.targetRoot);
   });
+
+  it("does not anchor a missing config suffix to a file when realpath reports ENOENT", () => {
+    const home = tmp("clawd-canon-file-ancestor-");
+    fs.writeFileSync(path.join(home, ".config"), "not a directory", "utf8");
+    const windowsLikeRealpath = (value) => {
+      try {
+        return fs.realpathSync(value);
+      } catch (error) {
+        if (error && error.code === "ENOTDIR") {
+          const mapped = new Error(error.message);
+          mapped.code = "ENOENT";
+          throw mapped;
+        }
+        throw error;
+      }
+    };
+    windowsLikeRealpath.native = windowsLikeRealpath;
+    const windowsLikeFs = new Proxy(fs, {
+      get(target, key, receiver) {
+        if (key === "realpathSync") return windowsLikeRealpath;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+
+    const target = mg.resolveManagedTarget({
+      cfg: OPENCODE_CFG,
+      agentId: "opencode",
+      homeDir: home,
+      fs: windowsLikeFs,
+      platform: process.platform,
+    });
+
+    assert.strictEqual(target.canonicalConfigDirResolved, false);
+  });
 });
 
 describe("#1026 managed installer register/unregister", () => {

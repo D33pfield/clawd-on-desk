@@ -291,7 +291,12 @@ it(`real local ${shellMode} child retains JSON, cwd, environment and stdout whil
   }
   const result = spawnSync(process.execPath, ["-e", harness], { cwd: f.dir, env, input: JSON.stringify(payload), encoding: "utf8", timeout: 8000 });
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), { payload, cwd: fs.realpathSync(f.dir), marker: "kept" });
+  const output = JSON.parse(result.stdout);
+  assert.deepEqual({ payload: output.payload, marker: output.marker }, { payload, marker: "kept" });
+  const expectedDir = fs.statSync(f.dir);
+  const actualDir = fs.statSync(output.cwd);
+  assert.equal(actualDir.dev, expectedDir.dev);
+  assert.equal(actualDir.ino, expectedDir.ino);
 });
 }
 

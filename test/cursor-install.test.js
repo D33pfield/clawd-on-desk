@@ -190,7 +190,9 @@ describe("Cursor hook installer", () => {
     assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), contentBefore);
   });
 
-  it("keeps one persistent Cursor target across changing AppImage mount roots", () => {
+  it("keeps one persistent Cursor target across changing AppImage mount roots", {
+    skip: process.platform === "win32" ? "requires POSIX AppImage path semantics" : false,
+  }, () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cursor-appimage-"));
     tempDirs.push(root);
     const materializedRoot = path.join(root, "materialized");
@@ -234,7 +236,9 @@ describe("Cursor hook installer", () => {
     assert.strictEqual(readJson(hooksPath).hooks.stop[0].command, firstCommand);
   });
 
-  it("migrates the exact released AppImage mount command but not basename lookalikes", () => {
+  it("migrates the exact released AppImage mount command but not basename lookalikes", {
+    skip: process.platform === "win32" ? "requires POSIX AppImage path semantics" : false,
+  }, () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cursor-appimage-legacy-"));
     tempDirs.push(root);
     const hooksPath = path.join(root, "hooks.json");
@@ -383,7 +387,7 @@ describe("Cursor hook installer", () => {
     const settings = readJson(hooksPath);
     const expected = buildCursorHookCommand(
       "C:\\Program Files\\nodejs\\node.exe",
-      path.resolve(__dirname, "..", "hooks", "cursor-hook.js").replace(/\\/g, "/"),
+      path.resolve(__dirname, "..", "hooks", "cursor-hook.js"),
       "win32"
     );
     assert.strictEqual(settings.hooks.stop[0].command, expected);

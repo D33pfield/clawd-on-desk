@@ -536,7 +536,9 @@ describe("Claude AppImage hook registration", () => {
 });
 
 describe("Claude AppImage health/spatial contract", () => {
-  it("classifies a complete generation healthy, a missing generation repairable, and a missing source unrepairable", () => {
+  it("classifies a complete generation healthy, a missing generation repairable, and a missing source unrepairable", {
+    skip: process.platform === "win32" ? "requires POSIX AppImage executable semantics" : false,
+  }, () => {
     const { options, settingsPath } = makeOptions();
     registerHooks(options);
     const raw = fs.readFileSync(settingsPath, "utf8");
@@ -573,7 +575,9 @@ describe("Claude AppImage health/spatial contract", () => {
     assert.strictEqual(hasNoAutomaticRepairWork(sourceMissing), false);
   });
 
-  it("keeps one stable target-generation repair class whether the generation is deleted or corrupt", () => {
+  it("keeps one stable target-generation repair class whether the generation is deleted or corrupt", {
+    skip: process.platform === "win32" ? "requires POSIX AppImage executable semantics" : false,
+  }, () => {
     const { options, settingsPath } = makeOptions();
     registerHooks(options);
     const raw = fs.readFileSync(settingsPath, "utf8");

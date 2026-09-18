@@ -21,7 +21,8 @@ checks.
   plugin into a verified, content-addressed generation under the user's home
   instead of registering files from the application bundle. Ownership,
   locking, tuple options, interrupted cleanup, symlinked homes, and uninstall
-  all fail closed without taking over foreign entries.
+  all fail closed without taking over foreign entries, including when Windows
+  reports a missing child beneath an existing file ancestor.
 - **Durable session recovery** (#1010) — stores bounded, profile-aware Claude
   session history so eligible conversations can be resumed after a reboot.
   Legacy rows without verifiable profile provenance remain visible but cannot
@@ -112,10 +113,10 @@ About and every README variant.
 
 ### Validation Status
 
-After the documentation and test-guard review repairs above, local Gate D
-passed on the current release candidate: the release-version and
-17-contributor contracts passed; the source suite reported 10,768 tests
-(10,722 passed, 0 failed, 46 platform-only skips); Electron 41.10.4 was
+After the release-candidate review and cross-platform test repairs above,
+local Gate D passed on the current release candidate: the release-version and
+17-contributor contracts passed; the source suite reported 10,769 tests
+(10,723 passed, 0 failed, 46 platform-only skips); Electron 41.10.4 was
 verified; and the repository asset audit reported 0 errors with the existing
 tracked-tree warning-budget warning (56.46 MiB tracked, 23.35 MiB package
 inputs). Exact-head Windows/macOS/Linux CI, packaged-app inspection,

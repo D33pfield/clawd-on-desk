@@ -856,7 +856,9 @@ describe("server Claude hook operation queue (default, non-injected implementati
     });
   });
 
-  it("uses the injected AppImage resolver context for preflight, mutation, and verify", async () => {
+  it("uses the injected AppImage resolver context for preflight, mutation, and verify", {
+    skip: process.platform === "win32" ? "requires POSIX AppImage executable semantics" : false,
+  }, async () => {
     const fs = require("node:fs");
     const os = require("node:os");
     const path = require("node:path");
