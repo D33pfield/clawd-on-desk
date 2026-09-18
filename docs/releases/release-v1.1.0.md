@@ -112,12 +112,13 @@ About and every README variant.
 
 ### Validation Status
 
-Local Gate D passed on the preparation candidate: the release-version and
-17-contributor contracts passed; the source suite reported 10,768 tests
-(10,722 passed, 0 failed, 46 platform-only skips); Electron 41.10.4 was
-verified; and the repository asset audit reported 0 errors with the existing
-tracked-tree warning-budget warning (56.46 MiB tracked, 23.35 MiB package
-inputs). Exact-head Windows/macOS/Linux CI, packaged-app inspection,
+After the documentation-only review repairs above, local Gate D passed on the
+current release candidate: the release-version and 17-contributor contracts
+passed; the source suite reported 10,768 tests (10,722 passed, 0 failed,
+46 platform-only skips); Electron 41.10.4 was verified; and the repository
+asset audit reported 0 errors with the existing tracked-tree warning-budget
+warning (56.46 MiB tracked, 23.35 MiB package inputs). Exact-head
+Windows/macOS/Linux CI, packaged-app inspection,
 Windows/WSL device checks, downloaded draft-asset smoke, and a signed
 v1.0.0 → v1.1.0 updater exercise are separate gates and remain **NOT TESTED**
 until recorded otherwise. Local source tests do not stand in for those layers.
