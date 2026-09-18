@@ -6,14 +6,13 @@ const path = require("path");
 const os = require("os");
 const { resolveNodeBin } = require("./server-config");
 const {
-  readJsonFile,
   writeJsonAtomic,
   writeJsonAtomicWithBackup,
   asarUnpackedPath,
-  commandMatchesMarker,
-  extractExistingNodeBin,
+  CURSOR_HOOK_SENTINEL,
+  decodeWindowsEncodedCommand,
   formatNodeHookCommand,
-  removeMatchingCommandHooks,
+  stripUtf8Bom,
 } = require("./json-utils");
 const MARKER = "cursor-hook.js";
 const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".cursor");
@@ -33,6 +32,10 @@ const CURSOR_HOOK_EVENTS = [
   "stop",
 ];
 
+function resolveCursorHookScript() {
+  return asarUnpackedPath(path.resolve(__dirname, "cursor-hook.js").replace(/\\/g, "/"));
+}
+
 function buildCursorHookCommand(nodeBin, hookScript, platform = process.platform) {
   // Cursor's Windows launcher is PowerShell (including its temp-file stdin
   // bridge). Calling Node directly preserves spaced paths; an extra cmd /s /c
@@ -40,7 +43,155 @@ function buildCursorHookCommand(nodeBin, hookScript, platform = process.platform
   return formatNodeHookCommand(nodeBin, hookScript, {
     platform,
     windowsWrapper: "powershell",
+    args: [CURSOR_HOOK_SENTINEL],
   });
+}
+
+function parseSimpleCommandTokens(command) {
+  if (typeof command !== "string" || !command.trim() || /[\r\n\0]/.test(command)) return null;
+  const tokens = [];
+  let index = 0;
+  while (index < command.length) {
+    while (index < command.length && /\s/.test(command[index])) index++;
+    if (index >= command.length) break;
+    const quote = command[index] === '"' || command[index] === "'" ? command[index++] : null;
+    let value = "";
+    let closed = !quote;
+    while (index < command.length) {
+      const ch = command[index];
+      if (quote) {
+        if (ch === quote) {
+          if (quote === "'" && command[index + 1] === "'") {
+            value += "'";
+            index += 2;
+            continue;
+          }
+          index++;
+          closed = true;
+          break;
+        }
+        if (quote === '"' && ch === "\\" && command[index + 1] === '"') {
+          value += '"';
+          index += 2;
+          continue;
+        }
+        value += ch;
+        index++;
+        continue;
+      }
+      if (/\s/.test(ch)) break;
+      if (ch === '"' || ch === "'") return null;
+      value += ch;
+      index++;
+    }
+    if (!closed || !value) return null;
+    if (quote && index < command.length && !/\s/.test(command[index])) return null;
+    tokens.push(value);
+  }
+  return tokens;
+}
+
+function unwrapCursorCommand(command) {
+  const raw = typeof command === "string" ? command.trim() : "";
+  if (!raw) return null;
+
+  const encodedTokens = parseSimpleCommandTokens(raw);
+  if (encodedTokens && encodedTokens.length >= 3) {
+    const executable = encodedTokens[0].replace(/\\/g, "/").split("/").pop().toLowerCase();
+    const encodedIndex = encodedTokens.findIndex((token) => /^-(?:encodedcommand|enc|e)$/i.test(token));
+    const allowedPrefix = encodedTokens.slice(1, encodedIndex);
+    const allowedSwitches = new Set(["-noprofile", "-noninteractive", "-executionpolicy", "bypass"]);
+    if (
+      (executable === "powershell" || executable === "powershell.exe")
+      && encodedIndex > 0
+      && encodedIndex === encodedTokens.length - 2
+      && allowedPrefix.every((token) => allowedSwitches.has(token.toLowerCase()))
+    ) {
+      const decoded = decodeWindowsEncodedCommand(raw);
+      if (decoded) return decoded;
+    }
+  }
+
+  const cmdMatch = raw.match(/^cmd(?:\.exe)?\s+\/d\s+\/s\s+\/c\s+"([\s\S]*)"$/i);
+  if (cmdMatch) return cmdMatch[1];
+  return raw;
+}
+
+function canonicalCommandPath(value, platform = process.platform) {
+  let normalized = String(value || "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  if (platform === "win32" || /^[A-Za-z]:\//.test(normalized) || normalized.startsWith("//")) {
+    normalized = normalized.toLowerCase();
+  }
+  return normalized;
+}
+
+function looksLikeNodeCommand(value) {
+  const basename = String(value || "").replace(/\\/g, "/").split("/").pop().toLowerCase();
+  return basename === "node" || basename === "node.exe";
+}
+
+function isAbsoluteCommandPath(value) {
+  const normalized = String(value || "").replace(/\\/g, "/");
+  return normalized.startsWith("/") || normalized.startsWith("//") || /^[A-Za-z]:\//.test(normalized);
+}
+
+function classifyCursorHookCommand(command, expectedScript, platform = process.platform) {
+  const raw = typeof command === "string" ? command : "";
+  const broadMarker = raw.includes(MARKER) || Boolean((decodeWindowsEncodedCommand(raw) || "").includes(MARKER));
+  let unwrapped = unwrapCursorCommand(raw);
+  if (!unwrapped) return { classification: broadMarker ? "ambiguous" : "foreign", command: raw };
+  unwrapped = unwrapped.trim();
+  if (unwrapped.startsWith("&")) unwrapped = unwrapped.slice(1).trim();
+  const tokens = parseSimpleCommandTokens(unwrapped);
+  if (!tokens || (tokens.length !== 2 && tokens.length !== 3)) {
+    return { classification: broadMarker ? "ambiguous" : "foreign", command: raw };
+  }
+  const [nodeBin, scriptPath, sentinel] = tokens;
+  const exactScript = canonicalCommandPath(scriptPath, platform) === canonicalCommandPath(expectedScript, platform);
+  const exactSentinel = tokens.length === 3 && sentinel === CURSOR_HOOK_SENTINEL;
+  if (looksLikeNodeCommand(nodeBin) && exactScript && (tokens.length === 2 || exactSentinel)) {
+    return {
+      classification: "owned",
+      command: raw,
+      nodeBin,
+      scriptPath,
+      sentinel: exactSentinel,
+    };
+  }
+  return { classification: broadMarker ? "ambiguous" : "foreign", command: raw };
+}
+
+function collectCursorCommandClassifications(settings, hookScript, platform) {
+  const records = [];
+  if (!settings || !settings.hooks || typeof settings.hooks !== "object") return records;
+  for (const [event, entries] of Object.entries(settings.hooks)) {
+    if (!Array.isArray(entries)) continue;
+    entries.forEach((entry, index) => {
+      if (!entry || typeof entry !== "object" || typeof entry.command !== "string") return;
+      records.push({ event, index, entry, ...classifyCursorHookCommand(entry.command, hookScript, platform) });
+    });
+  }
+  return records;
+}
+
+function cursorHooksSourceMatches(hooksPath, expectedExists, expectedText) {
+  try {
+    const current = fs.readFileSync(hooksPath, "utf8");
+    return expectedExists && current === expectedText;
+  } catch (error) {
+    if (error.code === "ENOENT") return !expectedExists;
+    throw error;
+  }
+}
+
+function cursorHooksChangedResult(hooksPath, counters = {}) {
+  return {
+    status: "error",
+    reason: "cursor-hooks-changed",
+    message: `Refusing to edit ${hooksPath}: hooks.json changed during the operation`,
+    hooksPath,
+    ...counters,
+  };
 }
 
 /**
@@ -65,26 +216,51 @@ function registerCursorHooks(options = {}) {
       return { added: 0, skipped: 0, updated: 0 };
     }
   }
-  const hookScript = asarUnpackedPath(path.resolve(__dirname, "cursor-hook.js").replace(/\\/g, "/"));
+  const hookScript = resolveCursorHookScript();
 
   let settings = {};
+  let hooksFileExists = true;
+  let originalText = null;
   try {
-    settings = JSON.parse(fs.readFileSync(hooksPath, "utf-8"));
+    originalText = fs.readFileSync(hooksPath, "utf8");
+    settings = JSON.parse(stripUtf8Bom(originalText));
   } catch (err) {
     if (err.code !== "ENOENT") {
       throw new Error(`Failed to read hooks.json: ${err.message}`);
     }
+    hooksFileExists = false;
+  }
+
+  const platform = options.platform || process.platform;
+  const classifications = collectCursorCommandClassifications(settings, hookScript, platform);
+  const conflicts = classifications
+    .filter((record) => record.classification === "ambiguous")
+    .map(({ event, index, command }) => ({ event, index, command }));
+  if (conflicts.length) {
+    return {
+      status: "error",
+      reason: "cursor-hook-conflict",
+      message: `Refusing to edit ${hooksPath}: ${conflicts.length} Cursor hook command(s) have ambiguous ownership`,
+      conflicts,
+      added: 0,
+      skipped: 0,
+      updated: 0,
+      hooksPath,
+    };
   }
 
   // Resolve node path; if detection fails, preserve existing absolute path
   const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
+  const existingOwnedNode = classifications.find((record) => (
+    record.classification === "owned" && isAbsoluteCommandPath(record.nodeBin)
+  ));
   const nodeBin = resolved
-    || extractExistingNodeBin(settings, MARKER)
+    || (existingOwnedNode && existingOwnedNode.nodeBin)
     || "node";
   const desiredCommand = buildCursorHookCommand(
     nodeBin,
     hookScript,
-    options.platform || process.platform
+    platform
   );
 
   if (!settings.hooks || typeof settings.hooks !== "object") settings.hooks = {};
@@ -106,7 +282,10 @@ function registerCursorHooks(options = {}) {
     let needsUpdate = false;
     const kept = [];
     for (const entry of arr) {
-      if (!entry || typeof entry !== "object" || !commandMatchesMarker(entry.command, MARKER)) {
+      const classification = entry && typeof entry === "object"
+        ? classifyCursorHookCommand(entry.command, hookScript, platform)
+        : { classification: "foreign" };
+      if (classification.classification !== "owned") {
         kept.push(entry);
         continue;
       }
@@ -141,7 +320,11 @@ function registerCursorHooks(options = {}) {
   }
 
   if (added > 0 || changed) {
-    writeJsonAtomic(hooksPath, settings);
+    if (!cursorHooksSourceMatches(hooksPath, hooksFileExists, originalText)) {
+      return cursorHooksChangedResult(hooksPath, { added: 0, skipped: 0, updated: 0 });
+    }
+    if (hooksFileExists) writeJsonAtomicWithBackup(hooksPath, settings, { ...options, backup: true });
+    else writeJsonAtomic(hooksPath, settings);
   }
 
   if (!options.silent) {
@@ -157,8 +340,10 @@ function unregisterCursorHooks(options = {}) {
   const hooksPath = options.hooksPath || path.join(homeDir, ".cursor", "hooks.json");
 
   let settings = {};
+  let originalText = null;
   try {
-    settings = readJsonFile(hooksPath);
+    originalText = fs.readFileSync(hooksPath, "utf8");
+    settings = JSON.parse(stripUtf8Bom(originalText));
   } catch (err) {
     if (err.code === "ENOENT") return { removed: 0, changed: false, hooksPath };
     throw new Error(`Failed to read hooks.json: ${err.message}`);
@@ -168,21 +353,50 @@ function unregisterCursorHooks(options = {}) {
     return { removed: 0, changed: false, hooksPath };
   }
 
+  const hookScript = resolveCursorHookScript();
+  const platform = options.platform || process.platform;
+  const classifications = collectCursorCommandClassifications(settings, hookScript, platform);
+  const conflicts = classifications
+    .filter((record) => record.classification === "ambiguous")
+    .map(({ event, index, command }) => ({ event, index, command }));
+  if (conflicts.length) {
+    return {
+      status: "error",
+      reason: "cursor-hook-conflict",
+      message: `Refusing to edit ${hooksPath}: ${conflicts.length} Cursor hook command(s) have ambiguous ownership`,
+      conflicts,
+      removed: 0,
+      changed: false,
+      hooksPath,
+    };
+  }
+
   let removed = 0;
   let changed = false;
   for (const event of CURSOR_HOOK_EVENTS) {
     const entries = settings.hooks[event];
     if (!Array.isArray(entries)) continue;
-    const result = removeMatchingCommandHooks(entries, (command) => commandMatchesMarker(command, MARKER));
-    if (!result.changed) continue;
-    removed += result.removed;
+    const kept = entries.filter((entry) => {
+      const classification = entry && typeof entry === "object"
+        ? classifyCursorHookCommand(entry.command, hookScript, platform)
+        : { classification: "foreign" };
+      if (classification.classification !== "owned") return true;
+      removed++;
+      return false;
+    });
+    if (kept.length === entries.length) continue;
     changed = true;
-    if (result.entries.length > 0) settings.hooks[event] = result.entries;
+    if (kept.length > 0) settings.hooks[event] = kept;
     else delete settings.hooks[event];
   }
 
   let backupPath = null;
-  if (changed) backupPath = writeJsonAtomicWithBackup(hooksPath, settings, options);
+  if (changed) {
+    if (!cursorHooksSourceMatches(hooksPath, true, originalText)) {
+      return cursorHooksChangedResult(hooksPath, { removed: 0, changed: false });
+    }
+    backupPath = writeJsonAtomicWithBackup(hooksPath, settings, options);
+  }
   if (!options.silent) console.log(`Clawd Cursor hooks removed: ${removed}`);
   const result = { removed, changed, hooksPath };
   if (options.backup === true) result.backupPath = backupPath;
@@ -195,7 +409,10 @@ module.exports = {
   registerCursorHooks,
   unregisterCursorHooks,
   CURSOR_HOOK_EVENTS,
+  CURSOR_HOOK_SENTINEL,
   buildCursorHookCommand,
+  classifyCursorHookCommand,
+  resolveCursorHookScript,
 };
 
 if (require.main === module) {

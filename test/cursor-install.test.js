@@ -8,11 +8,13 @@ const {
   registerCursorHooks,
   unregisterCursorHooks,
   CURSOR_HOOK_EVENTS,
+  CURSOR_HOOK_SENTINEL,
   buildCursorHookCommand,
 } = require("../hooks/cursor-install");
 const { commandMatchesMarker, formatNodeHookCommand } = require("../hooks/json-utils");
 
 const MARKER = "cursor-hook.js";
+const CURRENT_SCRIPT = path.resolve(__dirname, "..", "hooks", "cursor-hook.js").replace(/\\/g, "/");
 const tempDirs = [];
 
 function makeTempHooksFile(initial = {}) {
@@ -36,6 +38,109 @@ afterEach(() => {
 });
 
 describe("Cursor hook installer", () => {
+  it("fails closed and preserves a third-party plain command containing the marker substring", () => {
+    const thirdParty = {
+      command: '"/usr/bin/node" "/opt/vendor/my-cursor-hook.js" --vendor-mode',
+      timeout: 17,
+      vendor: { keep: true },
+    };
+    const hooksPath = makeTempHooksFile({
+      version: 1,
+      hooks: { stop: [thirdParty] },
+    });
+    const before = fs.readFileSync(hooksPath, "utf8");
+
+    const result = registerCursorHooks({
+      silent: true,
+      hooksPath,
+      nodeBin: "/usr/local/bin/node",
+      platform: "linux",
+    });
+
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.reason, "cursor-hook-conflict");
+    assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), before);
+    const uninstall = unregisterCursorHooks({ silent: true, hooksPath });
+    assert.strictEqual(uninstall.changed, false);
+    assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), before);
+  });
+
+  it("fails closed and preserves a third-party encoded command containing the marker substring", () => {
+    const command = formatNodeHookCommand("C:\\Vendor Node\\node.exe", "D:/vendor/my-cursor-hook.js", {
+      platform: "win32",
+      windowsWrapper: "encoded",
+      args: ["--vendor-mode"],
+    });
+    const thirdParty = { command, timeout: 23, matcher: "Shell" };
+    const hooksPath = makeTempHooksFile({ version: 1, hooks: { stop: [thirdParty] } });
+    const before = fs.readFileSync(hooksPath, "utf8");
+
+    const result = registerCursorHooks({
+      silent: true,
+      hooksPath,
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+      platform: "win32",
+    });
+
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.reason, "cursor-hook-conflict");
+    assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), before);
+    const uninstall = unregisterCursorHooks({ silent: true, hooksPath });
+    assert.strictEqual(uninstall.changed, false);
+    assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), before);
+  });
+
+  it("makes no uninstall mutation when ambiguous and owned Cursor commands coexist", () => {
+    const hooksPath = makeTempHooksFile({
+      version: 1,
+      hooks: {
+        stop: [
+          { command: buildCursorHookCommand("/usr/bin/node", CURRENT_SCRIPT, "linux") },
+          { command: '"/usr/bin/node" "/opt/vendor/my-cursor-hook.js" --vendor-mode' },
+        ],
+      },
+    });
+    const before = fs.readFileSync(hooksPath, "utf8");
+
+    const result = unregisterCursorHooks({ silent: true, hooksPath, platform: "linux" });
+
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.reason, "cursor-hook-conflict");
+    assert.strictEqual(result.removed, 0);
+    assert.strictEqual(result.changed, false);
+    assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), before);
+  });
+
+  it("refuses to overwrite hooks.json when it changes after the initial read", () => {
+    const hooksPath = makeTempHooksFile({ version: 1, hooks: {} });
+    const takeover = JSON.stringify({ version: 1, hooks: { stop: [{ command: "third-party-takeover" }] } }, null, 2);
+    const originalReadFileSync = fs.readFileSync;
+    let reads = 0;
+    fs.readFileSync = function patchedReadFileSync(file, ...args) {
+      if (path.resolve(String(file)) === path.resolve(hooksPath)) {
+        reads++;
+        if (reads === 2) fs.writeFileSync(hooksPath, takeover, "utf8");
+      }
+      return originalReadFileSync.call(this, file, ...args);
+    };
+    let result;
+    try {
+      result = registerCursorHooks({
+        silent: true,
+        hooksPath,
+        nodeBin: "/usr/bin/node",
+        platform: "linux",
+      });
+    } finally {
+      fs.readFileSync = originalReadFileSync;
+    }
+
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.reason, "cursor-hooks-changed");
+    assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), takeover);
+    assert.deepStrictEqual(fs.readdirSync(path.dirname(hooksPath)).sort(), ["hooks.json"]);
+  });
+
   it("registers all events on fresh install", () => {
     const hooksPath = makeTempHooksFile({});
     const result = registerCursorHooks({
@@ -58,6 +163,7 @@ describe("Cursor hook installer", () => {
       assert.ok(typeof entry.command === "string");
       assert.ok(entry.command.includes(MARKER));
       assert.ok(entry.command.includes("/usr/local/bin/node"));
+      assert.ok(entry.command.includes(CURSOR_HOOK_SENTINEL));
     }
   });
 
@@ -88,8 +194,8 @@ describe("Cursor hook installer", () => {
     const hooksPath = makeTempHooksFile({
       version: 1,
       hooks: {
-        stop: [{ command: '"/old/node" "/old/path/cursor-hook.js"' }],
-        preToolUse: [{ command: '"/old/node" "/old/path/cursor-hook.js"' }],
+        stop: [{ command: `"/old/node" "${CURRENT_SCRIPT}"` }],
+        preToolUse: [{ command: `"/old/node" "${CURRENT_SCRIPT}"` }],
       },
     });
 
@@ -103,7 +209,7 @@ describe("Cursor hook installer", () => {
     assert.ok(result.updated >= 2);
     const settings = readJson(hooksPath);
     assert.ok(settings.hooks.stop[0].command.includes("/usr/local/bin/node"));
-    assert.ok(!settings.hooks.stop[0].command.includes("/old/path/"));
+    assert.ok(!settings.hooks.stop[0].command.includes('"/old/node"'));
     assert.strictEqual(settings.hooks.stop.length, 1);
   });
 
@@ -111,7 +217,7 @@ describe("Cursor hook installer", () => {
     const hooksPath = makeTempHooksFile({
       version: 1,
       hooks: {
-        stop: [{ command: '"/home/user/.nvm/versions/node/v20/bin/node" "/some/path/cursor-hook.js"' }],
+        stop: [{ command: `"/home/user/.nvm/versions/node/v20/bin/node" "${CURRENT_SCRIPT}"` }],
       },
     });
 
@@ -185,7 +291,7 @@ describe("Cursor hook installer", () => {
       version: 1,
       hooks: {
         stop: [{
-          command: 'cmd /d /s /c ""C:\\Program Files\\nodejs\\node.exe" "D:/old/cursor-hook.js""',
+          command: `cmd /d /s /c ""C:\\Program Files\\nodejs\\node.exe" "${CURRENT_SCRIPT}""`,
         }],
       },
     });
@@ -215,7 +321,7 @@ describe("Cursor hook installer", () => {
   });
 
   it("migrates encoded and cmd hooks, removes owned duplicates, and preserves third-party settings", () => {
-    const encoded = formatNodeHookCommand("C:\\Old Node\\node.exe", "D:/old/cursor-hook.js", {
+    const encoded = formatNodeHookCommand("C:\\Old Node\\node.exe", CURRENT_SCRIPT, {
       platform: "win32", windowsWrapper: "encoded",
     });
     const foreign = { command: "other-tool", timeout: 9 };
@@ -225,7 +331,7 @@ describe("Cursor hook installer", () => {
       hooks: Object.fromEntries(CURSOR_HOOK_EVENTS.map((event) => [event, [
         foreign,
         { command: encoded, timeout: 7, matcher: "Shell", enabled: false },
-        { command: 'cmd /d /s /c ""node" "D:/old/cursor-hook.js""' },
+        { command: `cmd /d /s /c ""node" "${CURRENT_SCRIPT}""` },
         { command: encoded },
         { name: "clawd", command: "user-owned-hook" },
       ]])),
@@ -241,7 +347,7 @@ describe("Cursor hook installer", () => {
       assert.strictEqual(entries[1].matcher, "Shell");
       assert.strictEqual(entries[1].enabled, false);
       assert.ok(entries[1].command.startsWith('& "C:\\Old Node\\node.exe" '));
-      assert.ok(!entries[1].command.includes("D:/old/"));
+      assert.ok(entries[1].command.includes(CURSOR_HOOK_SENTINEL));
       assert.strictEqual(entries.filter((entry) => commandMatchesMarker(entry.command, MARKER)).length, 1);
       assert.deepStrictEqual(entries[2], { name: "clawd", command: "user-owned-hook" });
     }
@@ -251,16 +357,16 @@ describe("Cursor hook installer", () => {
   });
 
   it("uninstalls encoded/legacy/duplicate owned hooks without touching third-party hooks", () => {
-    const encoded = formatNodeHookCommand("node", "D:/old/cursor-hook.js", { platform: "win32", windowsWrapper: "encoded" });
+    const encoded = formatNodeHookCommand("node", CURRENT_SCRIPT, { platform: "win32", windowsWrapper: "encoded" });
     const foreign = { command: "other-hook", name: "clawd" };
     const hooksPath = makeTempHooksFile({ version: 1, hooks: {
-      stop: [{ command: encoded }, { command: encoded }, { command: '"node" "D:/old/cursor-hook.js"' }, foreign],
+      stop: [{ command: encoded }, { command: encoded }, { command: `"node" "${CURRENT_SCRIPT}"` }, foreign],
       customEvent: [{ command: "custom-hook" }],
     } });
-    const result = unregisterCursorHooks({ silent: true, hooksPath });
+    const result = unregisterCursorHooks({ silent: true, hooksPath, platform: "win32" });
     assert.strictEqual(result.removed, 3);
     assert.deepStrictEqual(readJson(hooksPath).hooks, { stop: [foreign], customEvent: [{ command: "custom-hook" }] });
-    assert.strictEqual(unregisterCursorHooks({ silent: true, hooksPath }).changed, false);
+    assert.strictEqual(unregisterCursorHooks({ silent: true, hooksPath, platform: "win32" }).changed, false);
   });
 
   it("executes spaced Windows paths through both observed Cursor stdin bridges", { skip: process.platform !== "win32" }, (t) => {

@@ -17,6 +17,10 @@ const { HOOK_ENTRIES: CODEWHALE_HOOK_ENTRIES } = require("../hooks/codewhale-ins
 const { QODER_HOOK_EVENTS, buildQoderHookCommand } = require("../hooks/qoder-install");
 const { KIMI_HOOK_EVENTS } = require("../hooks/kimi-install");
 const {
+  buildCursorHookCommand,
+  resolveCursorHookScript,
+} = require("../hooks/cursor-install");
+const {
   CODEX_WINDOWS_STABLE_ARG,
   buildCodexHookCommand,
   buildStableCodexHookCommand,
@@ -26,7 +30,7 @@ const {
   computeCodexHookTrustedHash,
   findCodexHookTrustPositions,
 } = require("../src/doctor-detectors/codex-features-check");
-const { validateHookTarget } = require("../src/doctor-detectors/agent-node-bin-parser");
+const { validateHookCommand, validateHookTarget } = require("../src/doctor-detectors/agent-node-bin-parser");
 const {
   ZCODE_HOOK_EVENTS,
   buildZcodeHookCommand,
@@ -382,6 +386,33 @@ afterEach(() => {
 });
 
 describe("checkAgentIntegrations", () => {
+  it("uses Cursor's strict ownership classifier for healthy and colliding commands", () => {
+    const root = makeTempDir();
+    const parentDir = path.join(root, ".cursor");
+    const descriptor = baseDescriptor({
+      agentId: "cursor-agent",
+      agentName: "Cursor Agent",
+      parentDir,
+      configPath: path.join(parentDir, "hooks.json"),
+      marker: "cursor-hook.js",
+      scriptPath: resolveCursorHookScript(),
+    });
+    writeJson(descriptor.configPath, {
+      version: 1,
+      hooks: { stop: [{ command: buildCursorHookCommand(process.execPath, descriptor.scriptPath, process.platform) }] },
+    });
+    assert.strictEqual(runOne(descriptor, { platform: process.platform, validateCommand: validateHookCommand }).status, "ok");
+
+    writeJson(descriptor.configPath, {
+      version: 1,
+      hooks: { stop: [{ command: '"/usr/bin/node" "/opt/vendor/cursor-hook.js" --vendor' }] },
+    });
+    const conflict = runOne(descriptor, { platform: "linux" });
+    assert.strictEqual(conflict.status, "needs-review");
+    assert.strictEqual(conflict.hookCommandIssue, "cursor-hook-conflict");
+    assert.strictEqual(conflict.conflictingHookEvent, "stop");
+  });
+
   function dshDescriptor() {
     const root = makeTempDir();
     const parentDir = path.join(root, ".dsh");

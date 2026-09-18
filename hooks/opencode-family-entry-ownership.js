@@ -123,28 +123,6 @@ function classifyPluginEntries(pluginArray, ctx) {
   const canonicalize = ctx.canonicalize;
   const parsedList = pluginArray.map((rawEntry, index) => ({ index, rawEntry, ...parseEntry(rawEntry) }));
 
-  // Uniqueness of missing basename-like candidates is decided globally: more
-  // than one is ambiguous and must fail closed rather than guess which stale
-  // path is really Clawd's.
-  let missingBasenameCount = 0;
-  const missingBasenameIndices = [];
-  const dirName = String(ctx.pluginDirName).toLowerCase();
-  const expectedCanonical = ctx.expectedCanonicalDir || null;
-  for (const item of parsedList) {
-    if (item.malformed || item.specifier === null) continue;
-    if (!isAbsoluteAnyPlatform(item.specifier)) continue;
-    if (basenameAnyPlatform(item.specifier).toLowerCase() !== dirName) continue;
-    if (ctx.exists(item.specifier)) continue;
-    if (ctx.probeIndeterminate && ctx.probeIndeterminate(item.specifier)) continue;
-    // The expected canonical target and the exact current source are not
-    // legacy candidates — they are classified on their own rules.
-    const canonical = canonicalize ? canonicalize(item.specifier) : null;
-    if (expectedCanonical && canonical === expectedCanonical) continue;
-    if (ctx.sourcePluginDir && canonical === ctx.sourcePluginDir) continue;
-    missingBasenameCount++;
-    missingBasenameIndices.push(item.index);
-  }
-
   for (const item of parsedList) {
     if (item.malformed || item.specifier === null) {
       entries.push({ ...item, category: "foreign", canonical: null, reason: "malformed-or-non-string" });
@@ -223,7 +201,7 @@ function classifyPluginEntries(pluginArray, ctx) {
     }
     if (!exists) {
       const basenameMatches = basenameAnyPlatform(item.specifier).toLowerCase() === String(ctx.pluginDirName).toLowerCase();
-      if (known || (basenameMatches && missingBasenameCount === 1)) {
+      if (known) {
         entries.push({ ...item, category: "legacy-missing-candidate", canonical });
       } else if (basenameMatches) {
         entries.push({ ...item, category: "unknown", canonical, reason: "ambiguous-missing-basename" });
@@ -250,8 +228,6 @@ function classifyPluginEntries(pluginArray, ctx) {
     entries,
     summary: {
       total: entries.length,
-      missingBasenameCount,
-      missingBasenameIndices,
     },
   };
 }

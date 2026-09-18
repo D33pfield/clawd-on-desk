@@ -1058,6 +1058,63 @@ test("settings IPC imports Clawd user theme zip packages", async () => {
   }
 });
 
+test("settings IPC rejects user theme zips carrying the reserved official ownership marker before extraction", async () => {
+  for (const markerPath of [
+    "pixel-cat/.clawd-official-theme.json",
+    "pixel-cat/nested/.CLAWD-OFFICIAL-THEME.JSON",
+    "pixel-cat\\nested\\.clawd-official-theme.json",
+  ]) {
+    const root = makeTempDir();
+    try {
+      const userThemesDir = path.join(root, "user-themes");
+      const zipPath = path.join(root, "pixel-cat.zip");
+      const themeJson = {
+        schemaVersion: 1,
+        name: "Pixel Cat",
+        version: "1.0.0",
+        sleepSequence: { mode: "direct" },
+        viewBox: { x: 0, y: 0, width: 16, height: 16 },
+        states: {
+          idle: ["idle.svg"],
+          working: ["working.gif"],
+          thinking: ["thinking.png"],
+          sleeping: { fallbackTo: "idle" },
+        },
+      };
+      fs.writeFileSync(zipPath, makeZip([
+        { name: "pixel-cat/theme.json", data: JSON.stringify(themeJson), method: 8 },
+        { name: "pixel-cat/assets/idle.svg", data: "<svg></svg>", method: 8 },
+        { name: "pixel-cat/assets/working.gif", data: "gif", method: 8 },
+        { name: "pixel-cat/assets/thinking.png", data: "png", method: 8 },
+        { name: markerPath, data: JSON.stringify({ managedBy: "clawd" }), method: 8 },
+      ]));
+
+      const { ipcMain } = createHarness({
+        dialog: {
+          showOpenDialog: async () => ({ canceled: false, filePaths: [zipPath] }),
+          showMessageBox: async () => ({ response: 1 }),
+        },
+        themeLoader: {
+          getPreviewSoundUrl: () => null,
+          getSoundOverridesDir: () => null,
+          getSoundUrl: () => null,
+          listThemesWithMetadata: () => [],
+          getThemeMetadata: () => null,
+          ensureUserThemesDir: () => userThemesDir,
+        },
+      });
+
+      const result = await ipcMain.invoke("settings:import-user-theme-zip");
+      assert.strictEqual(result.status, "error");
+      assert.match(result.message, /official theme ownership marker/i);
+      assert.strictEqual(fs.existsSync(path.join(userThemesDir, "pixel-cat")), false);
+      assert.deepStrictEqual(fs.existsSync(userThemesDir) ? fs.readdirSync(userThemesDir) : [], []);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test("settings IPC copies sound overrides, removes stale siblings, and invalidates renderer cache", async () => {
   const root = makeTempDir();
   try {

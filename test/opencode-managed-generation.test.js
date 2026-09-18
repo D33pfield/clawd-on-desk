@@ -148,16 +148,18 @@ describe("#1026 managed installer register/unregister", () => {
     assert.deepStrictEqual(readJson(configPath).plugin, []);
   });
 
-  it("configPath-only unregister sweeps the config and warns managed-root-unknown", () => {
+  it("configPath-only unregister preserves an unproven missing basename and warns managed-root-unknown", () => {
     const dir = tmp("clawd-managed-config-only-");
     const configPath = path.join(dir, "opencode.json");
     const managed = "/some/home/.clawd/integrations/opencode-family/opencode/homes/x/generations/" + "a".repeat(64) + "/opencode-plugin";
     fs.writeFileSync(configPath, JSON.stringify({ plugin: [managed, "@vendor/keep"] }), "utf8");
     const result = unregisterOpencodePlugin({ silent: true, configPath });
-    assert.strictEqual(result.removed, 1);
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.registrationRemoved, false);
+    assert.strictEqual(result.removed, 0);
     assert.strictEqual(result.managedFilesRemoved, false);
     assert.ok(result.warnings.some((w) => w.includes("managed-root-unknown")));
-    assert.deepStrictEqual(readJson(configPath).plugin, ["@vendor/keep"]);
+    assert.deepStrictEqual(readJson(configPath).plugin, [managed, "@vendor/keep"]);
   });
 
   it("uninstall removes the config entry, the generation, and releases the self-owned record", () => {
@@ -504,12 +506,13 @@ describe("#1026 entry ownership classifier", () => {
     assert.strictEqual(plan.action, "ownership-conflict");
   });
 
-  it("treats a unique missing basename-like path as a migratable legacy candidate", () => {
+  it("treats a unique missing basename-like path as ambiguous without stronger ownership evidence", () => {
     const result = ownership.classifyPluginEntries(["/old/opencode-plugin"], {
       ...ctx,
       exists: () => false,
     });
-    assert.strictEqual(result.entries[0].category, "legacy-missing-candidate");
+    assert.strictEqual(result.entries[0].category, "unknown");
+    assert.strictEqual(result.entries[0].reason, "ambiguous-missing-basename");
   });
 
   it("treats multiple missing basename-like paths as unknown (fail closed)", () => {
@@ -591,6 +594,51 @@ describe("#1026 r3 dead-owner takeover / race-to-noop / release reporting", () =
     assert.strictEqual(result.status, "error");
     assert.strictEqual(result.reason, "owner-conflict");
     assert.strictEqual(fs.readFileSync(target.ownerPath, "utf8"), ownerBefore);
+  });
+
+  it("unregister returns owner-conflict before mutating a live other source", () => {
+    const home = makeHome("clawd-r3-live-unregister-");
+    registerOpencodePlugin({ silent: true, homeDir: home });
+    const target = mg.resolveManagedTarget({ cfg: OPENCODE_CFG, agentId: "opencode", homeDir: home, fs, platform: process.platform });
+    const configPath = path.join(home, ".config", "opencode", "opencode.json");
+    const otherRoot = path.join(home, "other-src");
+    const otherMarker = path.join(otherRoot, "opencode-plugin", "index.mjs");
+    fs.mkdirSync(path.dirname(otherMarker), { recursive: true });
+    fs.writeFileSync(otherMarker, "export default async () => ({});\n");
+    const owner = JSON.parse(fs.readFileSync(target.ownerPath, "utf8"));
+    owner.activeSourceRoot = otherRoot;
+    owner.activeSourceMarker = otherMarker;
+    fs.writeFileSync(target.ownerPath, JSON.stringify(owner, null, 2));
+
+    const snapshot = (root) => {
+      const out = [];
+      const walk = (dir, relative = "") => {
+        for (const name of fs.readdirSync(dir).sort()) {
+          const full = path.join(dir, name);
+          const rel = path.join(relative, name);
+          const stat = fs.lstatSync(full);
+          if (stat.isDirectory()) walk(full, rel);
+          else out.push([rel, fs.readFileSync(full).toString("base64")]);
+        }
+      };
+      walk(root);
+      return out;
+    };
+    const before = {
+      config: fs.readFileSync(configPath, "utf8"),
+      owner: fs.readFileSync(target.ownerPath, "utf8"),
+      tree: snapshot(target.targetRoot),
+      marker: fs.readFileSync(otherMarker, "utf8"),
+    };
+
+    const result = unregisterOpencodePlugin({ silent: true, homeDir: home });
+
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.reason, "owner-conflict");
+    assert.strictEqual(fs.readFileSync(configPath, "utf8"), before.config);
+    assert.strictEqual(fs.readFileSync(target.ownerPath, "utf8"), before.owner);
+    assert.deepStrictEqual(snapshot(target.targetRoot), before.tree);
+    assert.strictEqual(fs.readFileSync(otherMarker, "utf8"), before.marker);
   });
 
   it("race-to-no-op: converges state between preflight and lock and does nothing", () => {
@@ -953,12 +1001,17 @@ describe("#1026 r1 uninstall must never report a remaining active entry removed"
 
   it("returns error for a managed-corrupt entry that stays active", () => {
     const home = tmp("clawd-uninstall-corrupt-");
+    // Create the config directory before deriving its canonical managed target.
+    // On macOS /var resolves to /private/var only after the path exists; doing
+    // this in the opposite order accidentally builds the corrupt fixture under
+    // a different configDirHash and tests an unrelated absent target.
+    const configPath = homeConfig(home, []);
     const target = mg.resolveManagedTarget({ cfg: OPENCODE_CFG, agentId: "opencode", homeDir: home, fs, platform: process.platform });
     const genDir = path.join(target.generationsDir, "a".repeat(64));
     const pluginDir = path.join(genDir, "opencode-plugin");
     fs.mkdirSync(pluginDir, { recursive: true });
     fs.writeFileSync(path.join(genDir, "manifest.json"), "{ broken");
-    homeConfig(home, [pluginDir.replace(/\\/g, "/")]);
+    fs.writeFileSync(configPath, JSON.stringify({ plugin: [pluginDir.replace(/\\/g, "/")] }), "utf8");
 
     const result = unregisterOpencodePlugin({ silent: true, homeDir: home });
     assert.strictEqual(result.status, "error");
@@ -994,7 +1047,7 @@ describe("#1026 r1 uninstall must never report a remaining active entry removed"
       expectedCanonicalDir: null,
       targetRoot: null,
       sourcePluginDir: null,
-      knownRegisteredPaths: new Set(),
+      knownRegisteredPaths: new Set([realPlugin.replace(/\\/g, "/")]),
       canonicalize: (p) => String(p).replace(/\\/g, "/"),
       canonicalizeStrict: (p) => String(p).replace(/\\/g, "/"),
       exists: () => false,

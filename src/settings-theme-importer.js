@@ -3,6 +3,7 @@
 const defaultFs = require("fs");
 const defaultPath = require("path");
 const codexPetImporter = require("./codex-pet-importer");
+const { MARKER_FILENAME: OFFICIAL_THEME_MARKER_FILENAME } = require("./official-theme-installer");
 const {
   collectRequiredAssetFiles,
   mergeDefaults,
@@ -62,6 +63,26 @@ function stripThemeRootPrefix(entryName, prefix) {
   return prefix ? entryName.slice(prefix.length) : entryName;
 }
 
+function normalizeZipEntryName(entryName) {
+  return String(entryName || "").replace(/\\/g, "/");
+}
+
+function assertNoReservedOfficialMarker(entries, prefix) {
+  const normalizedPrefix = normalizeZipEntryName(prefix);
+  const reserved = OFFICIAL_THEME_MARKER_FILENAME.toLowerCase();
+  for (const entry of entries || []) {
+    if (!entry) continue;
+    const normalizedName = normalizeZipEntryName(entry.name);
+    if (normalizedPrefix && normalizedName !== normalizedPrefix.slice(0, -1)
+      && !normalizedName.startsWith(normalizedPrefix)) continue;
+    const relativePath = normalizedPrefix ? normalizedName.slice(normalizedPrefix.length) : normalizedName;
+    const parts = relativePath.split("/").filter(Boolean);
+    if (parts.some((part) => part.toLowerCase() === reserved)) {
+      throw new Error(`theme zip contains reserved official theme ownership marker: ${entry.name}`);
+    }
+  }
+}
+
 function assertSafeRelativePath(pathModule, rootDir, relativePath) {
   const normalized = String(relativePath || "").replace(/\\/g, "/");
   const parts = normalized.split("/").filter(Boolean);
@@ -109,6 +130,11 @@ function importUserThemeZip(zipPath, options = {}) {
   const buffer = fs.readFileSync(zipPath);
   const entries = codexPetImporter.readZipEntries(buffer);
   const { prefix, folderName, themeJsonEntry } = chooseThemeZipRoot(entries);
+  // User imports must never be able to mint the marker consumed by the
+  // official-theme manager. Scan the complete logical theme root before a
+  // staging directory or target is created, including Windows separators and
+  // case variants that collapse on case-insensitive filesystems.
+  assertNoReservedOfficialMarker(entries, prefix);
   if (themeJsonEntry.uncompressedSize > MAX_THEME_JSON_BYTES) {
     throw new Error(`theme.json exceeds ${MAX_THEME_JSON_BYTES} bytes`);
   }
