@@ -10,8 +10,8 @@ const { recordSessionHistoryFromStateBody } = require("../hooks/session-history"
 const { launchClaudeSession } = require("../src/launch-claude");
 
 describe("session history resume owner", () => {
-  let root, clock, sessions, enabled, launches, runtime;
-  const payload = { agentId: "claude-code", sessionId: "saved-session" };
+  let root, clock, sessions, enabled, launches, runtime, payload;
+  const identity = { agentId: "claude-code", sessionId: "saved-session" };
   function makeRuntime(launcher = async () => ({ ok: true })) {
     return createSessionHistoryRuntime({
       getSessions: () => sessions,
@@ -27,18 +27,21 @@ describe("session history resume owner", () => {
     enabled = true;
     sessions = new Map();
     launches = [];
-    recordSessionHistoryFromStateBody({ agent_id: payload.agentId, session_id: payload.sessionId,
+    const recorded = recordSessionHistoryFromStateBody({
+      agent_id: identity.agentId,
+      session_id: identity.sessionId,
       event: "UserPromptSubmit", state: "working", cwd: root },
     { historyDir: path.join(root, "history"), eventAt: clock });
+    payload = { agentId: identity.agentId, historyKey: recorded.record.historyKey };
     runtime = makeRuntime();
   });
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
   it("propagates the real launcher's all-terminals-failed result", async () => {
-    runtime = makeRuntime((mode, cwd, id) => launchClaudeSession(mode, cwd, id, {
+    runtime = makeRuntime((mode, cwd, id, profile) => launchClaudeSession(mode, cwd, id, {
       platform: () => "win32", findClaudeCmd: async () => "claude",
       tryLaunch: async () => ({ ok: false, error: new Error("ENOENT") }),
-    }));
+    }, profile));
     assert.deepEqual(await runtime.resume(payload), {
       status: "error", reason: "launch-failed", message: "ENOENT",
     });
@@ -62,7 +65,11 @@ describe("session history resume owner", () => {
     assert.deepEqual(await runtime.resume(payload), result);
     assert.equal(launches.length, 1);
     assert.equal(runtime.getHistory()[0].resumePending, true, "a new Dashboard sees main's pending state");
-    sessions.set("live", { ...payload, rawSessionId: payload.sessionId, profileId: "local" });
+    sessions.set("live", {
+      agentId: identity.agentId,
+      rawSessionId: identity.sessionId,
+      profileId: "local",
+    });
     assert.deepEqual(runtime.getHistory(), []);
     assert.deepEqual(await runtime.resume(payload), { status: "already-running" });
     assert.equal(launches.length, 1);
@@ -92,22 +99,53 @@ describe("session history resume owner", () => {
   it("does not confuse a remote, WSL or other-agent raw ID with local Claude", () => {
     for (const extra of [{ profileId: "ssh-one" }, { host: "server" },
       { wslDistro: "Ubuntu" }, { agentId: "codex" }]) {
-      sessions.set("other", { agentId: "claude-code", rawSessionId: payload.sessionId,
+      sessions.set("other", { agentId: "claude-code", rawSessionId: identity.sessionId,
         profileId: "local", ...extra });
       assert.equal(runtime.getHistory().length, 1);
     }
   });
 
   it("refuses absent targets, foreign agents and missing project folders", async () => {
-    assert.equal((await runtime.resume({ ...payload, sessionId: "unknown" })).reason, "unresolvable");
+    assert.equal((await runtime.resume({ ...payload, historyKey: "0".repeat(32) })).reason, "unresolvable");
     assert.equal((await runtime.resume({ ...payload, agentId: "codex" })).reason, "agent-unavailable");
     const project = path.join(root, "project");
     fs.mkdirSync(project);
-    recordSessionHistoryFromStateBody({ agent_id: payload.agentId, session_id: payload.sessionId,
+    recordSessionHistoryFromStateBody({ agent_id: identity.agentId, session_id: identity.sessionId,
       event: "PreToolUse", state: "working", cwd: project },
     { historyDir: path.join(root, "history"), eventAt: clock + 1 });
     fs.rmdirSync(project);
     assert.equal((await runtime.resume(payload)).reason, "unresolvable");
     assert.equal(launches.length, 0);
+  });
+
+  it("does not serialize identical raw session ids from different Claude profiles", async () => {
+    const customConfigDir = path.join(root, "custom-claude");
+    const custom = recordSessionHistoryFromStateBody({
+      agent_id: identity.agentId,
+      session_id: identity.sessionId,
+      event: "UserPromptSubmit",
+      state: "working",
+      cwd: root,
+    }, {
+      historyDir: path.join(root, "history"),
+      eventAt: clock + 1,
+      env: { CLAUDE_CONFIG_DIR: customConfigDir },
+    });
+    const rows = runtime.getHistory();
+    assert.equal(rows.length, 2);
+    const customPayload = { agentId: identity.agentId, historyKey: custom.record.historyKey };
+
+    const [defaultResult, customResult] = await Promise.all([
+      runtime.resume(payload),
+      runtime.resume(customPayload),
+    ]);
+
+    assert.equal(defaultResult.status, "submitted");
+    assert.equal(customResult.status, "submitted");
+    assert.equal(launches.length, 2);
+    assert.deepEqual(launches.map((args) => args[3]), [
+      { kind: "default", configDir: null },
+      { kind: "custom", configDir: customConfigDir },
+    ]);
   });
 });

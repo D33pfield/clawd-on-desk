@@ -172,6 +172,52 @@ describe("state stale cleanup decisions", () => {
     })).result, { action: null });
   });
 
+  it("idles an expired working session when its agent is alive even if the wrapper source is dead", () => {
+    const now = 2_000_000;
+    const { result, calls } = decision(session({
+      state: "working",
+      agentId: "claude-code",
+      agentPid: 10,
+      sourcePid: 20,
+      updatedAt: now - WORKING_STALE_MS - 1,
+    }), {
+      now,
+      alivePids: new Set([10]),
+    });
+
+    assert.deepStrictEqual(result, { action: "idle", reason: "working-timeout", updateTimestamp: true });
+    assert.deepStrictEqual(calls, [10], "dead per-event wrapper must not be probed once the agent is live");
+  });
+
+  it("preserves source-death fallback when no reliable agent pid exists", () => {
+    const now = 2_000_000;
+    const { result, calls } = decision(session({
+      state: "working",
+      agentPid: null,
+      sourcePid: 20,
+      updatedAt: now - WORKING_STALE_MS - 1,
+    }), { now });
+
+    assert.deepStrictEqual(result, { action: "delete", reason: "working-source-exit" });
+    assert.deepStrictEqual(calls, [20]);
+  });
+
+  it("caches process liveness within one stale decision", () => {
+    const now = 2_000_000;
+    const { result, calls } = decision(session({
+      state: "idle",
+      agentPid: 10,
+      sourcePid: 10,
+      updatedAt: now - SESSION_STALE_MS - 1,
+    }), {
+      now,
+      alivePids: new Set([10]),
+    });
+
+    assert.deepStrictEqual(result, { action: null });
+    assert.deepStrictEqual(calls, [10]);
+  });
+
   it("keeps an actively reporting working session whose source process already exited", () => {
     // Several agents launch each hook through a throwaway shell (on Windows
     // Claude Code uses a per-event pwsh wrapper), so the source_pid that ships
@@ -583,14 +629,14 @@ describe("state stale cleanup decisions", () => {
     }
   });
 
-  it("preserves distinct source and agent death checks with Codex age expiry disabled", () => {
+  it("lets a live Codex agent override a dead wrapper while preserving agent death", () => {
     const target = session({
       state: "working", agentId: "codex", agentPid: 10, sourcePid: 20,
     });
     const staleConfig = { codexWorkingStaleMs: 0 };
     const sourceDead = decision(target, { staleConfig, alivePids: new Set([10]) });
-    assert.deepStrictEqual(sourceDead.result, { action: "delete", reason: "working-source-exit" });
-    assert.deepStrictEqual(sourceDead.calls, [10, 20]);
+    assert.deepStrictEqual(sourceDead.result, { action: null });
+    assert.deepStrictEqual(sourceDead.calls, [10]);
     const agentDead = decision(target, { staleConfig, alivePids: new Set([20]) });
     assert.deepStrictEqual(agentDead.result, { action: "delete", reason: "agent-exit" });
     assert.deepStrictEqual(agentDead.calls, [10]);
@@ -723,7 +769,7 @@ describe("state stale cleanup decisions", () => {
     );
   });
 
-  it("deletes local OpenCode work after the stale floor when the source process dies", () => {
+  it("idles local OpenCode work after the stale floor when its agent remains alive", () => {
     const now = 2_000_000;
     assert.deepStrictEqual(
       decision(session({
@@ -737,7 +783,7 @@ describe("state stale cleanup decisions", () => {
         now,
         alivePids: new Set([10]),
       }).result,
-      { action: "delete", reason: "working-source-exit" },
+      { action: "idle", reason: "working-timeout", updateTimestamp: true },
     );
   });
 

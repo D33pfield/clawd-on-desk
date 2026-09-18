@@ -1739,7 +1739,7 @@ let sessionHistoryReloadRequested = false;
 const sessionHistoryActionState = new Map();
 
 function historyKey(row) {
-  return `${row.agentId}\u0000${row.sessionId}`;
+  return row.historyKey;
 }
 
 async function reloadSessionHistory(options = {}) {
@@ -1781,6 +1781,7 @@ function isHistoryResumePending(state, now = Date.now()) {
 }
 
 async function resumeHistoryRow(row) {
+  if (row.resumeDisabledReason) return;
   const key = historyKey(row);
   if (isHistoryResumePending(sessionHistoryActionState.get(key))) return;
   sessionHistoryActionState.set(key, { status: "pending" });
@@ -1789,7 +1790,7 @@ async function resumeHistoryRow(row) {
   try {
     result = await window.dashboardAPI.resumeSession({
       agentId: row.agentId,
-      sessionId: row.sessionId,
+      historyKey: row.historyKey,
     });
   } catch {
     result = null;
@@ -1834,6 +1835,13 @@ function createSessionHistoryCard(row, now) {
       t("dashboardHistoryTranscriptMissing")
     ));
   }
+  if (row.resumeDisabledReason === "profile-unverified") {
+    meta.appendChild(createText(
+      "span",
+      "session-history-flag is-missing",
+      t("dashboardHistoryProfileUnverified")
+    ));
+  }
   const folder = sessionHistoryFolderLabel(row.cwd);
   const elapsed = formatElapsed(Math.max(0, now - row.lastEventAt));
   meta.appendChild(document.createTextNode(folder ? `${folder} · ${elapsed}` : elapsed));
@@ -1850,7 +1858,7 @@ function createSessionHistoryCard(row, now) {
   button.textContent = pending
     ? t("dashboardHistoryResuming")
     : t("dashboardHistoryResume");
-  button.disabled = pending;
+  button.disabled = pending || !!row.resumeDisabledReason;
   button.addEventListener("click", () => { void resumeHistoryRow(row); });
   actions.appendChild(button);
   if (state && (state.status === "error" || (state.status === "submitted" && !pending))) {

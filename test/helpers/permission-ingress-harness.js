@@ -11,10 +11,12 @@ async function createPermissionIngressHarness({ render = false } = {}) {
   const shown = [];
   const updates = [];
   const logs = [];
+  const debugLogs = [];
   const requests = [];
   const ctx = {
     lang: "en", sessions: new Map(), doNotDisturb: false, hideBubbles: false,
     petHidden: false, win: null, bubbleFollowPet: false,
+    STATE_SVGS: { working: "working.svg" },
     isAgentEnabled: () => true,
     isAgentPermissionsEnabled: () => true,
     isAgentSubagentPermissionsEnabled: () => true,
@@ -30,6 +32,7 @@ async function createPermissionIngressHarness({ render = false } = {}) {
     maybeStartRemoteApproval: () => false,
     updateSession: (...args) => updates.push(args),
     permLog: (message) => logs.push(message),
+    debugLog: (message) => debugLogs.push(message),
   };
   const permission = initPermission(ctx);
   for (const key of ["pendingPermissions", "PASSTHROUGH_TOOLS", "addPendingPermission",
@@ -63,7 +66,7 @@ async function createPermissionIngressHarness({ render = false } = {}) {
   await api.startHttpServer();
   const port = server.address().port;
   return {
-    ctx, api, permission, shown, updates, logs, requests, port,
+    ctx, api, permission, shown, updates, logs, debugLogs, requests, port,
     async close() {
       for (const entry of [...permission.pendingPermissions]) {
         permission.resolvePermissionEntry(entry, "no-decision", "Test cleanup");

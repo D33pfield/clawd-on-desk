@@ -2,6 +2,7 @@
 
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -13,7 +14,12 @@ const {
   loadResumableSessionHistory,
   resolveResumeTarget,
 } = require("../src/session-history-loader");
-const { recordSessionHistoryFromStateBody } = require("../hooks/session-history");
+const {
+  LEGACY_HISTORY_VERSION,
+  HISTORY_FILE_PREFIX,
+  getHistoryFilePath,
+  recordSessionHistoryFromStateBody,
+} = require("../hooks/session-history");
 
 describe("session history loader", () => {
   let root;
@@ -38,7 +44,7 @@ describe("session history loader", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  function record(sessionId, eventAt, boot = BOOT_A, overrides = {}) {
+  function record(sessionId, eventAt, boot = BOOT_A, overrides = {}, historyOptions = {}) {
     return recordSessionHistoryFromStateBody({
       agent_id: "claude-code",
       session_id: sessionId,
@@ -49,7 +55,7 @@ describe("session history loader", () => {
       cwd: projectCwd,
       session_title: `Session ${sessionId}`,
       ...overrides,
-    }, { historyDir, eventAt, uptime: () => (eventAt - boot) / 1000 });
+    }, { historyDir, eventAt, uptime: () => (eventAt - boot) / 1000, ...historyOptions });
   }
 
   function writeTranscript(sessionId, cwd = projectCwd) {
@@ -89,8 +95,18 @@ describe("session history loader", () => {
       const previous = process.env.CLAUDE_CONFIG_DIR;
       try {
         process.env.CLAUDE_CONFIG_DIR = path.join(root, "custom-claude");
-        assert.equal(getClaudeProjectsDir(), path.join(root, "custom-claude", "projects"));
-        assert.equal(getClaudeProjectsDir(loadOpts()), claudeProjectsDir);
+        assert.equal(
+          getClaudeProjectsDir({ kind: "default", configDir: null }),
+          path.join(os.homedir(), ".claude", "projects"),
+        );
+        assert.equal(
+          getClaudeProjectsDir({ kind: "default", configDir: null }, loadOpts()),
+          claudeProjectsDir,
+        );
+        assert.equal(
+          getClaudeProjectsDir({ kind: "custom", configDir: path.join(root, "recorded-claude") }),
+          path.join(root, "recorded-claude", "projects"),
+        );
       } finally {
         if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
         else process.env.CLAUDE_CONFIG_DIR = previous;
@@ -100,7 +116,9 @@ describe("session history loader", () => {
     it("rejects path-bearing IDs before any transcript filesystem access", (t) => {
       const reads = t.mock.method(fs, "lstatSync", () => { throw new Error("must not read"); });
       for (const id of ["../secret", "x/y", "x\\y", "", "   ", "a\n"]) {
-        assert.equal(probeTranscript("claude-code", id, projectCwd, loadOpts()), null);
+        assert.equal(probeTranscript(
+          "claude-code", id, projectCwd, { kind: "default", configDir: null }, loadOpts(),
+        ), null);
       }
       assert.equal(reads.mock.callCount(), 0);
     });
@@ -114,32 +132,102 @@ describe("session history loader", () => {
         }
         return lstat(file, ...args);
       });
-      assert.equal(probeTranscript("claude-code", "has-transcript", projectCwd, loadOpts()), null);
+      assert.equal(probeTranscript(
+        "claude-code", "has-transcript", projectCwd, { kind: "default", configDir: null }, loadOpts(),
+      ), null);
     });
 
     it("reports present, confidently missing, and unknown distinctly", () => {
       writeTranscript("has-transcript");
 
       assert.equal(
-        probeTranscript("claude-code", "has-transcript", projectCwd, loadOpts()),
+        probeTranscript("claude-code", "has-transcript", projectCwd,
+          { kind: "default", configDir: null }, loadOpts()),
         true,
       );
       // Project dir exists, this transcript does not -> a confident no.
       assert.equal(
-        probeTranscript("claude-code", "no-transcript", projectCwd, loadOpts()),
+        probeTranscript("claude-code", "no-transcript", projectCwd,
+          { kind: "default", configDir: null }, loadOpts()),
         false,
       );
       // No project dir at all -> unknown, never a claim.
       assert.equal(
-        probeTranscript("claude-code", "anything", path.join(root, "elsewhere"), loadOpts()),
+        probeTranscript("claude-code", "anything", path.join(root, "elsewhere"),
+          { kind: "default", configDir: null }, loadOpts()),
         null,
       );
       // Another agent's layout is not ours to interpret.
-      assert.equal(probeTranscript("codex", "x", projectCwd, loadOpts()), null);
+      assert.equal(probeTranscript(
+        "codex", "x", projectCwd, { kind: "default", configDir: null }, loadOpts(),
+      ), null);
     });
   });
 
   describe("resume list", () => {
+    it("probes each row against its recorded profile without exposing the profile path", () => {
+      const customConfigDir = path.join(root, "custom-claude");
+      const defaultRecord = record("shared-id", T0, BOOT_A, {}, { env: {} });
+      const customRecord = record("shared-id", T0 + 1, BOOT_A, {}, {
+        env: { CLAUDE_CONFIG_DIR: customConfigDir },
+      });
+      writeTranscript("shared-id");
+      fs.mkdirSync(path.join(customConfigDir, "projects", encodeClaudeProjectDir(projectCwd)), {
+        recursive: true,
+      });
+
+      const previous = process.env.CLAUDE_CONFIG_DIR;
+      process.env.CLAUDE_CONFIG_DIR = path.join(root, "wrong-main-profile");
+      try {
+        const rows = loadResumableSessionHistory(loadOpts());
+        assert.equal(rows.length, 2);
+        const defaultRow = rows.find((row) => row.historyKey === defaultRecord.record.historyKey);
+        const customRow = rows.find((row) => row.historyKey === customRecord.record.historyKey);
+        assert.equal(defaultRow.transcriptPresent, true);
+        assert.equal(customRow.transcriptPresent, false);
+        assert.notEqual(defaultRow.historyKey, customRow.historyKey);
+        assert.equal(Object.prototype.hasOwnProperty.call(defaultRow, "profile"), false);
+        assert.equal(JSON.stringify(rows).includes(customConfigDir), false);
+      } finally {
+        if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+        else process.env.CLAUDE_CONFIG_DIR = previous;
+      }
+    });
+
+    it("keeps legacy rows visible but disables resume when profile provenance is absent", () => {
+      const legacy = {
+        version: LEGACY_HISTORY_VERSION,
+        agentId: "claude-code",
+        sessionId: "legacy-session",
+        cwd: projectCwd,
+        title: "Legacy",
+        lastState: "working",
+        firstSeenAt: T0,
+        lastEventAt: T0,
+        endedAt: null,
+        bootApproxAt: BOOT_A,
+      };
+      // Reproduce the v1 filename directly. Calling the current path helper
+      // alone would let a migration bug change both production and fixture.
+      const legacyHash = crypto.createHash("sha256")
+        .update(`claude-code\0${legacy.sessionId}`)
+        .digest("hex")
+        .slice(0, 32);
+      const legacyPath = path.join(historyDir, `${HISTORY_FILE_PREFIX}${legacyHash}.json`);
+      assert.equal(getHistoryFilePath("claude-code", legacy.sessionId, {
+        historyDir,
+        version: LEGACY_HISTORY_VERSION,
+      }), legacyPath);
+      fs.writeFileSync(legacyPath, JSON.stringify(legacy));
+
+      const [row] = loadResumableSessionHistory(loadOpts());
+      assert.equal(row.sessionId, "legacy-session");
+      assert.equal(row.resumeDisabledReason, "profile-unverified");
+      assert.equal(row.transcriptPresent, null);
+      assert.match(row.historyKey, /^[a-f0-9]{32}$/);
+      assert.equal(resolveResumeTarget("claude-code", row.historyKey, loadOpts()), null);
+    });
+
     it("offers interrupted rows first and flags a missing transcript", () => {
       record("interrupted-one", T0);
       record("ended-one", T0 + 1000, BOOT_A, { event: "SessionEnd", state: "idle" });
@@ -191,24 +279,26 @@ describe("session history loader", () => {
 
   describe("resume target resolution", () => {
     it("reads the working directory from the store, not from the caller", () => {
-      record("target", T0);
-      const resolved = resolveResumeTarget("claude-code", "target", loadOpts());
+      const recorded = record("target", T0);
+      const resolved = resolveResumeTarget("claude-code", recorded.record.historyKey, loadOpts());
       assert.deepEqual(resolved, {
         agentId: "claude-code",
         sessionId: "target",
+        historyKey: recorded.record.historyKey,
         cwd: projectCwd,
+        profile: { kind: "default", configDir: null },
       });
     });
 
     it("refuses unknown rows and vanished folders", () => {
-      record("target", T0);
-      assert.equal(resolveResumeTarget("claude-code", "never-seen", loadOpts()), null);
-      assert.equal(resolveResumeTarget("codex", "target", loadOpts()), null);
-      assert.equal(resolveResumeTarget(null, "target", loadOpts()), null);
+      const recorded = record("target", T0);
+      assert.equal(resolveResumeTarget("claude-code", "0".repeat(32), loadOpts()), null);
+      assert.equal(resolveResumeTarget("codex", recorded.record.historyKey, loadOpts()), null);
+      assert.equal(resolveResumeTarget(null, recorded.record.historyKey, loadOpts()), null);
 
       fs.rmSync(projectCwd, { recursive: true, force: true });
       assert.equal(
-        resolveResumeTarget("claude-code", "target", loadOpts()),
+        resolveResumeTarget("claude-code", recorded.record.historyKey, loadOpts()),
         null,
         "a deleted project folder must not be relaunched into",
       );

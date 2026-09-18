@@ -4972,7 +4972,9 @@ const sessionHistoryRuntime = createSessionHistoryRuntime({
     _runtimeAgentGate.isAgentEnabled(agentId)
     && _runtimeAgentGate.isAgentIntegrationInstalled(agentId)
   ),
-  launchClaudeSession,
+  launchClaudeSession: (mode, cwd, sessionId, profile) => (
+    launchClaudeSession(mode, cwd, sessionId, {}, profile)
+  ),
 });
 
 registerSessionIpc({

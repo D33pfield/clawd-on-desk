@@ -64,6 +64,21 @@ const RECAP_PERMISSION_BOUNDARY_AGENT_IDS = new Set([
 // metadata drop; only this header allows a metadata sender to advance its
 // application-level dedup baseline.
 const CLAWD_METADATA_ACCEPTED_HEADER = "X-Clawd-Metadata-Accepted";
+const MAX_PERMISSION_LIFECYCLE_SESSION_ID_LENGTH = 512;
+
+function hasExplicitPermissionLifecycleSessionIdentity(rawSessionId, agentId) {
+  if (typeof rawSessionId !== "string") return false;
+  const normalized = rawSessionId.trim();
+  if (!normalized || normalized.length > MAX_PERMISSION_LIFECYCLE_SESSION_ID_LENGTH) return false;
+  if (/[\u0000-\u001f\u007f]/u.test(normalized)) return false;
+  const lowered = normalized.toLowerCase();
+  if (lowered === "default") return false;
+  const normalizedAgentId = typeof agentId === "string" ? agentId.trim().toLowerCase() : "";
+  if (normalizedAgentId && (lowered === `${normalizedAgentId}:default` || lowered === `${normalizedAgentId}:`)) {
+    return false;
+  }
+  return true;
+}
 
 function normalizeHwndString(value) {
   if (value === null || value === undefined) return null;
@@ -256,6 +271,10 @@ function handleStatePost(req, res, options) {
       }, remoteProfile);
       const orcaPaneKey = normalizeOrcaPaneKey(data.orca_pane_key);
       const agentId = agentIdentity.agentId;
+      const hasExplicitPermissionLifecycleSession = hasExplicitPermissionLifecycleSessionIdentity(
+        session_id,
+        agentId,
+      );
       const trustedProfileId = remoteProfile && typeof remoteProfile.profileId === "string"
         ? remoteProfile.profileId
         : "local";
@@ -285,6 +304,10 @@ function handleStatePost(req, res, options) {
       const subagentType = agentIdentity.source === "subagent"
         ? agentIdentity.subagentType
         : reportedSubagentType;
+      // Invalid wire identities may still contribute bounded lifecycle state,
+      // but they must not create attacker-chosen state buckets. Permission
+      // cleanup remains gated by the original verdict captured above.
+      if (!hasExplicitPermissionLifecycleSession) session_id = undefined;
       // State sessions share one process-wide Map keyed only by session id.
       // Registered custom applications commonly send generic ids such as
       // "default" or "project-a", so namespace them at the trust boundary to
@@ -854,7 +877,18 @@ function handleStatePost(req, res, options) {
             : behaviorFor;
           ctx.resolvePermissionEntry(candidates[0], behavior, message);
         };
-        if (event === "PostToolUse" || event === "PostToolUseFailure" || event === "Stop") {
+        const permissionLifecycleEvent = event === "PostToolUse"
+          || event === "PostToolUseFailure"
+          || event === "Stop"
+          || event === "SessionEnd"
+          || event === "UserPromptSubmit"
+          || event === "PreToolUse";
+        if (!hasExplicitPermissionLifecycleSession && permissionLifecycleEvent
+          && typeof ctx.debugLog === "function") {
+          ctx.debugLog("state-permission-cleanup-skipped reason=missing-or-invalid-session-id");
+        }
+        if (hasExplicitPermissionLifecycleSession
+          && (event === "PostToolUse" || event === "PostToolUseFailure" || event === "Stop")) {
           const perm = findPendingPermissionForStateEvent(ctx.pendingPermissions, {
             sessionId: sid,
             agentId,
@@ -890,7 +924,7 @@ function handleStatePost(req, res, options) {
         // change"); PreToolUse(non-ExitPlanMode) = Claude started executing after
         // plan approval. SessionEnd is authoritative and clears both plan and
         // human-question entries without inventing a user decision.
-        if (event === "SessionEnd") {
+        if (hasExplicitPermissionLifecycleSession && event === "SessionEnd") {
           // A main-thread SessionEnd is authoritative for the whole agent
           // session and must clear requests from every subagent. A SessionEnd
           // emitted by a subagent only closes that subagent's own requests; its
@@ -903,13 +937,13 @@ function handleStatePost(req, res, options) {
           ))) {
             ctx.resolvePermissionEntry(stale, "no-decision", "Session ended");
           }
-        } else if (
+        } else if (hasExplicitPermissionLifecycleSession && (
           event === "UserPromptSubmit"
           || (
             event === "PreToolUse"
             && stateEventInteraction.intent !== INTERACTION_INTENT.PLAN_REVIEW
           )
-        ) {
+        )) {
           const stalePlans = pendingForSource().filter((entry) => (
             entry.interaction
             && entry.interaction.intent === INTERACTION_INTENT.PLAN_REVIEW

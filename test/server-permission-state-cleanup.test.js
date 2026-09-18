@@ -34,6 +34,14 @@ function makeReq(method, url, body) {
   const req = new EventEmitter();
   req.method = method;
   req.url = url;
+  req.headers = {
+    host: "127.0.0.1:23333",
+    "content-type": "application/json",
+  };
+  req.rawHeaders = [
+    "Host", "127.0.0.1:23333",
+    "Content-Type", "application/json",
+  ];
   setImmediate(() => {
     if (body != null) req.emit("data", Buffer.from(body));
     req.emit("end");
@@ -230,6 +238,76 @@ describe("findPendingPermissionForStateEvent", () => {
 });
 
 describe("/state permission cleanup", () => {
+  it("keeps lifecycle state but skips every permission side effect without an explicit session identity", async () => {
+    const fallbackSessionId = localSessionKey("default");
+    for (const rawSessionId of [
+      undefined,
+      "",
+      "default",
+      "claude-code:default",
+      "bad\nidentity",
+      "x".repeat(513),
+      42,
+      ["sid"],
+      { id: "sid" },
+    ]) {
+      for (const event of ["Stop", "SessionEnd"]) {
+        const pendingPermissions = [{
+          id: `${String(rawSessionId)}-${event}`,
+          sessionId: fallbackSessionId,
+          agentId: "claude-code",
+          toolName: "Bash",
+          res: {},
+        }];
+        const updates = [];
+        const debugLogs = [];
+        const { handler, resolved } = startServer({
+          pendingPermissions,
+          updateSession: (...args) => updates.push(args),
+          debugLog: (message) => debugLogs.push(message),
+        });
+        const payload = {
+          agent_id: "claude-code",
+          state: "attention",
+          event,
+        };
+        if (rawSessionId !== undefined) payload.session_id = rawSessionId;
+
+        const res = await callHandler(handler, makeReq("POST", "/state", JSON.stringify(payload)));
+
+        assert.strictEqual(res.statusCode, 200, JSON.stringify({ rawSessionId, event }));
+        assert.deepStrictEqual(resolved, [], JSON.stringify({ rawSessionId, event }));
+        assert.strictEqual(updates.length, 1, "state update must retain the bounded local/default bucket");
+        assert.strictEqual(updates[0][0], fallbackSessionId);
+        assert.deepStrictEqual(debugLogs, [
+          "state-permission-cleanup-skipped reason=missing-or-invalid-session-id",
+        ]);
+      }
+    }
+  });
+
+  it("retains explicit-session Stop compatibility within the exact source scope", async () => {
+    const pendingPermissions = [{
+      id: "explicit-stop",
+      sessionId: localSessionKey("sid-explicit"),
+      agentId: "claude-code",
+      toolName: "Bash",
+      res: {},
+    }];
+    const { handler, resolved } = startServer({ pendingPermissions });
+
+    const res = await callHandler(handler, makeReq("POST", "/state", JSON.stringify({
+      agent_id: "claude-code",
+      state: "attention",
+      session_id: "sid-explicit",
+      event: "Stop",
+    })));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(resolved.map((entry) => entry.perm.id), ["explicit-stop"]);
+    assert.deepStrictEqual(resolved.map((entry) => entry.behavior), ["deny"]);
+  });
+
   it("resolves only the matching concurrent permission entry", async () => {
     const pendingPermissions = [
       {

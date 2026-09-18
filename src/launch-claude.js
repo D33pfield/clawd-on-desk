@@ -12,6 +12,7 @@ const {
 } = require("./remote-ssh-quote");
 
 const { normalizeClaudeSessionId } = require("../hooks/claude-session-id");
+const { normalizeClaudeProfile } = require("../hooks/session-history");
 
 // PowerShell single-quoted string quoting.
 //
@@ -161,12 +162,28 @@ function buildClaudeArgs(mode, sessionId) {
   return args;
 }
 
+function buildClaudeLaunchEnv(profile, baseEnv = process.env) {
+  const normalized = normalizeClaudeProfile(profile);
+  if (!normalized) throw new TypeError("launchClaudeSession: invalid Claude profile");
+  const env = { ...baseEnv };
+  if (normalized.kind === "default") delete env.CLAUDE_CONFIG_DIR;
+  else env.CLAUDE_CONFIG_DIR = normalized.configDir;
+  return env;
+}
+
+function buildPosixClaudeProfilePrefix(profile) {
+  if (!profile) return "";
+  return profile.kind === "default"
+    ? "env -u CLAUDE_CONFIG_DIR "
+    : `env CLAUDE_CONFIG_DIR=${quoteForPosixShellArg(profile.configDir)} `;
+}
+
 // Build the ordered list of terminal launch candidates. Shell-backed
 // candidates quote the resolved claude path and args for their shell layer; the
 // only user-entered arg is the resume session ID, which buildClaudeArgs
 // validates before this point. The argv-array candidates (wt.exe `--`) need no
 // quoting — the OS passes argv verbatim without a shell.
-function buildTerminalCandidates(claudePath, claudeArgs, plat = platform(), workDir) {
+function buildTerminalCandidates(claudePath, claudeArgs, plat = platform(), workDir, profile = null) {
   if (plat === "win32") {
     // cmd.exe /k: command paths with spaces must use cmd's special
     // `""C:\Program Files\...\claude.cmd" args"` form. Plain quoteForCmd on
@@ -213,7 +230,8 @@ function buildTerminalCandidates(claudePath, claudeArgs, plat = platform(), work
     // Terminal.app's `do script` shell always starts at $HOME — it does NOT
     // inherit the osascript process cwd — so the working directory must be an
     // explicit `cd` inside the command (`--` guards leading-dash dir names).
-    const claudeCmd = [claudePath, ...claudeArgs].map(quoteForPosixShellArg).join(" ");
+    const claudeCmd = buildPosixClaudeProfilePrefix(profile)
+      + [claudePath, ...claudeArgs].map(quoteForPosixShellArg).join(" ");
     const cmd = workDir ? `cd -- ${quoteForPosixShellArg(workDir)} && ${claudeCmd}` : claudeCmd;
     const appleScript = `tell application "Terminal" to do script "${escapeAppleScriptString(cmd)}"`;
     return [{ bin: "osascript", args: ["-e", appleScript] }];
@@ -221,7 +239,8 @@ function buildTerminalCandidates(claudePath, claudeArgs, plat = platform(), work
 
   // Linux: POSIX shell quote each token, keep the terminal open after claude
   // exits with `; exec bash`. The whole string is one argv to `bash -c`.
-  const cmd = [claudePath, ...claudeArgs].map(quoteForPosixShellArg).join(" ");
+  const cmd = buildPosixClaudeProfilePrefix(profile)
+    + [claudePath, ...claudeArgs].map(quoteForPosixShellArg).join(" ");
   const keepOpen = `${cmd}; exec bash`;
   return [
     { bin: "x-terminal-emulator", args: ["-e", "bash", "-c", keepOpen] },
@@ -327,7 +346,7 @@ async function openTerminalAt(dir, deps = {}) {
   };
 }
 
-async function launchClaudeSession(mode, cwd, sessionId, deps = {}) {
+async function launchClaudeSession(mode, cwd, sessionId, deps = {}, profile = null) {
   const _platform = deps.platform || platform;
   const _findClaudeCmd = deps.findClaudeCmd || findClaudeCmd;
   const _tryLaunch = deps.tryLaunch || tryLaunch;
@@ -336,9 +355,19 @@ async function launchClaudeSession(mode, cwd, sessionId, deps = {}) {
   const claudePath = await _findClaudeCmd(plat);
   const claudeArgs = buildClaudeArgs(mode, sessionId);
   const workDir = cwd || homedir();
-  const opts = { detached: true, stdio: "ignore", windowsHide: false, cwd: workDir };
+  const normalizedProfile = profile === null ? null : normalizeClaudeProfile(profile);
+  if (profile !== null && !normalizedProfile) {
+    return { ok: false, message: "launchClaudeSession: invalid Claude profile" };
+  }
+  const opts = {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: false,
+    cwd: workDir,
+    ...(normalizedProfile ? { env: buildClaudeLaunchEnv(normalizedProfile) } : {}),
+  };
 
-  const candidates = buildTerminalCandidates(claudePath, claudeArgs, plat, workDir);
+  const candidates = buildTerminalCandidates(claudePath, claudeArgs, plat, workDir, normalizedProfile);
   let lastError = null;
   for (const candidate of candidates) {
     const result = await _tryLaunch(candidate.bin, candidate.args, {
@@ -358,6 +387,7 @@ async function launchClaudeSession(mode, cwd, sessionId, deps = {}) {
 module.exports = {
   launchClaudeSession,
   buildClaudeArgs,
+  buildClaudeLaunchEnv,
   buildTerminalCandidates,
   buildShellTerminalCandidates,
   openTerminalAt,

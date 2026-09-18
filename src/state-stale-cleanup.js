@@ -115,8 +115,17 @@ function getStaleSessionDecision(session, options = {}) {
   }
 
   const isProcessAlive = options.isProcessAlive;
+  const livenessByPid = new Map();
+  const isProcessAliveOnce = (pid) => {
+    if (livenessByPid.has(pid)) return livenessByPid.get(pid);
+    const alive = isProcessAlive(pid);
+    livenessByPid.set(pid, alive);
+    return alive;
+  };
+  const hasReachableAgentPid = !!(session.pidReachable && session.agentPid);
+  const agentAlive = hasReachableAgentPid ? isProcessAliveOnce(session.agentPid) : null;
 
-  if (session.pidReachable && session.agentPid && !isProcessAlive(session.agentPid)) {
+  if (hasReachableAgentPid && !agentAlive) {
     return { action: "delete", reason: "agent-exit" };
   }
 
@@ -217,7 +226,9 @@ function getStaleSessionDecision(session, options = {}) {
     // failed, so the earlier agent-exit check cannot retire it on its own.
     if (
       (workingStaleMs === 0 || workingWindowElapsed)
-      && session.pidReachable && session.sourcePid && !isProcessAlive(session.sourcePid)
+      && session.pidReachable && session.sourcePid
+      && !agentAlive
+      && !isProcessAliveOnce(session.sourcePid)
     ) {
       return { action: "delete", reason: "working-source-exit" };
     }
@@ -230,7 +241,7 @@ function getStaleSessionDecision(session, options = {}) {
   // sessionStaleMs === 0 disables the idle/non-working age cutoff entirely.
   if (sessionStaleMs > 0 && age > sessionStaleMs) {
     if (session.pidReachable && session.sourcePid) {
-      if (!isProcessAlive(session.sourcePid)) {
+      if (!isProcessAliveOnce(session.sourcePid)) {
         return { action: "delete", reason: "source-exit" };
       }
       if (session.state !== "idle") {
