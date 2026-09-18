@@ -624,6 +624,37 @@ describe("Claude AppImage statusline", () => {
     assert.ok(!command.includes(".mount_"), command);
   });
 
+  it("migrates the exact released mount-scoped statusline into the persistent generation", () => {
+    const { options, settingsPath } = makeOptions();
+    const legacyScript = "/tmp/.mount_ClawdABC/resources/app.asar.unpacked/hooks/claude-statusline.js";
+    fs.writeFileSync(settingsPath, JSON.stringify({
+      statusLine: { type: "command", command: `"${process.execPath}" "${legacyScript}"`, padding: 0 },
+    }));
+
+    const result = registerClaudeStatusline({ ...options, settingsPath });
+
+    assert.strictEqual(result.changed, true);
+    const command = JSON.parse(fs.readFileSync(settingsPath, "utf8")).statusLine.command;
+    assert.ok(command.includes("appimage-hooks"), command);
+    assert.ok(!command.includes(".mount_ClawdABC"), command);
+  });
+
+  it("can explicitly uninstall the exact released mount-scoped statusline without an owner record", () => {
+    const { options, settingsPath } = makeOptions();
+    const legacyScript = "/tmp/.mount_ClawdABC/resources/app.asar.unpacked/hooks/claude-statusline.js";
+    fs.writeFileSync(settingsPath, JSON.stringify({
+      statusLine: { type: "command", command: `"${process.execPath}" "${legacyScript}"`, padding: 0 },
+      model: "opus",
+    }));
+
+    const result = unregisterClaudeStatusline({ ...options, settingsPath });
+
+    assert.strictEqual(result.removed, 1);
+    const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    assert.strictEqual(settings.statusLine, undefined);
+    assert.strictEqual(settings.model, "opus");
+  });
+
   it("fails closed before any settings/sidecar mutation when materialization fails", () => {
     const { options, settingsPath, home } = makeOptions();
     const original = JSON.stringify({

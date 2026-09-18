@@ -2726,6 +2726,33 @@ describe("Claude Code statusline installer", () => {
     assert.strictEqual(fs.readFileSync(settingsPath, "utf8"), before);
   });
 
+  it("publishes a new owner record atomically before changing settings", () => {
+    const settingsPath = makeTempSettings({ model: "opus" });
+    const before = fs.readFileSync(settingsPath, "utf8");
+    const ownerPath = path.join(path.dirname(settingsPath), "hooks", PLAIN_OWNER_FILE);
+    const originalLinkSync = fs.linkSync;
+    fs.linkSync = () => {
+      const error = new Error("simulated publish failure");
+      error.code = "EIO";
+      throw error;
+    };
+    try {
+      assert.throws(
+        () => registerClaudeStatusline({ silent: true, settingsPath, platform: "linux", nodeBin: "/usr/bin/node" }),
+        /simulated publish failure/
+      );
+    } finally {
+      fs.linkSync = originalLinkSync;
+    }
+    assert.strictEqual(fs.readFileSync(settingsPath, "utf8"), before);
+    assert.strictEqual(fs.existsSync(ownerPath), false);
+    const ownerDir = path.dirname(ownerPath);
+    assert.deepStrictEqual(
+      fs.existsSync(ownerDir) ? fs.readdirSync(ownerDir).filter((name) => name.includes(".tmp-")) : [],
+      []
+    );
+  });
+
   it("is idempotent on second run", () => {
     const settingsPath = makeTempSettings({});
     registerClaudeStatusline({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
@@ -2860,6 +2887,65 @@ describe("Claude Code statusline installer", () => {
       JSON.parse(fs.readFileSync(chainSidecarPath, "utf8")).statusLine,
       NASTY_STATUSLINE
     );
+  });
+
+  it("refuses remote-chain to plain mode migration without touching either recovery record", () => {
+    const settingsPath = makeTempSettings({ statusLine: NASTY_STATUSLINE });
+    const chainSidecarPath = makeChainSidecarPath();
+    registerClaudeStatusline({
+      silent: true,
+      settingsPath,
+      chainSidecarPath,
+      remote: true,
+      sshRemote: true,
+      remoteIdentity: secureRemoteIdentity(),
+      chainExisting: true,
+      platform: "linux",
+      nodeBin: "/usr/bin/node",
+    });
+    const settingsBefore = fs.readFileSync(settingsPath, "utf8");
+    const sidecarBefore = fs.readFileSync(chainSidecarPath, "utf8");
+    const plainOwnerPath = path.join(path.dirname(settingsPath), "hooks", PLAIN_OWNER_FILE);
+
+    assert.throws(
+      () => registerClaudeStatusline({
+        silent: true,
+        settingsPath,
+        chainSidecarPath,
+        platform: "linux",
+        nodeBin: "/usr/bin/node",
+      }),
+      /owned by remote mode/
+    );
+    assert.strictEqual(fs.readFileSync(settingsPath, "utf8"), settingsBefore);
+    assert.strictEqual(fs.readFileSync(chainSidecarPath, "utf8"), sidecarBefore);
+    assert.strictEqual(fs.existsSync(plainOwnerPath), false);
+  });
+
+  it("refuses plain to remote mode migration without touching either owner record", () => {
+    const settingsPath = makeTempSettings({});
+    registerClaudeStatusline({ silent: true, settingsPath, platform: "linux", nodeBin: "/usr/bin/node" });
+    const plainOwnerPath = path.join(path.dirname(settingsPath), "hooks", PLAIN_OWNER_FILE);
+    const chainSidecarPath = makeChainSidecarPath();
+    const settingsBefore = fs.readFileSync(settingsPath, "utf8");
+    const ownerBefore = fs.readFileSync(plainOwnerPath, "utf8");
+
+    assert.throws(
+      () => registerClaudeStatusline({
+        silent: true,
+        settingsPath,
+        chainSidecarPath,
+        remote: true,
+        sshRemote: true,
+        remoteIdentity: secureRemoteIdentity(),
+        platform: "linux",
+        nodeBin: "/usr/bin/node",
+      }),
+      /owned by plain mode/
+    );
+    assert.strictEqual(fs.readFileSync(settingsPath, "utf8"), settingsBefore);
+    assert.strictEqual(fs.readFileSync(plainOwnerPath, "utf8"), ownerBefore);
+    assert.strictEqual(fs.existsSync(chainSidecarPath), false);
   });
 
   it("remote --chain-existing: explicit false restores the original statusline", () => {

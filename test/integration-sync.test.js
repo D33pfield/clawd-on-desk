@@ -636,6 +636,15 @@ describe("integration sync runtime", () => {
     assert.strictEqual(runtime.syncIntegrationForAgent("cursor-agent"), conflict);
   });
 
+  it("normalizes an injected empty Cursor count result as not installed", () => {
+    const { runtime } = makeRuntime({
+      ctx: { syncCursorHooksImpl: () => ({ added: 0, updated: 0, skipped: 0 }) },
+    });
+    const result = runtime.syncIntegrationForAgent("cursor-agent");
+    assert.strictEqual(result.status, "skipped");
+    assert.strictEqual(result.reason, "cursor-not-installed");
+  });
+
   it("syncIntegrationForAgent treats installed:false results as skipped", () => {
     const cases = [
       {

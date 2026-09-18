@@ -59,12 +59,24 @@ function writeStatuslineOwnerRecord(file, record) {
     if (error.code !== "ENOENT") throw error;
   }
   if (exists) writeTextAtomic(file, serialized, { encoding: "utf8", mode: 0o600 });
-  else fs.writeFileSync(file, serialized, { flag: "wx", mode: 0o600 });
+  else writeTextExclusiveAtomic(file, serialized);
   const reread = readStatuslineOwnerRecord(file, record.owner);
   if (statuslineFingerprint(reread) !== statuslineFingerprint(record)) {
     throw new Error(`Statusline ownership record verification failed: ${file}`);
   }
   return reread;
+}
+
+function writeTextExclusiveAtomic(file, serialized) {
+  const temp = `${file}.tmp-${process.pid}-${crypto.randomBytes(6).toString("hex")}`;
+  try {
+    fs.writeFileSync(temp, serialized, { flag: "wx", mode: 0o600 });
+    // A same-directory hard link publishes the fully written inode under the
+    // final name atomically and fails with EEXIST if another writer won.
+    fs.linkSync(temp, file);
+  } finally {
+    try { fs.unlinkSync(temp); } catch {}
+  }
 }
 
 function ownerRecordMatchesCommand(record, command) {
@@ -118,7 +130,7 @@ function createLocalChainRecord(file, statusLine, portableCommand, platform) {
   if (Buffer.byteLength(serialized) > 65536) throw new Error("Statusline recovery record is too large; kept unchanged");
   fs.mkdirSync(path.dirname(file), { recursive: true });
   // Exclusive creation also protects a record installed between read and write.
-  fs.writeFileSync(file, serialized, { flag: "wx", mode: 0o600 });
+  writeTextExclusiveAtomic(file, serialized);
   return record;
 }
 

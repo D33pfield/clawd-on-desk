@@ -503,6 +503,20 @@ function validateCommandList(descriptor, commands, options) {
 }
 
 function validateCursorCommandList(descriptor, settings, options) {
+  const runtime = cursor.resolveCursorHookRuntime({
+    platform: options.platform || process.platform,
+    processEnv: options.env,
+    homeDir: options.homeDir,
+    sourceScript: descriptor.scriptPath || cursor.resolveCursorHookScript(),
+    fs: options.fs,
+  }, { materialize: false });
+  if (!runtime.ok) {
+    return makeDetail(descriptor, "needs-review", {
+      level: "warning",
+      detail: `Cursor hook runtime could not be resolved: ${runtime.message || runtime.reason}`,
+      hookCommandIssue: runtime.reason || "cursor-hook-runtime-unavailable",
+    });
+  }
   const records = [];
   if (settings && settings.hooks && typeof settings.hooks === "object") {
     for (const [event, entries] of Object.entries(settings.hooks)) {
@@ -511,8 +525,9 @@ function validateCursorCommandList(descriptor, settings, options) {
         if (!entry || typeof entry.command !== "string") return;
         const verdict = cursor.classifyCursorHookCommand(
           entry.command,
-          descriptor.scriptPath || cursor.resolveCursorHookScript(),
-          options.platform || process.platform
+          runtime.target,
+          options.platform || process.platform,
+          { homeDir: options.homeDir, materializedRoot: runtime.materializedRoot }
         );
         records.push({ event, index, command: entry.command, ...verdict });
       });

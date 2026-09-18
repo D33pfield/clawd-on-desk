@@ -1063,6 +1063,8 @@ test("settings IPC rejects user theme zips carrying the reserved official owners
     "pixel-cat/.clawd-official-theme.json",
     "pixel-cat/nested/.CLAWD-OFFICIAL-THEME.JSON",
     "pixel-cat\\nested\\.clawd-official-theme.json",
+    "pixel-cat/.clawd-official-theme.json.",
+    "pixel-cat/nested/.clawd-official-theme.json ",
   ]) {
     const root = makeTempDir();
     try {

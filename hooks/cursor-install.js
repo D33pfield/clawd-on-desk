@@ -14,6 +14,13 @@ const {
   formatNodeHookCommand,
   stripUtf8Bom,
 } = require("./json-utils");
+const {
+  planAppImageHookBundle,
+  materializeAppImageHookBundle,
+  isAppImageHookBundleComplete,
+  isLegacyAppImageHookPath,
+  isManagedAppImageHookTarget,
+} = require("./appimage-hook-materializer");
 const MARKER = "cursor-hook.js";
 const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".cursor");
 const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "hooks.json");
@@ -34,6 +41,84 @@ const CURSOR_HOOK_EVENTS = [
 
 function resolveCursorHookScript() {
   return asarUnpackedPath(path.resolve(__dirname, "cursor-hook.js").replace(/\\/g, "/"));
+}
+
+function isPosixPathInside(rootDir, target) {
+  const root = String(rootDir || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  const child = String(target || "").replace(/\\/g, "/");
+  return !!root && !!child && (child === root || child.startsWith(`${root}/`));
+}
+
+function evaluateCursorAppImage(options, sourceScript) {
+  const platform = options.platform || process.platform;
+  if (platform !== "linux") return { materialize: false };
+  const env = options.processEnv || process.env;
+  if (!env || !Object.prototype.hasOwnProperty.call(env, "APPIMAGE")) {
+    return { materialize: false };
+  }
+  const raw = env.APPIMAGE;
+  if (typeof raw !== "string" || !raw.trim() || !path.posix.isAbsolute(raw.trim())) {
+    return {
+      materialize: false,
+      error: {
+        reason: "invalid-appimage-path",
+        message: "APPIMAGE is set but is not an absolute POSIX path; refusing to materialize Cursor hooks",
+      },
+    };
+  }
+  const appDir = typeof env.APPDIR === "string" ? env.APPDIR.trim() : "";
+  if (!path.posix.isAbsolute(appDir) || !isPosixPathInside(appDir, sourceScript)) {
+    return { materialize: false };
+  }
+  return { materialize: true, appImagePath: raw.trim() };
+}
+
+function resolveCursorHookRuntime(options = {}, config = {}) {
+  const source = path.resolve(options.sourceScript || resolveCursorHookScript());
+  const decision = evaluateCursorAppImage(options, source);
+  if (decision.error) return { ok: false, ...decision.error };
+  if (!decision.materialize) {
+    return {
+      ok: true,
+      mode: "direct",
+      source,
+      target: source,
+      materializedRoot: options.materializedRoot
+        || path.join(options.homeDir || os.homedir(), ".clawd", "appimage-hooks"),
+      targetGeneration: null,
+    };
+  }
+  try {
+    const plan = planAppImageHookBundle(source, {
+      appImagePath: decision.appImagePath,
+      homeDir: options.homeDir,
+      materializedRoot: options.materializedRoot,
+      platform: options.platform || process.platform,
+      rootDir: path.dirname(source),
+      fs: options.fs,
+      realpathSync: options.realpathSync,
+    });
+    if (config.materialize === true) materializeAppImageHookBundle(plan, { fs: options.fs });
+    const target = plan.entryTargets.get(source);
+    if (!target) return { ok: false, reason: "appimage-plan-incomplete", message: "Cursor hook target was not planned" };
+    return {
+      ok: true,
+      mode: "appimage-materialized",
+      source,
+      target,
+      materializedRoot: plan.materializedRoot,
+      targetGeneration: {
+        ok: isAppImageHookBundleComplete(plan, { fs: options.fs }),
+        dir: plan.generationDir,
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: (error && error.code) || "appimage-materialize-failed",
+      message: error && error.message,
+    };
+  }
 }
 
 function buildCursorHookCommand(nodeBin, hookScript, platform = process.platform) {
@@ -135,7 +220,7 @@ function isAbsoluteCommandPath(value) {
   return normalized.startsWith("/") || normalized.startsWith("//") || /^[A-Za-z]:\//.test(normalized);
 }
 
-function classifyCursorHookCommand(command, expectedScript, platform = process.platform) {
+function classifyCursorHookCommand(command, expectedScript, platform = process.platform, options = {}) {
   const raw = typeof command === "string" ? command : "";
   const broadMarker = raw.includes(MARKER) || Boolean((decodeWindowsEncodedCommand(raw) || "").includes(MARKER));
   let unwrapped = unwrapCursorCommand(raw);
@@ -149,26 +234,32 @@ function classifyCursorHookCommand(command, expectedScript, platform = process.p
   const [nodeBin, scriptPath, sentinel] = tokens;
   const exactScript = canonicalCommandPath(scriptPath, platform) === canonicalCommandPath(expectedScript, platform);
   const exactSentinel = tokens.length === 3 && sentinel === CURSOR_HOOK_SENTINEL;
-  if (looksLikeNodeCommand(nodeBin) && exactScript && (tokens.length === 2 || exactSentinel)) {
+  const legacyAppImage = platform === "linux" && isLegacyAppImageHookPath(scriptPath, MARKER);
+  const managedAppImage = platform === "linux" && exactSentinel
+    && isManagedAppImageHookTarget(scriptPath, MARKER, options);
+  const scriptOwned = exactScript || legacyAppImage || managedAppImage;
+  if (looksLikeNodeCommand(nodeBin) && scriptOwned && (tokens.length === 2 || exactSentinel)) {
     return {
       classification: "owned",
       command: raw,
       nodeBin,
       scriptPath,
       sentinel: exactSentinel,
+      legacyAppImage,
+      managedAppImage,
     };
   }
   return { classification: broadMarker ? "ambiguous" : "foreign", command: raw };
 }
 
-function collectCursorCommandClassifications(settings, hookScript, platform) {
+function collectCursorCommandClassifications(settings, hookScript, platform, options = {}) {
   const records = [];
   if (!settings || !settings.hooks || typeof settings.hooks !== "object") return records;
   for (const [event, entries] of Object.entries(settings.hooks)) {
     if (!Array.isArray(entries)) continue;
     entries.forEach((entry, index) => {
       if (!entry || typeof entry !== "object" || typeof entry.command !== "string") return;
-      records.push({ event, index, entry, ...classifyCursorHookCommand(entry.command, hookScript, platform) });
+      records.push({ event, index, entry, ...classifyCursorHookCommand(entry.command, hookScript, platform, options) });
     });
   }
   return records;
@@ -216,7 +307,19 @@ function registerCursorHooks(options = {}) {
       return { added: 0, skipped: 0, updated: 0 };
     }
   }
-  const hookScript = resolveCursorHookScript();
+  const runtime = resolveCursorHookRuntime(options, { materialize: false });
+  if (!runtime.ok) {
+    return {
+      status: "error",
+      reason: runtime.reason,
+      message: runtime.message || "Failed to prepare the Cursor hook runtime",
+      added: 0,
+      skipped: 0,
+      updated: 0,
+      hooksPath,
+    };
+  }
+  const hookScript = runtime.target;
 
   let settings = {};
   let hooksFileExists = true;
@@ -232,7 +335,8 @@ function registerCursorHooks(options = {}) {
   }
 
   const platform = options.platform || process.platform;
-  const classifications = collectCursorCommandClassifications(settings, hookScript, platform);
+  const ownershipOptions = { homeDir, materializedRoot: runtime.materializedRoot };
+  const classifications = collectCursorCommandClassifications(settings, hookScript, platform, ownershipOptions);
   const conflicts = classifications
     .filter((record) => record.classification === "ambiguous")
     .map(({ event, index, command }) => ({ event, index, command }));
@@ -247,6 +351,24 @@ function registerCursorHooks(options = {}) {
       updated: 0,
       hooksPath,
     };
+  }
+
+  // Materialization is a mutation, so defer it until every persisted command
+  // has passed the ownership scan. An ambiguous hooks.json must remain the only
+  // state on disk that changes: namely, nothing changes at all.
+  if (runtime.mode === "appimage-materialized") {
+    const prepared = resolveCursorHookRuntime(options, { materialize: true });
+    if (!prepared.ok) {
+      return {
+        status: "error",
+        reason: prepared.reason,
+        message: prepared.message || "Failed to materialize the Cursor hook runtime",
+        added: 0,
+        skipped: 0,
+        updated: 0,
+        hooksPath,
+      };
+    }
   }
 
   // Resolve node path; if detection fails, preserve existing absolute path
@@ -283,7 +405,7 @@ function registerCursorHooks(options = {}) {
     const kept = [];
     for (const entry of arr) {
       const classification = entry && typeof entry === "object"
-        ? classifyCursorHookCommand(entry.command, hookScript, platform)
+        ? classifyCursorHookCommand(entry.command, hookScript, platform, ownershipOptions)
         : { classification: "foreign" };
       if (classification.classification !== "owned") {
         kept.push(entry);
@@ -353,9 +475,21 @@ function unregisterCursorHooks(options = {}) {
     return { removed: 0, changed: false, hooksPath };
   }
 
-  const hookScript = resolveCursorHookScript();
+  const runtime = resolveCursorHookRuntime(options, { materialize: false });
+  if (!runtime.ok) {
+    return {
+      status: "error",
+      reason: runtime.reason,
+      message: runtime.message || "Failed to resolve the Cursor hook runtime",
+      removed: 0,
+      changed: false,
+      hooksPath,
+    };
+  }
+  const hookScript = runtime.target;
   const platform = options.platform || process.platform;
-  const classifications = collectCursorCommandClassifications(settings, hookScript, platform);
+  const ownershipOptions = { homeDir, materializedRoot: runtime.materializedRoot };
+  const classifications = collectCursorCommandClassifications(settings, hookScript, platform, ownershipOptions);
   const conflicts = classifications
     .filter((record) => record.classification === "ambiguous")
     .map(({ event, index, command }) => ({ event, index, command }));
@@ -378,7 +512,7 @@ function unregisterCursorHooks(options = {}) {
     if (!Array.isArray(entries)) continue;
     const kept = entries.filter((entry) => {
       const classification = entry && typeof entry === "object"
-        ? classifyCursorHookCommand(entry.command, hookScript, platform)
+        ? classifyCursorHookCommand(entry.command, hookScript, platform, ownershipOptions)
         : { classification: "foreign" };
       if (classification.classification !== "owned") return true;
       removed++;
@@ -413,6 +547,7 @@ module.exports = {
   buildCursorHookCommand,
   classifyCursorHookCommand,
   resolveCursorHookScript,
+  resolveCursorHookRuntime,
 };
 
 if (require.main === module) {

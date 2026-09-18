@@ -378,9 +378,9 @@ function createIntegrationSyncRuntime(options = {}) {
 
   function syncCursorHooks() {
     try {
-      if (typeof ctx.syncCursorHooksImpl === "function") return ctx.syncCursorHooksImpl();
-      const { registerCursorHooks } = require("../hooks/cursor-install.js");
-      const result = registerCursorHooks({ silent: true });
+      const result = typeof ctx.syncCursorHooksImpl === "function"
+        ? ctx.syncCursorHooksImpl()
+        : require("../hooks/cursor-install.js").registerCursorHooks({ silent: true });
       if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
         console.log(`Clawd: synced Cursor hooks (added ${result.added}, updated ${result.updated})`);
       }

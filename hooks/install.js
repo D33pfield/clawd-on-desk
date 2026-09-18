@@ -42,6 +42,7 @@ const {
   planAppImageHookBundle,
   materializeAppImageHookBundle,
   isAppImageHookBundleComplete,
+  isLegacyAppImageHookPath,
 } = require("./appimage-hook-materializer");
 
 function resolveClaudeHome(options = {}) {
@@ -2322,10 +2323,13 @@ function parseStrictClaudeStatuslineCommand(command, expectedScript, platform = 
   const prefix = validateRemoteStatuslinePrefix(head);
   if (!prefix.ok && head) return null;
   if (!isNodeStatuslineToken(nodeBin)) return null;
-  if (canonicalStatuslinePath(scriptPath, platform) !== canonicalStatuslinePath(expectedScript, platform)) return null;
+  const exactScript = canonicalStatuslinePath(scriptPath, platform) === canonicalStatuslinePath(expectedScript, platform);
+  const legacyAppImage = platform === "linux" && !exactScript
+    && isLegacyAppImageHookPath(scriptPath, STATUSLINE_MARKER);
+  if (!exactScript && !legacyAppImage) return null;
   if (suffix === "local" && prefix.remote) return null;
   if (suffix === "remote-chain" && !prefix.remote) return null;
-  return { suffix, remote: prefix.remote, nodeBin, scriptPath };
+  return { suffix, remote: prefix.remote, nodeBin, scriptPath, legacyAppImage };
 }
 
 function hasExactStatuslineMarker(command) {
@@ -2485,6 +2489,12 @@ function registerClaudeStatusline(options = {}) {
     throw new Error(`Claude statusline ownership is ambiguous; kept unchanged${ownership.error ? `: ${ownership.error.message}` : ""}`);
   }
   const existingIsOurs = ownership.classification === "owned";
+
+  const requestedMode = options.remote === true ? "remote" : "plain";
+  if (existingIsOurs && (ownership.mode === "plain" || ownership.mode === "remote")
+    && ownership.mode !== requestedMode) {
+    throw new Error(`Claude statusline is owned by ${ownership.mode} mode; unregister that mode before registering ${requestedMode} mode. Recovery records kept unchanged`);
+  }
 
   if (options.expectedStatuslineFingerprint !== undefined
     && statuslineFingerprint(existing) !== options.expectedStatuslineFingerprint) {
@@ -2710,7 +2720,7 @@ function unregisterClaudeStatusline(options = {}) {
     }
     return { installed: !!existing, removed: 0, changed: false, settingsPath };
   }
-  if (ownership.legacy === true) {
+  if (ownership.legacy === true && !(ownership.parsed && ownership.parsed.legacyAppImage === true)) {
     throw new Error("Claude statusline ownership evidence is missing or legacy; run registration repair before uninstall");
   }
 

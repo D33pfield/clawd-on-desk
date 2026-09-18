@@ -67,6 +67,18 @@ function normalizeZipEntryName(entryName) {
   return String(entryName || "").replace(/\\/g, "/");
 }
 
+function portableZipPathPart(part) {
+  return String(part || "").replace(/[. ]+$/u, "").toLowerCase();
+}
+
+function portableZipPathKey(relativePath) {
+  return normalizeZipEntryName(relativePath)
+    .split("/")
+    .filter(Boolean)
+    .map(portableZipPathPart)
+    .join("/");
+}
+
 function assertNoReservedOfficialMarker(entries, prefix) {
   const normalizedPrefix = normalizeZipEntryName(prefix);
   const reserved = OFFICIAL_THEME_MARKER_FILENAME.toLowerCase();
@@ -77,7 +89,7 @@ function assertNoReservedOfficialMarker(entries, prefix) {
       && !normalizedName.startsWith(normalizedPrefix)) continue;
     const relativePath = normalizedPrefix ? normalizedName.slice(normalizedPrefix.length) : normalizedName;
     const parts = relativePath.split("/").filter(Boolean);
-    if (parts.some((part) => part.toLowerCase() === reserved)) {
+    if (parts.some((part) => portableZipPathPart(part) === reserved)) {
       throw new Error(`theme zip contains reserved official theme ownership marker: ${entry.name}`);
     }
   }
@@ -165,7 +177,7 @@ function importUserThemeZip(zipPath, options = {}) {
       const relativePath = stripThemeRootPrefix(entry.name, prefix);
       if (!relativePath) continue;
       const { target } = assertSafeRelativePath(path, stagingDir, relativePath);
-      const normalizedKey = path.relative(stagingDir, target).toLowerCase();
+      const normalizedKey = portableZipPathKey(relativePath);
       if (seenPaths.has(normalizedKey)) throw new Error(`duplicate theme zip entry: ${relativePath}`);
       seenPaths.add(normalizedKey);
       totalUnzipped += entry.uncompressedSize || 0;

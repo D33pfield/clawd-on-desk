@@ -190,6 +190,110 @@ describe("Cursor hook installer", () => {
     assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), contentBefore);
   });
 
+  it("keeps one persistent Cursor target across changing AppImage mount roots", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cursor-appimage-"));
+    tempDirs.push(root);
+    const materializedRoot = path.join(root, "materialized");
+    const hooksPath = path.join(root, "hooks.json");
+    fs.writeFileSync(hooksPath, "{}", "utf8");
+    const makeSource = (mount) => {
+      const sourceDir = path.join(root, mount, "resources", "app.asar.unpacked", "hooks");
+      fs.mkdirSync(sourceDir, { recursive: true });
+      const source = path.join(sourceDir, "cursor-hook.js");
+      fs.writeFileSync(source, "#!/usr/bin/env node\n", "utf8");
+      return { appDir: path.join(root, mount), source };
+    };
+    const firstMount = makeSource(".mount_ClawdA");
+    const secondMount = makeSource(".mount_ClawdB");
+    const base = {
+      silent: true,
+      hooksPath,
+      nodeBin: "/usr/bin/node",
+      platform: "linux",
+      homeDir: path.join(root, "home"),
+      materializedRoot,
+    };
+
+    const first = registerCursorHooks({
+      ...base,
+      sourceScript: firstMount.source,
+      processEnv: { APPIMAGE: "/opt/Clawd.AppImage", APPDIR: firstMount.appDir },
+    });
+    assert.strictEqual(first.status, undefined);
+    const firstCommand = readJson(hooksPath).hooks.stop[0].command;
+    assert.ok(firstCommand.includes(materializedRoot), firstCommand);
+    assert.ok(!firstCommand.includes(".mount_ClawdA"), firstCommand);
+
+    const second = registerCursorHooks({
+      ...base,
+      sourceScript: secondMount.source,
+      processEnv: { APPIMAGE: "/opt/Clawd.AppImage", APPDIR: secondMount.appDir },
+    });
+    assert.strictEqual(second.updated, 0);
+    assert.strictEqual(second.skipped, CURSOR_HOOK_EVENTS.length);
+    assert.strictEqual(readJson(hooksPath).hooks.stop[0].command, firstCommand);
+  });
+
+  it("migrates the exact released AppImage mount command but not basename lookalikes", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cursor-appimage-legacy-"));
+    tempDirs.push(root);
+    const hooksPath = path.join(root, "hooks.json");
+    const legacyScript = "/tmp/.mount_ClawdABC/resources/app.asar.unpacked/hooks/cursor-hook.js";
+    fs.writeFileSync(hooksPath, JSON.stringify({
+      version: 1,
+      hooks: { stop: [{ command: `"/usr/bin/node" "${legacyScript}"` }] },
+    }), "utf8");
+
+    const result = registerCursorHooks({
+      silent: true,
+      hooksPath,
+      nodeBin: "/usr/bin/node",
+      platform: "linux",
+      sourceScript: CURRENT_SCRIPT,
+      processEnv: { APPIMAGE: "/opt/Clawd.AppImage", APPDIR: path.resolve(__dirname, "..") },
+      homeDir: path.join(root, "home"),
+      materializedRoot: path.join(root, "materialized"),
+    });
+
+    assert.strictEqual(result.status, undefined);
+    const command = readJson(hooksPath).hooks.stop[0].command;
+    assert.ok(command.includes(path.join(root, "materialized")), command);
+    assert.ok(command.includes(CURSOR_HOOK_SENTINEL), command);
+    assert.ok(!command.includes(legacyScript), command);
+  });
+
+  it("does not materialize an AppImage generation when ownership is ambiguous", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cursor-appimage-conflict-"));
+    tempDirs.push(root);
+    const appDir = path.join(root, ".mount_Clawd");
+    const sourceDir = path.join(appDir, "resources", "app.asar.unpacked", "hooks");
+    fs.mkdirSync(sourceDir, { recursive: true });
+    const sourceScript = path.join(sourceDir, "cursor-hook.js");
+    fs.writeFileSync(sourceScript, "#!/usr/bin/env node\n", "utf8");
+    const hooksPath = path.join(root, "hooks.json");
+    const original = JSON.stringify({
+      version: 1,
+      hooks: { stop: [{ command: '"/usr/bin/node" "/opt/vendor/my-cursor-hook.js" --vendor' }] },
+    });
+    fs.writeFileSync(hooksPath, original, "utf8");
+    const materializedRoot = path.join(root, "materialized");
+
+    const result = registerCursorHooks({
+      silent: true,
+      hooksPath,
+      nodeBin: "/usr/bin/node",
+      platform: "linux",
+      sourceScript,
+      processEnv: { APPIMAGE: "/opt/Clawd.AppImage", APPDIR: appDir },
+      homeDir: path.join(root, "home"),
+      materializedRoot,
+    });
+
+    assert.strictEqual(result.reason, "cursor-hook-conflict");
+    assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), original);
+    assert.strictEqual(fs.existsSync(materializedRoot), false);
+  });
+
   it("updates stale hook paths", () => {
     const hooksPath = makeTempHooksFile({
       version: 1,
