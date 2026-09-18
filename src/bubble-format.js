@@ -283,18 +283,85 @@
     return segs;
   }
 
-  function segmentCommands(cmd) {
+  // Command-substitution bodies are COMMAND POSITIONS that the quote-aware split
+  // above structurally cannot see: in `echo "$(rm -rf ./d)"` the double quote
+  // swallows the whole string, so the only segment is `echo …` and the delete the
+  // shell actually runs is invisible. Measured (cross-family round 14, 2026-09-18):
+  // both the `$( … )` and the backtick spelling ALLOWED while the plain form HELD —
+  // the same composition class the review named, in a different spelling.
+  //
+  // This is a SECOND, ADDITIVE pass. It only ever appends segments, so its failure
+  // direction is a false HOLD (a human glance), never a missed delete. `$((` is
+  // arithmetic, not a command position, and is skipped; single quotes suppress both
+  // forms, so a quoted literal does not become a fake command position.
+  function substitutionBodies(cmd) {
     const out = [];
+    for (let i = 0; i < cmd.length; i++) {
+      const ch = cmd[i];
+      if (ch === "\\") { i++; continue; }
+      if (ch === "'") {
+        const end = cmd.indexOf("'", i + 1);
+        if (end === -1) break;
+        i = end;
+        continue;
+      }
+      if (ch === "$" && cmd[i + 1] === "(" && cmd[i + 2] !== "(") {
+        let depth = 1, body = "", j = i + 2;
+        for (; j < cmd.length; j++) {
+          const c = cmd[j];
+          if (c === "\\") { body += c + (cmd[j + 1] || ""); j++; continue; }
+          if (c === "(") depth++;
+          else if (c === ")") { depth--; if (depth === 0) break; }
+          body += c;
+        }
+        if (body.trim()) out.push(body);
+        i = j;
+        continue;
+      }
+      if (ch === "`") {
+        const end = cmd.indexOf("`", i + 1);
+        if (end === -1) break;
+        const body = cmd.slice(i + 1, end);
+        if (body.trim()) out.push(body);
+        i = end;
+      }
+    }
+    return out;
+  }
+
+  function segmentCommands(cmd, depth) {
+    const out = [];
+    const d = depth || 0;
     for (let seg of splitOutsideQuotes(cmd)) {
       seg = seg.trim();
       // A subshell or group opens with `(` and the command starts inside it, so
       // `echo safe; (rm -rf ./d)` had a segment beginning `(` that the anchored
       // patterns could not match while the shell ran the delete. `((` is
       // arithmetic rather than a command position and is left alone.
-      while (seg.startsWith("(") && !seg.startsWith("((")) seg = seg.slice(1).trim();
+      //
+      // `{` is the OTHER grouping keyword and was missing: the `{ … ; }` spelling
+      // ALLOWED while the `( … )` spelling HELD (measured, cross-family round 14).
+      // The shell requires a BLANK after `{` for it to be the group keyword, so that
+      // is the discriminator — `{a,b}` is brace expansion (a word, not a command
+      // position) and `${VAR}` is an expansion; neither is stripped.
+      let g0 = 0;
+      while (g0++ < 5 && ((seg.startsWith("(") && !seg.startsWith("((")) || /^\{\s/.test(seg))) {
+        seg = seg.slice(1).trim();
+      }
       let guard = 0;
       while (WRAPPER.test(seg) && guard++ < 5) seg = seg.replace(WRAPPER, "");
       if (seg) out.push(seg);
+    }
+    // Depth cap: a substitution inside a substitution is real but unbounded recursion
+    // on attacker-shaped input is not worth it. 3 levels, and the segment cap applies.
+    if (d < 3) {
+      for (const body of substitutionBodies(cmd)) {
+        if (out.length >= SEGMENT_MAX) break;
+        for (const s of segmentCommands(body, d + 1)) {
+          if (out.length >= SEGMENT_MAX) break;
+          out.push(s);
+        }
+      }
     }
     return out;
   }

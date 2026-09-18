@@ -610,6 +610,52 @@ describe("destructive reminder — shell context decides whether a word is a com
     assert.equal(evaluatePermissionReminder("Bash", { command: "echo $((1 & 2))" }), null);
   });
 
+  it("a brace group is a command position too", () => {
+    // `(` was handled and `{` was not, so the SAME delete allowed or held purely
+    // by which grouping keyword was typed. Measured in review round 14: the brace
+    // spelling ALLOWED while the paren spelling HELD -- the review's composition
+    // class in a different syntax.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: ":; { rm -rf ./d; }" }),
+      { hold: true, tag: "file-delete" }
+    );
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "{ rm -rf ./d; }" }),
+      { hold: true, tag: "file-delete" }
+    );
+    // Controls -- the shell needs a BLANK after `{` for the group keyword, so a
+    // brace EXPANSION and a parameter expansion must not be stripped. Without
+    // these two lines the fix above is "strip every brace", which would turn
+    // `${RM} -rf x` into a fake command position.
+    assert.equal(evaluatePermissionReminder("Bash", { command: "echo {a,b}" }), null);
+    assert.equal(evaluatePermissionReminder("Bash", { command: "echo ${HOME}" }), null);
+  });
+
+  it("a command substitution body is a command position", () => {
+    // The quote-aware split cannot reach these by construction: the double quote
+    // swallows the whole string, so the only segment is `echo ...`. Both
+    // spellings allowed a delete in review round 14 while the plain form held.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: 'echo "$(rm -rf ./d)"' }),
+      { hold: true, tag: "file-delete" }
+    );
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "echo `rm -rf ./d`" }),
+      { hold: true, tag: "file-delete" }
+    );
+    // Nested one level -- the depth cap is 3, so this must still be seen.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: 'echo "$(echo "$(rm -rf ./d)")"' }),
+      { hold: true, tag: "file-delete" }
+    );
+    // Controls. `$((` is arithmetic, and SINGLE quotes suppress substitution --
+    // without them the additive pass would invent command positions out of
+    // ordinary text, which is the false-positive direction this pass must not take.
+    assert.equal(evaluatePermissionReminder("Bash", { command: "echo $((3 * 4))" }), null);
+    assert.equal(evaluatePermissionReminder("Bash", { command: "echo 'rm -rf ./d'" }), null);
+    assert.equal(evaluatePermissionReminder("Bash", { command: "echo \\$(ls)" }), null);
+  });
+
   it("a line continuation is removed, so what follows it is a command", () => {
     // The shell DELETES `\\<newline>` before parsing. Keeping it left the segment
     // after `;` beginning `\\<newline>rm`, which the anchored `^rm` pattern cannot
