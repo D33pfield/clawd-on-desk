@@ -202,6 +202,7 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       },
       "cursor-agent": {
         ...common,
+        homeDir,
         hooksPath: path.join(homeDir, ".cursor", "hooks.json"),
       },
       "copilot-cli": {

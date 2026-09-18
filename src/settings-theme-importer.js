@@ -89,8 +89,16 @@ function assertNoReservedOfficialMarker(entries, prefix) {
       && !normalizedName.startsWith(normalizedPrefix)) continue;
     const relativePath = normalizedPrefix ? normalizedName.slice(normalizedPrefix.length) : normalizedName;
     const parts = relativePath.split("/").filter(Boolean);
-    if (parts.some((part) => portableZipPathPart(part) === reserved)) {
+    // NTFS spells the unnamed/default data stream as `filename::$DATA`, which
+    // is equivalent to `filename`. Detect that alias before rejecting all
+    // Windows-reserved characters so a forged marker is still reported as the
+    // ownership-boundary violation it is, and do the complete scan before any
+    // staging directory exists.
+    if (parts.some((part) => portableZipPathPart(part.split(":", 1)[0]) === reserved)) {
       throw new Error(`theme zip contains reserved official theme ownership marker: ${entry.name}`);
+    }
+    if (parts.some((part) => /[<>:"|?*\x00-\x1f]/u.test(part))) {
+      throw new Error(`unsafe theme zip entry path: ${entry.name}`);
     }
   }
 }
@@ -98,7 +106,9 @@ function assertNoReservedOfficialMarker(entries, prefix) {
 function assertSafeRelativePath(pathModule, rootDir, relativePath) {
   const normalized = String(relativePath || "").replace(/\\/g, "/");
   const parts = normalized.split("/").filter(Boolean);
-  if (!parts.length || parts.some((part) => part === "." || part === "..")) {
+  if (!parts.length || parts.some((part) => (
+    part === "." || part === ".." || /[<>:"|?*\x00-\x1f]/u.test(part)
+  ))) {
     throw new Error(`unsafe theme zip entry path: ${relativePath}`);
   }
   const target = pathModule.resolve(pathModule.join(rootDir, ...parts));
