@@ -1419,14 +1419,15 @@ describe("cleanStaleSessions()", () => {
     assert.deepStrictEqual(changes[changes.length - 1], ["idle", "clawd-idle-reading.svg"]);
   });
 
-  it("agentPid alive + sourcePid dead + stale → delete", () => {
+  it("agentPid alive + sourcePid dead + stale idle → retain", () => {
     api = require("../src/state")(makeCtx({ processKill: makePidKill(new Set([1000])) }));
     api.sessions.set("s1", rawSession("idle", {
       agentPid: 1000, sourcePid: 2000, pidReachable: true,
       updatedAt: Date.now() - 700000,
     }));
     api.cleanStaleSessions();
-    assert.strictEqual(api.sessions.size, 0);
+    assert.strictEqual(api.sessions.size, 1);
+    assert.strictEqual(api.sessions.get("s1").state, "idle");
   });
 
   it("agentPid alive + sourcePid alive + working > WORKING_STALE_MS → downgrade to idle", () => {

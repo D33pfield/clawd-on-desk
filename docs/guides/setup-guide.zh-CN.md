@@ -202,7 +202,7 @@ node ~/.claude/hooks/install.js
 node ~/.claude/hooks/install.js --statusline
 ```
 
-其他 hook agent 使用表格中的安装器文件名，在复制目录中执行并保留表中参数。Claude CLI 会在写配置前检查本次请求的 hook 入口及其本地依赖；遇到缺失或不可读文件时，从同一源码版本恢复完整集合后重试。
+其他 hook agent 使用表格中的安装器文件名，在复制目录中执行并保留表中参数。Claude 与 Kimi CLI 都会在写配置前检查本次请求的 hook 入口及其传递本地依赖；遇到缺失或不可读文件时，从同一源码版本恢复完整集合后重试。Pair 的 Kimi payload 还会在没有 `agents/` 目录的条件下实际加载复制后的运行入口，因此不能只凭 installer 成功就认定 runtime 可加载。
 
 Claude 默认 WSL hook 命令目前没有给路径加引号。最终的 Linux Node 和 hook 路径应避免空格；Windows **复制来源**可以加引号，但安装器能读取含空格路径，不代表生成的 hook 命令能从该路径执行。
 

@@ -38,12 +38,15 @@ const {
   findManagedClaudeEnvNodeBinCandidates,
 } = require("./json-utils");
 const {
-  scanRelativeRequires,
   planAppImageHookBundle,
   materializeAppImageHookBundle,
   isAppImageHookBundleComplete,
   isLegacyAppImageHookPath,
 } = require("./appimage-hook-materializer");
+const {
+  findMissingHookDependencies,
+  formatMissingHookDependencies,
+} = require("./hook-dependency-preflight");
 
 function resolveClaudeHome(options = {}) {
   const env = options.env || process.env;
@@ -771,84 +774,6 @@ function preflightClaudeRuntime(options = {}) {
     }
   }
   return resolved;
-}
-
-// A hooks/ directory copied by hand can be missing a transitive dependency of
-// an entry point. That install still writes a perfectly valid settings.json,
-// so the installer prints success — and then every registered hook dies at
-// require time with MODULE_NOT_FOUND. Claude Code discards the stderr of
-// `async: true` hooks, so the failure is invisible from both ends: the user
-// sees a healthy install and a desktop pet that never moves.
-//
-// Walk the relative-require closure of the entry points we are about to
-// register and refuse to write while anything is missing. This mirrors the
-// manifest closure that test/remote-deploy.test.js enforces for HOOK_FILES,
-// except it runs against the directory actually being installed from. The
-// literal require grammar itself lives in the shared AppImage materializer so
-// this preflight and the closure collector can never disagree.
-function findMissingHookDependencies(entryNames, options = {}) {
-  const hooksDir = path.resolve(options.hooksDir || __dirname);
-  const statSync = options.statSync || fs.statSync;
-  const readFileSync = options.readFileSync || fs.readFileSync;
-  const missing = [];
-  const seen = new Set();
-  const queue = entryNames.map((name) => ({ name, from: null }));
-
-  while (queue.length) {
-    const entry = queue.shift();
-    const absPath = path.resolve(hooksDir, entry.name);
-    const name = path.relative(hooksDir, absPath).split(path.sep).join("/");
-    const { from } = entry;
-    if (seen.has(name)) continue;
-    seen.add(name);
-
-    if (!name || name === ".." || name.startsWith("../") || path.isAbsolute(name)) {
-      missing.push({ name, from, code: "OUTSIDE_HOOKS" });
-      continue;
-    }
-
-    let content;
-    try {
-      if (!statSync(absPath).isFile()) {
-        missing.push({ name, from, code: "NOT_FILE" });
-        continue;
-      }
-      content = readFileSync(absPath, "utf8");
-    } catch (err) {
-      missing.push({ name, from, code: err.code || "READ_FAILED" });
-      continue;
-    }
-
-    for (const spec of scanRelativeRequires(content)) {
-      const target = path.resolve(
-        path.dirname(absPath),
-        path.extname(spec) ? spec : `${spec}.js`
-      );
-      const relative = path.relative(hooksDir, target).split(path.sep).join("/");
-      queue.push({ name: relative, from: name });
-    }
-  }
-
-  return missing;
-}
-
-function formatMissingHookDependencies(missing) {
-  const lines = [
-    "Clawd: refusing to install — required hook files are unavailable.",
-    "",
-  ];
-  for (const { name, from, code } of missing) {
-    lines.push(`  ${name} [${code}]${from ? `  (required by ${from})` : ""}`);
-  }
-  lines.push(
-    "",
-    "Restore missing files from the same complete Clawd source directory.",
-    "For unreadable files, check their permissions; copying alone may not fix them.",
-    "For a manual WSL copy, include every top-level JavaScript file:",
-    "",
-    "  cp /path/to/clawd-on-desk/hooks/*.js ~/.claude/hooks/"
-  );
-  return lines.join("\n");
 }
 
 function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {

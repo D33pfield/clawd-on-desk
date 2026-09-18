@@ -117,7 +117,9 @@ function runOne(descriptor, options = {}) {
       nodeBin: target.nodeBin,
       scriptPath: target.scriptPath,
     })),
-    dshInstallRoot: options.dshInstallRoot,
+    dshInstallRoot: options.dshInstallRoot === undefined && descriptor.agentId === "deepseek-harness"
+      ? null
+      : options.dshInstallRoot,
     dshManagedRoot: options.dshManagedRoot || descriptor.dshManagedRoot,
   }).details[0];
 }

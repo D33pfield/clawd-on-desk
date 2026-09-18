@@ -88,7 +88,7 @@ describe("opencode plugin installer", () => {
     assert.strictEqual(config.plugin.length, 1);
   });
 
-  it("updates stale plugin paths in place by directory basename match", () => {
+  it("fails closed on an unproven stale-looking plugin path", () => {
     const stalePath = "/old/install/location/hooks/opencode-plugin";
     const configPath = makeTempConfigDir({
       plugin: ["opencode-wakatime", stalePath],
@@ -101,10 +101,10 @@ describe("opencode plugin installer", () => {
       pluginDir: newPath,
     });
 
-    assert.strictEqual(result.added, true);
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.reason, "unknown");
     const config = readConfig(configPath);
-    // Order preserved, stale path replaced in place
-    assert.deepStrictEqual(config.plugin, ["opencode-wakatime", newPath]);
+    assert.deepStrictEqual(config.plugin, ["opencode-wakatime", stalePath]);
   });
 
   it("does not stomp third-party plugins whose name contains opencode-plugin", () => {
@@ -140,18 +140,17 @@ describe("opencode plugin installer", () => {
     assert.deepStrictEqual(config.plugin, [scoped, bareNpm, pluginDir]);
   });
 
-  it("updates stale Windows absolute plugin paths", () => {
-    // Config files can roam between machines; a Windows-style absolute path
-    // (C:/...) should still be recognized as stale even when tests run on POSIX.
+  it("fails closed on an unproven stale-looking Windows plugin path", () => {
     const staleWin = "C:/old/clawd/hooks/opencode-plugin";
     const configPath = makeTempConfigDir({ plugin: [staleWin] });
     const pluginDir = "/new/clawd/hooks/opencode-plugin";
 
     const result = registerOpencodePlugin({ silent: true, configPath, pluginDir });
 
-    assert.strictEqual(result.added, true);
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.reason, "unknown");
     const config = readConfig(configPath);
-    assert.deepStrictEqual(config.plugin, [pluginDir]);
+    assert.deepStrictEqual(config.plugin, [staleWin]);
   });
 
   it("skips silently when ~/.config/opencode/ does not exist (no configPath override)", () => {

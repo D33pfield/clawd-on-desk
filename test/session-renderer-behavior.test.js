@@ -9,12 +9,27 @@ const { i18n, SUPPORTED_LANGS } = require("../src/i18n");
 
 class FakeClassList {
   constructor(element) { this.element = element; }
+  _set() { return new Set(this.element.className.split(/\s+/).filter(Boolean)); }
+  _commit(set) { this.element.className = [...set].join(" "); }
   add(...names) {
-    const set = new Set(this.element.className.split(/\s+/).filter(Boolean));
+    const set = this._set();
     for (const name of names) set.add(name);
-    this.element.className = [...set].join(" ");
+    this._commit(set);
   }
-  contains(name) { return this.element.className.split(/\s+/).includes(name); }
+  remove(...names) {
+    const set = this._set();
+    for (const name of names) set.delete(name);
+    this._commit(set);
+  }
+  toggle(name, force) {
+    const set = this._set();
+    const shouldAdd = force === undefined ? !set.has(name) : Boolean(force);
+    if (shouldAdd) set.add(name);
+    else set.delete(name);
+    this._commit(set);
+    return shouldAdd;
+  }
+  contains(name) { return this._set().has(name); }
 }
 
 class FakeElement {
