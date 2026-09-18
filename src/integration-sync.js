@@ -108,6 +108,12 @@ function createIntegrationSyncRuntime(options = {}) {
         registerClaudeStatusline,
         unregisterClaudeStatusline,
       } = require("../hooks/install.js");
+      // This branch is a best-effort fallback used only when no server-owned
+      // syncClawdHooksImpl is wired (production always wires the operation
+      // queue). It does NOT go through preflightClaudeRuntime, so it does not
+      // promise the queue's preflight-before-mutation atomicity: registerHooks
+      // can commit settings before a statusline failure is surfaced below.
+      // Keep the queue path for anything that needs atomic Settings Install.
       const { added, updated, removed } = registerHooks({
         silent: true,
         autoStart: ctx.autoStartWithClaude,
@@ -123,7 +129,15 @@ function createIntegrationSyncRuntime(options = {}) {
       try {
         if (ctx.claudeQuotaCollectionEnabled === true) {
           const statuslineResult = registerClaudeStatusline({ silent: true });
-          if (statuslineResult.changed) {
+          if (statuslineResult && statuslineResult.error) {
+            // Best-effort: a statusline failure must not fail the hooks-sync
+            // result, but it must be visible rather than silently reported as
+            // a successful install.
+            console.warn(
+              "Clawd: failed to sync Claude Code statusline:",
+              statuslineResult.error.message || statuslineResult.error.reason
+            );
+          } else if (statuslineResult.changed) {
             console.log("Clawd: registered Claude Code statusline (rate limit quota)");
           }
         } else {

@@ -8,11 +8,22 @@ const { spawnSync } = require("node:child_process");
 const HOOKS = path.join(__dirname, "..", "hooks");
 const ALL_FILES = fs.readdirSync(HOOKS).filter((name) => name.endsWith(".js"));
 // Historical #901 payload, deliberately independent of the corrected guide.
-const OLD_FILES = [
-  "server-config", "json-utils", "shared-process", "clawd-hook", "install",
+const HISTORICAL_PAYLOAD_FILES = [
+  "shared-process", "clawd-hook", "install",
   "codex-hook", "codex-install", "codex-install-utils", "codex-remote-monitor",
   "codex-session-index", "codex-subagent-fields", "copilot-hook", "copilot-install",
 ].map((name) => `${name}.js`);
+// install.js requires these at module load. A copy missing one of them cannot
+// even reach the dependency preflight (it dies with MODULE_NOT_FOUND), which is
+// a bootstrap failure, not the partial-payload case under test here. They are
+// listed separately so nobody mistakes them for part of the historical #901
+// payload.
+const CURRENT_BOOTSTRAP_FILES = [
+  "server-config.js",
+  "json-utils.js",
+  "appimage-hook-materializer.js",
+];
+const OLD_FILES = [...HISTORICAL_PAYLOAD_FILES, ...CURRENT_BOOTSTRAP_FILES];
 
 function fixture(t, files = ALL_FILES) {
   // Space also exercises source-path handling; this does not execute the
@@ -135,6 +146,9 @@ describe("Claude installer CLI dependency preflight", () => {
   });
   it("fails without writes when the installer's own bootstrap dependency is absent", (t) => {
     refused(fixture(t, ALL_FILES.filter((n) => n !== "json-utils.js")), [], /MODULE_NOT_FOUND/);
+  });
+  it("fails without writes when the shared materializer bootstrap leaf is absent", (t) => {
+    refused(fixture(t, ALL_FILES.filter((n) => n !== "appimage-hook-materializer.js")), [], /MODULE_NOT_FOUND/);
   });
   for (const key of ["CLAWD_WSL_DISTRO", "WSL_DISTRO_NAME"]) {
     it(`covers the no-flag WSL configuration with ${key}`, (t) => {
