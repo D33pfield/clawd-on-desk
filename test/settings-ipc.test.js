@@ -1501,3 +1501,38 @@ test("official theme IPC is owner-gated and never reachable through settings:com
     harness.ipcMain.invokeEvent = trustedEvent;
   }
 });
+
+test("official theme uninstall reports unpacked space and labels archive-only fallback as download size", async () => {
+  const dialogs = [];
+  let card = {
+    id: "hash-sage",
+    officialThemeName: "Hash Sage",
+    officialThemeBytes: 2 * 1024 * 1024,
+    officialThemeUnpackedBytes: 9 * 1024 * 1024,
+  };
+  const harness = createHarness({
+    getLang: () => "en",
+    officialThemeMain: {
+      listOfficialThemes: async () => ({ themes: [card] }),
+    },
+    dialog: {
+      showOpenDialog: async () => ({ canceled: true }),
+      showMessageBox: async (_parent, options) => {
+        dialogs.push(options);
+        return { response: 1 };
+      },
+    },
+  });
+
+  await harness.ipcMain.invoke("settings:confirm-uninstall-official-theme", "hash-sage");
+  assert.match(dialogs[0].detail, /frees about 9 MB/);
+  assert.doesNotMatch(dialogs[0].detail, /2 MB/);
+
+  card = { ...card, officialThemeUnpackedBytes: null };
+  await harness.ipcMain.invoke("settings:confirm-uninstall-official-theme", "hash-sage");
+  assert.match(dialogs[1].detail, /download package is about 2 MB/i);
+  assert.match(dialogs[1].detail, /installed theme may use more disk space/i);
+  assert.doesNotMatch(dialogs[1].detail, /frees about 2 MB/i);
+
+  harness.runtime.dispose();
+});

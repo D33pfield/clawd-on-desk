@@ -795,7 +795,7 @@ describe("server-route-state POST", () => {
       // Untouched by the gate: opaque labels, not handles on a local process.
       orcaPaneKey: "tab-9:leaf-3",
       cwd: "/home/user/repo",
-      wtHwnd: "123456",
+      wtHwnd: null,
       host: "workbox",
     });
 

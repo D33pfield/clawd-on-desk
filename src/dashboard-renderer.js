@@ -525,16 +525,21 @@ function handleQuickKeydown(event) {
     dismissQuickRound();
     return;
   }
-  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-  if (!/^[1-9]$/.test(event.key)) return;
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  const physicalKey = physicalDigit(event);
+  if (!physicalKey) return;
+  // Shift is part of typing the digit on layouts such as AZERTY. Only accept
+  // it when `code` proves which physical digit key was pressed; the key-only
+  // fallback must keep modified shortcuts out of Quick Select.
+  if (event.shiftKey && physicalKey.startsWith("key:")) return;
+  const digit = Number(physicalKey.slice(-1));
   event.preventDefault();
   event.stopPropagation();
-  const physicalKey = physicalDigit(event);
-  if (physicalKey) quick.held.add(physicalKey);
+  quick.held.add(physicalKey);
   clearQuickTimer();
   // First target wins for the whole hold; auto-repeat never re-targets.
   if (quick.pending || event.repeat) return;
-  const entry = quick.entries[Number(event.key) - 1];
+  const entry = quick.entries[digit - 1];
   if (!entry) return;
   if (!entry.canFocus) {
     setQuickFeedback("dashboardQuickSelectUnavailable");

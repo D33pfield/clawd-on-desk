@@ -309,6 +309,16 @@ function makeFamilyInstaller(agentId) {
       };
     }
 
+    if (!target.canonicalConfigDirResolved) {
+      return {
+        status: "error",
+        reason: "config-dir-identity-unresolved",
+        message: `could not resolve a filesystem identity for ${target.configDir}; refusing managed registration`,
+        configPath,
+        pluginDir: toEntryPath(sourcePluginDir),
+      };
+    }
+
     if (!options.configPath) {
       let exists = false;
       try { exists = fsImpl.statSync(target.configDir).isDirectory(); } catch {}
@@ -681,6 +691,21 @@ function makeFamilyInstaller(agentId) {
     const { rootUnknown, target, configPath } = resolveManagedOperation(options);
     const sourcePluginDir = resolveSourcePluginDir();
     if (options.pluginDir) return unregisterManagedOverride(options, configPath, sourcePluginDir);
+    if (!rootUnknown && !target.canonicalConfigDirResolved) {
+      return {
+        status: "error",
+        reason: "config-dir-identity-unresolved",
+        message: `could not resolve a filesystem identity for ${target.configDir}; refusing managed unregistration`,
+        configPath,
+        pluginDir: toEntryPath(sourcePluginDir),
+        registrationRemoved: false,
+        activeEntryRemaining: null,
+        managedFilesRemoved: false,
+        residualPaths: [],
+        warnings: [],
+        mutatedPaths: [],
+      };
+    }
     const isOverride = false;
     const cleanupAllowed = !rootUnknown && Boolean(options.homeDir || options.managedRoot);
     const ownerOptions = { platform, pluginDirName: cfg.pluginDirName };

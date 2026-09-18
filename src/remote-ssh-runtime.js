@@ -1907,6 +1907,10 @@ function createRemoteSshRuntime(deps = {}) {
       // while the new connect/probe attempt is in flight.
       state.nextRetryAt = null;
       if (state.stopped || state.connectionGeneration !== reconnectGeneration) return;
+      // Publish the cleared deadline before any transport inspection can
+      // suspend this continuation. Otherwise Settings keeps rendering the
+      // expired retry time for the whole inspection window.
+      emitStatus(state);
       if (!state.serializedTransport && state.transportInspection) {
         try {
           const matches = await ordinaryTargetStillMatches(state);

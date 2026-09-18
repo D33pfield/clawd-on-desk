@@ -1949,6 +1949,8 @@ test("a stale reconnect inspection cannot overwrite an explicit Disconnect", asy
     setTimeout: timers.setTimeoutFn,
     clearTimeout: timers.clearTimeoutFn,
   });
+  const events = [];
+  rt.on("status-changed", (snapshot) => events.push(snapshot));
   rt.connect(profile, {
     transportInspection: {
       mode: "parallel",
@@ -1960,7 +1962,11 @@ test("a stale reconnect inspection cannot overwrite an explicit Disconnect", asy
     },
   });
   await exitSsh(children[0], "ssh: connect to host alias port 22: Connection timed out");
+  assert.ok(Number.isFinite(events[events.length - 1].nextRetryAt));
   timers.flushWhere((timer) => timer.ms === BACKOFF_SCHEDULE_MS[0]);
+  assert.equal(events[events.length - 1].status, "reconnecting");
+  assert.equal(events[events.length - 1].nextRetryAt, null,
+    "the expired deadline must be broadcast while transport inspection is still pending");
   rt.disconnect(profile.id);
   resolveInspection({
     mode: "serialized",

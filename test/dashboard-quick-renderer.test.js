@@ -666,11 +666,28 @@ test("numpad digits are tracked as their own physical keys", async () => {
   assert.deepEqual(r.calls.activate, [{ sessionId: "s1", revision: 1 }]);
 });
 
-test("modified digits are ignored and left to the page", async () => {
+test("physical digit codes select the same slot across shifted and unshifted layouts", async () => {
+  for (const keyEvent of [
+    { key: "!", code: "Digit1", shiftKey: true },
+    { key: "&", code: "Digit1", shiftKey: false },
+  ]) {
+    const r = await renderer({ snapshot: twoSessions, entries: twoEntries });
+    await r.intent(1);
+    const down = await r.key("keydown", keyEvent.key, keyEvent);
+    assert.equal(down.prevented, true, JSON.stringify(keyEvent));
+    await r.key("keyup", keyEvent.key, keyEvent);
+    await r.runTimers();
+    assert.deepEqual(r.calls.activate, [{ sessionId: "s1", revision: 1 }]);
+  }
+});
+
+test("shifted key-only fallbacks and command-modified digits are left to the page", async () => {
   const r = await renderer({ snapshot: twoSessions, entries: twoEntries });
   await r.intent(1);
-  const event = await r.key("keydown", "1", { metaKey: true });
-  assert.equal(event.prevented, false);
+  const command = await r.key("keydown", "1", { metaKey: true });
+  const ambiguousShift = await r.key("keydown", "1", { code: "", shiftKey: true });
+  assert.equal(command.prevented, false);
+  assert.equal(ambiguousShift.prevented, false);
   await r.runTimers();
   assert.deepEqual(r.calls.activate, []);
 });

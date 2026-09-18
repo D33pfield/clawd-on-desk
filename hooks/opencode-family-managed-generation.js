@@ -63,24 +63,48 @@ function familyManagedRoot(agentId) {
 function resolveCanonical(target, platform, fsImpl) {
   const plat = platform || process.platform;
   const fsy = fsImpl || fs;
-  const normalize = (value) => (plat === "win32" ? path.win32.normalize(value) : path.posix.normalize(value));
+  const modifier = plat === "win32" ? path.win32 : path.posix;
+  const normalize = (value) => modifier.normalize(value);
   let normalized = normalize(target);
   let resolved = false;
-  try {
-    const real = typeof fsy.realpathSync.native === "function"
-      ? fsy.realpathSync.native(normalized)
-      : fsy.realpathSync(normalized);
-    if (real) {
-      normalized = normalize(real);
-      resolved = true;
+  const realpathSync = fsy && typeof fsy.realpathSync === "function"
+    ? (typeof fsy.realpathSync.native === "function"
+      ? (value) => fsy.realpathSync.native(value)
+      : (value) => fsy.realpathSync(value))
+    : null;
+  if (realpathSync) {
+    // The config leaf may not exist yet (for example, an explicit configPath
+    // under a symlinked HOME). Resolve the nearest existing ancestor and add
+    // the missing lexical suffix back. Once the leaf is created, its direct
+    // realpath then produces the same identity and therefore the same hash.
+    let cursor = normalized;
+    const missingSuffix = [];
+    while (cursor) {
+      try {
+        const real = realpathSync(cursor);
+        if (real) {
+          normalized = normalize(missingSuffix.length
+            ? modifier.join(real, ...missingSuffix)
+            : real);
+          resolved = true;
+        }
+        break;
+      } catch (err) {
+        if (!err || (err.code !== "ENOENT" && err.code !== "ENOTDIR")) break;
+        const parent = modifier.dirname(cursor);
+        if (!parent || parent === cursor) break;
+        const basename = modifier.basename(cursor);
+        if (!basename) break;
+        missingSuffix.unshift(basename);
+        cursor = parent;
+      }
     }
-  } catch {
-    // keep the lexical normalized form; `resolved` stays false
   }
+  // Keep the lexical normalized form when no ancestor can be resolved;
+  // `resolved` stays false so mutation callers can fail closed.
   if (plat === "win32") normalized = normalized.toLowerCase();
   // path.win32.normalize keeps a trailing separator when the input had one;
   // drop it (except at a root) so identity is stable.
-  const modifier = plat === "win32" ? path.win32 : path.posix;
   const root = modifier.parse(normalized).root;
   while (normalized.length > root.length && (normalized.endsWith("/") || normalized.endsWith("\\"))) {
     normalized = normalized.slice(0, -1);
@@ -154,7 +178,8 @@ function resolveManagedTarget(options = {}) {
     configDir = path.join(os.homedir(), ...cfg.configDirSegments);
   }
 
-  const canonicalConfigDir = canonicalizeTargetPath(configDir, platform, fsImpl);
+  const configIdentity = resolveCanonical(configDir, platform, fsImpl);
+  const canonicalConfigDir = configIdentity.canonical;
   const configDirHash = sha256Hex(canonicalConfigDir);
 
   let agentRoot;
@@ -171,6 +196,7 @@ function resolveManagedTarget(options = {}) {
     homeDir: homeDir || os.homedir(),
     configDir,
     canonicalConfigDir,
+    canonicalConfigDirResolved: configIdentity.resolved,
     configDirHash,
     agentRoot,
     targetRoot,

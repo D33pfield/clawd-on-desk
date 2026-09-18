@@ -247,7 +247,7 @@ function handleStatePost(req, res, options) {
       if (data.display_svg === null) display_svg = null;
       else if (typeof data.display_svg === "string") display_svg = pathApi.basename(data.display_svg);
       else display_svg = undefined;
-      const wtHwnd = normalizeHwndString(data.wt_hwnd ?? data.wtHwnd);
+      const rawWtHwnd = normalizeHwndString(data.wt_hwnd ?? data.wtHwnd);
       const cwd = typeof data.cwd === "string" ? data.cwd : "";
       const rawAgentPid = data.agent_pid ?? data.claude_pid ?? data.cursor_pid;
       // Stripped at the parse boundary rather than at the updateSession call so
@@ -256,6 +256,7 @@ function handleStatePost(req, res, options) {
       // `cwd` and `host` are untouched by design — see remote-process-metadata.js.
       const {
         sourcePid: source_pid,
+        wtHwnd,
         agentPid,
         pidChain,
         editor,
@@ -263,6 +264,7 @@ function handleStatePost(req, res, options) {
         tmuxClient,
       } = stripRemoteProcessMetadata({
         sourcePid: Number.isFinite(data.source_pid) && data.source_pid > 0 ? Math.floor(data.source_pid) : null,
+        wtHwnd: rawWtHwnd,
         agentPid: Number.isFinite(rawAgentPid) && rawAgentPid > 0 ? Math.floor(rawAgentPid) : null,
         pidChain: Array.isArray(data.pid_chain) ? data.pid_chain.filter(n => Number.isFinite(n) && n > 0) : null,
         editor: (data.editor === "code" || data.editor === "cursor") ? data.editor : null,

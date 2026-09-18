@@ -90,9 +90,74 @@ describe("#1026 canonicalizer", () => {
     const b = mg.canonicalizeTargetPath(link, process.platform, fs);
     assert.strictEqual(a, b);
   });
+
+  it("keeps a symlinked HOME target hash stable before and after the config leaf exists", () => {
+    const root = tmp("clawd-canon-missing-");
+    const realHome = path.join(root, "real-home");
+    const linkedHome = path.join(root, "linked-home");
+    fs.mkdirSync(realHome);
+    try {
+      fs.symlinkSync(realHome, linkedHome, "junction");
+    } catch {
+      return; // symlink privilege unavailable on this host
+    }
+
+    const before = mg.resolveManagedTarget({
+      cfg: OPENCODE_CFG,
+      agentId: "opencode",
+      homeDir: linkedHome,
+      fs,
+      platform: process.platform,
+    });
+    assert.strictEqual(before.canonicalConfigDirResolved, true);
+    fs.mkdirSync(path.join(realHome, ".config", "opencode"), { recursive: true });
+    const after = mg.resolveManagedTarget({
+      cfg: OPENCODE_CFG,
+      agentId: "opencode",
+      homeDir: linkedHome,
+      fs,
+      platform: process.platform,
+    });
+    assert.strictEqual(after.canonicalConfigDirResolved, true);
+    assert.strictEqual(before.canonicalConfigDir, after.canonicalConfigDir);
+    assert.strictEqual(before.configDirHash, after.configDirHash);
+    assert.strictEqual(before.targetRoot, after.targetRoot);
+  });
 });
 
 describe("#1026 managed installer register/unregister", () => {
+  it("fails closed before mutation when no config-dir ancestor identity can be resolved", () => {
+    const home = makeHome("clawd-managed-unresolved-");
+    const configPath = path.join(home, ".config", "opencode", "opencode.json");
+    fs.writeFileSync(configPath, JSON.stringify({ plugin: ["third-party"] }), "utf8");
+    const before = fs.readFileSync(configPath);
+    const deniedRealpath = () => {
+      const err = new Error("identity denied");
+      err.code = "EACCES";
+      throw err;
+    };
+    deniedRealpath.native = deniedRealpath;
+    const deniedFs = new Proxy(fs, {
+      get(target, key, receiver) {
+        if (key === "realpathSync") return deniedRealpath;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+
+    const registered = registerOpencodePlugin({ silent: true, homeDir: home, fs: deniedFs });
+    assert.strictEqual(registered.status, "error");
+    assert.strictEqual(registered.reason, "config-dir-identity-unresolved");
+    assert.deepStrictEqual(fs.readFileSync(configPath), before);
+    assert.strictEqual(fs.existsSync(path.join(home, ".clawd")), false);
+
+    const unregistered = unregisterOpencodePlugin({ silent: true, homeDir: home, fs: deniedFs });
+    assert.strictEqual(unregistered.status, "error");
+    assert.strictEqual(unregistered.reason, "config-dir-identity-unresolved");
+    assert.strictEqual(unregistered.registrationRemoved, false);
+    assert.deepStrictEqual(fs.readFileSync(configPath), before);
+    assert.strictEqual(fs.existsSync(path.join(home, ".clawd")), false);
+  });
+
   it("skips when the host config dir is missing and never creates ~/.clawd", () => {
     const home = tmp("clawd-home-empty-");
     const result = registerOpencodePlugin({ silent: true, homeDir: home });
