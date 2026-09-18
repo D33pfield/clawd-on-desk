@@ -26,18 +26,18 @@ checks.
   session history so eligible conversations can be resumed after a reboot.
   Legacy rows without verifiable profile provenance remain visible but cannot
   be resumed. Thanks to @TalexDreamSoul.
-- **Better session context** (#999, #1002, #1006) — Dashboard cards show the
+- **Better session context** (#945, #999, #1002, #1006) — Dashboard cards show the
   active model, Qoder titles remain stable, OpenCode restores deferred context
   usage, and Windows session focus/deep links are more reliable. Thanks to
   @easyhak, @brantshin, @Tsdsj, and @Free-LZJ.
 
 ### Dashboard, Themes, And Desktop
 
-- **Dashboard Quick Select** (#972) — a dedicated macOS/Windows shortcut opens
-  the full Dashboard with frozen 1–9 session slots. It preserves drafts and IME
-  composition, handles scrolling and focus handoff, and supports physical
-  number-row keys across layouts without treating NumLock-off navigation keys
-  as session jumps.
+- **Dashboard Quick Select** (#972) — after you assign its macOS/Windows
+  shortcut in Settings, it opens the full Dashboard with frozen 1–9 session
+  slots. It preserves drafts and IME composition, handles scrolling and focus
+  handoff, and supports physical number-row keys across layouts without
+  treating NumLock-off navigation keys as session jumps.
 - **Downloadable official themes** (#1020) — Settings can download, verify,
   install, repair, and uninstall optional official themes from the separate
   `rullerzhou-afk/clawd-themes` release catalog. Hash Sage remains outside the
@@ -48,9 +48,11 @@ checks.
   menus under zoom, unifies buttons and switches, restores failed quota
   toggles, preserves accessible holiday labels, and cleans up abandoned drag
   gestures.
-- **Windows fixes** (#779, #978, #1002, #1008, #1023) — improves interactive
-  Remote SSH console launch, non-activating hit-window clicks, Codex deep links,
-  editor focus, and fullscreen detection around Windows 11 shell islands.
+- **Windows fixes** (#779, #805, #978, #1002, #1008, #1023) — improves
+  interactive Remote SSH console launch, Cursor hook paths and chat titles,
+  non-activating hit-window clicks, Codex deep links, editor focus, and
+  fullscreen detection around Windows 11 shell islands. Thanks to @VonSdite,
+  @mantertius, @Free-LZJ, and @KaiC5504.
 
 ### Remote Workflows And Reliability
 
@@ -65,14 +67,19 @@ checks.
 - **Remote SSH visibility** (#996) — Settings shows the next reconnect time and
   clears an expired deadline as a retry begins. Remote hook metadata can no
   longer inject a local Windows Terminal HWND. Thanks to @undefined-moe.
+- **Hook and session reliability** (#902, #981, #993) — installers refuse to
+  register hooks with a broken dependency closure, WSL pairing copies the full
+  hook tree, unavailable remote session actions stay hidden, and a live agent
+  is not removed merely because its source wrapper exits. Thanks to @sunnyswag,
+  @undefined-moe, and @PeterShanxin.
 - **Persistent Claude hooks on AppImage** (#1029) — Linux AppImage installs use
   a stable user-owned hook generation instead of paths inside an ephemeral
   mount.
-- **Local ingress and ownership hardening** — `/state` and `/permission` now
+- **Local ingress and ownership hardening** (#1000) — `/state` and `/permission` now
   share the same loopback, Host, Origin, and unique JSON Content-Type guards.
   Cursor hooks, Claude status lines, theme markers, session cleanup, profile
   resumes, and installer dependency checks preserve foreign data and refuse
-  ambiguous ownership.
+  ambiguous ownership. Thanks to @PeterShanxin.
 
 ### Upgrade Notes
 
@@ -86,6 +93,11 @@ checks.
   They are not bundled into the Clawd installer.
 - Telegram reply-to-session is separate from approval. A reply is queued only
   when the completion can be tied to one authoritative Codex session.
+- Custom HTTP Agent senders must use the literal loopback endpoint discovered
+  through `~/.clawd/runtime.json`, omit `Origin`, and send exactly one `Host`
+  header plus one `application/json` Content-Type. Unsafe or ambiguous requests
+  are rejected before their JSON body is read; see the
+  [integration guide](../guides/custom-agent-http.md).
 - Linux Homebrew installs remain supported for x86_64; packaged Linux updates
   still require installing a new package manually.
 
