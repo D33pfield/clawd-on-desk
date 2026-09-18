@@ -8059,7 +8059,8 @@
     "jiaxuan1101", "kkirito16", "200780381", "Dxy2326", "lurui1997", "JesmonX", "chen86860",
     "LinYsssss", "He-wei-gui", "liugou27", "YOOGOMJA", "anupamme", "anthonyonazure", "weed33834",
     "arismarioneves", "wang4433", "shengmai-justin", "aaronWool", "Zamaniego", "CheeseAgent", "RS-Nocsi", "Cobb04",
-    "eugenewang5425", "draintovmasyan783-creator", "Yueh-H",
+    "eugenewang5425", "draintovmasyan783-creator", "Yueh-H", "TalexDreamSoul", "FuZoe", "undefined-moe",
+    "pu-1205", "Free-LZJ", "easyhak", "jlimcode", "xfurqan0", "brantshin", "mantertius", "VonSdite", "sunnyswag",
   ];
 
   root.ClawdSettingsI18n = {

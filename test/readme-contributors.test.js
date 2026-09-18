@@ -72,6 +72,18 @@ const VERIFIED_GITHUB_CONTRIBUTORS = [
   "CheeseAgent",
   "RS-Nocsi",
   "Cobb04",
+  "TalexDreamSoul",
+  "FuZoe",
+  "undefined-moe",
+  "pu-1205",
+  "Free-LZJ",
+  "easyhak",
+  "jlimcode",
+  "xfurqan0",
+  "brantshin",
+  "mantertius",
+  "VonSdite",
+  "sunnyswag",
 ];
 
 function loadSettingsContributors() {
