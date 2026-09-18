@@ -66,10 +66,15 @@ describe("package build config", () => {
       ]);
       const setupNode = job.steps.find((step) => step.uses === "actions/setup-node@v4");
       assert.deepStrictEqual(setupNode.with, { "node-version-file": ".nvmrc" });
-      assert.ok(job.steps.some((step) => step.run === "npm ci"));
+      assert.deepStrictEqual(
+        job.steps.filter((step) => step.run).map((step) => step.run),
+        ["npm ci", "npm test", "xvfb-run -a npm test"],
+      );
       const nonLinuxTest = job.steps.find((step) => step.run === "npm test");
+      assert.ok(nonLinuxTest, "non-Linux full-suite step should exist");
       assert.strictEqual(nonLinuxTest.if, "runner.os != 'Linux'");
       const linuxTest = job.steps.find((step) => step.run === "xvfb-run -a npm test");
+      assert.ok(linuxTest, "Linux xvfb full-suite step should exist");
       assert.strictEqual(linuxTest.if, "runner.os == 'Linux'");
     });
 
