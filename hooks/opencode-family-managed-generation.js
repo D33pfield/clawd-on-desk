@@ -75,8 +75,9 @@ function resolveCanonical(target, platform, fsImpl) {
   if (realpathSync) {
     // The config leaf may not exist yet (for example, an explicit configPath
     // under a symlinked HOME). Resolve the nearest existing ancestor and add
-    // the missing lexical suffix back. Once the leaf is created, its direct
-    // realpath then produces the same identity and therefore the same hash.
+    // the missing lexical suffix back. Creating those missing components as
+    // ordinary directories preserves the identity; a later symlink may
+    // intentionally resolve to a different filesystem identity.
     let cursor = normalized;
     const missingSuffix = [];
     while (cursor) {
@@ -90,7 +91,11 @@ function resolveCanonical(target, platform, fsImpl) {
         }
         break;
       } catch (err) {
-        if (!err || (err.code !== "ENOENT" && err.code !== "ENOTDIR")) break;
+        // ENOENT means the lexical leaf is missing, so walking to an existing
+        // ancestor is safe. ENOTDIR means an existing component is a file (or
+        // otherwise not traversable as a directory); never reinterpret that
+        // conflict as a missing leaf and mint a managed identity beneath it.
+        if (!err || err.code !== "ENOENT") break;
         const parent = modifier.dirname(cursor);
         if (!parent || parent === cursor) break;
         const basename = modifier.basename(cursor);

@@ -116,6 +116,7 @@ const UNINSTALL_OFFICIAL_THEME_DIALOG_STRINGS = {
     message: (name) => `Uninstall official theme "${name}"?`,
     detail: (mib) => `This frees about ${mib} MB and cannot be undone. Re-downloading later is not a lossless upgrade: this theme's customizations and Clawd-managed sound overrides will be cleared.`,
     archiveDetail: (mib) => `The download package is about ${mib} MB; the installed theme may use more disk space. Uninstalling cannot be undone. Re-downloading later is not a lossless upgrade: this theme's customizations and Clawd-managed sound overrides will be cleared.`,
+    unknownDetail: "The installed size is unavailable. Uninstalling cannot be undone. Re-downloading later is not a lossless upgrade: this theme's customizations and Clawd-managed sound overrides will be cleared.",
   },
   zh: {
     uninstall: "卸载",
@@ -123,6 +124,7 @@ const UNINSTALL_OFFICIAL_THEME_DIALOG_STRINGS = {
     message: (name) => `确认卸载官方主题 "${name}"？`,
     detail: (mib) => `将释放约 ${mib} MB，且不可撤销。以后重新下载不是无损升级：该主题的自定义设置和 Clawd 管理的声音覆盖会被清除。`,
     archiveDetail: (mib) => `下载包约 ${mib} MB；主题安装后占用的磁盘空间可能更大。卸载不可撤销。以后重新下载不是无损升级：该主题的自定义设置和 Clawd 管理的声音覆盖会被清除。`,
+    unknownDetail: "无法确定已安装主题占用的空间。卸载不可撤销。以后重新下载不是无损升级：该主题的自定义设置和 Clawd 管理的声音覆盖会被清除。",
   },
   "zh-TW": {
     uninstall: "解除安裝",
@@ -130,6 +132,7 @@ const UNINSTALL_OFFICIAL_THEME_DIALOG_STRINGS = {
     message: (name) => `確定要解除安裝官方主題「${name}」？`,
     detail: (mib) => `將釋放約 ${mib} MB，且無法復原。之後重新下載並非無損升級：此主題的自訂設定與 Clawd 管理的音效覆寫會被清除。`,
     archiveDetail: (mib) => `下載包約 ${mib} MB；主題安裝後佔用的磁碟空間可能更大。解除安裝後無法復原。之後重新下載並非無損升級：此主題的自訂設定與 Clawd 管理的音效覆寫會被清除。`,
+    unknownDetail: "無法確定已安裝主題佔用的空間。解除安裝後無法復原。之後重新下載並非無損升級：此主題的自訂設定與 Clawd 管理的音效覆寫會被清除。",
   },
   ko: {
     uninstall: "제거",
@@ -137,6 +140,7 @@ const UNINSTALL_OFFICIAL_THEME_DIALOG_STRINGS = {
     message: (name) => `공식 테마 "${name}"을(를) 제거할까요?`,
     detail: (mib) => `약 ${mib} MB가 확보되며 되돌릴 수 없습니다. 나중에 다시 받는 것은 무손실 업그레이드가 아니며, 이 테마의 사용자 설정과 Clawd가 관리하는 사운드 오버라이드가 지워집니다.`,
     archiveDetail: (mib) => `다운로드 패키지는 약 ${mib} MB이며 설치된 테마는 더 많은 디스크 공간을 사용할 수 있습니다. 제거는 되돌릴 수 없습니다. 나중에 다시 받는 것은 무손실 업그레이드가 아니며, 이 테마의 사용자 설정과 Clawd가 관리하는 사운드 오버라이드가 지워집니다.`,
+    unknownDetail: "설치된 테마가 사용하는 공간을 확인할 수 없습니다. 제거는 되돌릴 수 없습니다. 나중에 다시 받는 것은 무손실 업그레이드가 아니며, 이 테마의 사용자 설정과 Clawd가 관리하는 사운드 오버라이드가 지워집니다.",
   },
   ja: {
     uninstall: "アンインストール",
@@ -144,6 +148,7 @@ const UNINSTALL_OFFICIAL_THEME_DIALOG_STRINGS = {
     message: (name) => `公式テーマ「${name}」をアンインストールしますか？`,
     detail: (mib) => `約 ${mib} MB 解放され、元に戻せません。後で再ダウンロードしても無損失アップグレードではなく、このテーマのカスタマイズと Clawd 管理のサウンド上書きは消去されます。`,
     archiveDetail: (mib) => `ダウンロードパッケージは約 ${mib} MB で、インストール後のテーマはより多くのディスク容量を使用する場合があります。アンインストールは元に戻せません。後で再ダウンロードしても無損失アップグレードではなく、このテーマのカスタマイズと Clawd 管理のサウンド上書きは消去されます。`,
+    unknownDetail: "インストール済みテーマの使用容量を確認できません。アンインストールは元に戻せません。後で再ダウンロードしても無損失アップグレードではなく、このテーマのカスタマイズと Clawd 管理のサウンド上書きは消去されます。",
   },
   "pt-BR": {
     uninstall: "Desinstalar",
@@ -151,6 +156,7 @@ const UNINSTALL_OFFICIAL_THEME_DIALOG_STRINGS = {
     message: (name) => `Desinstalar o tema oficial "${name}"?`,
     detail: (mib) => `Libera cerca de ${mib} MB e não pode ser desfeito. Baixar de novo depois não é uma atualização sem perdas: as personalizações e os overrides de som gerenciados pelo Clawd deste tema serão apagados.`,
     archiveDetail: (mib) => `O pacote de download tem cerca de ${mib} MB; o tema instalado pode ocupar mais espaço em disco. A desinstalação não pode ser desfeita. Baixar de novo depois não é uma atualização sem perdas: as personalizações e os overrides de som gerenciados pelo Clawd deste tema serão apagados.`,
+    unknownDetail: "O tamanho instalado não está disponível. A desinstalação não pode ser desfeita. Baixar de novo depois não é uma atualização sem perdas: as personalizações e os overrides de som gerenciados pelo Clawd deste tema serão apagados.",
   },
   es: {
     uninstall: "Desinstalar",
@@ -158,6 +164,7 @@ const UNINSTALL_OFFICIAL_THEME_DIALOG_STRINGS = {
     message: (name) => `¿Desinstalar el tema oficial "${name}"?`,
     detail: (mib) => `Libera unos ${mib} MB y no se puede deshacer. Volver a descargarlo no es una actualización sin pérdidas: se borrarán las personalizaciones y los reemplazos de sonido gestionados por Clawd de este tema.`,
     archiveDetail: (mib) => `El paquete de descarga ocupa unos ${mib} MB; el tema instalado puede usar más espacio en disco. La desinstalación no se puede deshacer. Volver a descargarlo no es una actualización sin pérdidas: se borrarán las personalizaciones y los reemplazos de sonido gestionados por Clawd de este tema.`,
+    unknownDetail: "El tamaño instalado no está disponible. La desinstalación no se puede deshacer. Volver a descargarlo no es una actualización sin pérdidas: se borrarán las personalizaciones y los reemplazos de sonido gestionados por Clawd de este tema.",
   },
 };
 
@@ -813,10 +820,10 @@ function registerSettingsIpc(options = {}) {
             return themeId;
           };
           displayName = localize(card.officialThemeName) || localize(card.name) || themeId;
-          if (Number.isFinite(card.officialThemeUnpackedBytes)) {
+          if (Number.isFinite(card.officialThemeUnpackedBytes) && card.officialThemeUnpackedBytes > 0) {
             bytes = card.officialThemeUnpackedBytes;
             byteKind = "unpacked";
-          } else if (Number.isFinite(card.officialThemeBytes)) {
+          } else if (Number.isFinite(card.officialThemeBytes) && card.officialThemeBytes > 0) {
             bytes = card.officialThemeBytes;
             byteKind = "archive";
           }
@@ -833,9 +840,11 @@ function registerSettingsIpc(options = {}) {
         defaultId: 1,
         cancelId: 1,
         message: strings.message(displayName),
-        detail: byteKind === "archive"
-          ? strings.archiveDetail(mib || "?")
-          : strings.detail(mib || "?"),
+        detail: byteKind === "unpacked"
+          ? strings.detail(mib)
+          : byteKind === "archive"
+            ? strings.archiveDetail(mib)
+            : strings.unknownDetail,
         noLink: true,
       });
       return { confirmed: response === 0 };

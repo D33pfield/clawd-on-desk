@@ -1878,6 +1878,13 @@ test("connect classifies Connection timed out as transient + schedules reconnect
   assert.equal(reconnectEv.hint, "remoteSshErrNetTimeout");
   // Status is reconnecting, not failed.
   assert.equal(rt.getProfileStatus("p1").status, "reconnecting");
+  const eventsBeforeRetry = events.length;
+  timers.flushWhere((timer) => timer.ms === BACKOFF_SCHEDULE_MS[0]);
+  assert.equal(events.length, eventsBeforeRetry + 1,
+    "a retry without transport inspection publishes only startConnect's fresh state");
+  assert.equal(events.at(-1).nextRetryAt, null);
+  assert.equal(events.at(-1).lastError, null);
+  assert.equal(children.length, 2);
   rt.cleanup();
 });
 

@@ -158,6 +158,24 @@ describe("#1026 managed installer register/unregister", () => {
     assert.strictEqual(fs.existsSync(path.join(home, ".clawd")), false);
   });
 
+  it("fails closed before mutation when a config-dir ancestor is a file", () => {
+    const home = tmp("clawd-managed-enotdir-");
+    fs.writeFileSync(path.join(home, ".config"), "not a directory", "utf8");
+
+    const registered = registerOpencodePlugin({ silent: true, homeDir: home });
+    assert.strictEqual(registered.status, "error");
+    assert.strictEqual(registered.reason, "config-dir-identity-unresolved");
+    assert.strictEqual(fs.readFileSync(path.join(home, ".config"), "utf8"), "not a directory");
+    assert.strictEqual(fs.existsSync(path.join(home, ".clawd")), false);
+
+    const unregistered = unregisterOpencodePlugin({ silent: true, homeDir: home });
+    assert.strictEqual(unregistered.status, "error");
+    assert.strictEqual(unregistered.reason, "config-dir-identity-unresolved");
+    assert.strictEqual(unregistered.registrationRemoved, false);
+    assert.strictEqual(fs.readFileSync(path.join(home, ".config"), "utf8"), "not a directory");
+    assert.strictEqual(fs.existsSync(path.join(home, ".clawd")), false);
+  });
+
   it("skips when the host config dir is missing and never creates ~/.clawd", () => {
     const home = tmp("clawd-home-empty-");
     const result = registerOpencodePlugin({ silent: true, homeDir: home });

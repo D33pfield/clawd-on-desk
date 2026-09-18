@@ -1534,5 +1534,14 @@ test("official theme uninstall reports unpacked space and labels archive-only fa
   assert.match(dialogs[1].detail, /installed theme may use more disk space/i);
   assert.doesNotMatch(dialogs[1].detail, /frees about 2 MB/i);
 
+  card = {
+    ...card,
+    officialThemeBytes: null,
+    officialThemeUnpackedBytes: null,
+  };
+  await harness.ipcMain.invoke("settings:confirm-uninstall-official-theme", "hash-sage");
+  assert.match(dialogs[2].detail, /installed size is unavailable/i);
+  assert.doesNotMatch(dialogs[2].detail, /\?\s*MB|frees about/i);
+
   harness.runtime.dispose();
 });

@@ -666,6 +666,18 @@ test("numpad digits are tracked as their own physical keys", async () => {
   assert.deepEqual(r.calls.activate, [{ sessionId: "s1", revision: 1 }]);
 });
 
+test("NumLock-off navigation keys are not captured as numpad session digits", async () => {
+  const r = await renderer({ snapshot: twoSessions, entries: twoEntries });
+  await r.intent(1);
+
+  const down = await r.key("keydown", "ArrowDown", { code: "Numpad2" });
+  const up = await r.key("keyup", "ArrowDown", { code: "Numpad2" });
+  assert.equal(down.prevented, false);
+  assert.equal(up.prevented, false);
+  await r.runTimers();
+  assert.deepEqual(r.calls.activate, []);
+});
+
 test("physical digit codes select the same slot across shifted and unshifted layouts", async () => {
   for (const keyEvent of [
     { key: "!", code: "Digit1", shiftKey: true },

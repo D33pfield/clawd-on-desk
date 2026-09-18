@@ -528,6 +528,11 @@ function handleQuickKeydown(event) {
   if (event.metaKey || event.ctrlKey || event.altKey) return;
   const physicalKey = physicalDigit(event);
   if (!physicalKey) return;
+  // With NumLock off, Chromium keeps `code: "Numpad2"` but reports the
+  // navigation meaning in `key` (for example, "ArrowDown"). Leave those
+  // navigation keys to the page instead of silently jumping to a session.
+  // Main-row Digit codes remain layout-independent for AZERTY and peers.
+  if (physicalKey.startsWith("Numpad") && !/^[1-9]$/.test(event.key)) return;
   // Shift is part of typing the digit on layouts such as AZERTY. Only accept
   // it when `code` proves which physical digit key was pressed; the key-only
   // fallback must keep modified shortcuts out of Quick Select.
