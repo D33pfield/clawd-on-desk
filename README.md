@@ -26,14 +26,14 @@
 </p>
 
 <p align="center">
-  <img src="assets/hero.gif" alt="Clawd on Desk — a pixel desktop pet that reacts to your AI coding agent in real time. Animated demo: the crab cycles through sleeping, thinking while the model reads the codebase, typing as edit/bash tools run, grooving for one subagent, juggling when multiple subagents run, raising a permission bubble, and celebrating when 14 files / 312 tests are complete. Works with Claude Code, Codex, Cursor, Copilot, Gemini, Antigravity, Qwen, CodeWhale, Pi, OpenClaw and more.">
+  <img src="assets/hero.gif" alt="Clawd on Desk — a pixel desktop pet that reacts to your AI coding agent in real time. Animated demo: the crab cycles through sleeping, thinking while the model reads the codebase, typing as edit/bash tools run, grooving for one subagent, juggling when multiple subagents run, raising a permission bubble, and celebrating when 14 files / 312 tests are complete. Works with Claude Code, Codex, Cursor, Copilot, Gemini, Antigravity, Qwen, CodeWhale, Pi, OMP, OpenClaw and more.">
 </p>
 
 Clawd lives on your desktop and reacts to what your AI coding agent is doing — in real time. Start a long task, walk away, come back when the crab tells you it's done.
 
-Thinking when you prompt, typing when tools run, grooving or juggling for subagents, reviewing permissions, celebrating when tasks complete, sleeping when you step away. Ships with three built-in themes: **Clawd** (pixel crab), **Calico** (三花猫), and **Cloudling** (云宝), with full support for custom themes and imported Codex Pet animation packs.
+Thinking when you prompt, typing when tools run, grooving or juggling for subagents, reviewing permissions, celebrating when tasks complete, sleeping when you step away. Ships with three built-in themes: **Clawd** (pixel crab), **Calico** (三花猫), and **Cloudling** (云宝), with full support for custom themes and imported Codex Pet animation packs. An optional official theme, **Hash Sage** (哈希仙人), can be downloaded from Settings → Theme.
 
-> Supports Windows 11, macOS, and Ubuntu/Linux. Windows releases provide separate x64 and ARM64 installers. Source builds require Node.js. Works with **Claude Code**, **Codex CLI**, **Copilot CLI**, **Gemini CLI**, **Antigravity CLI (agy)**, **Cursor Agent**, **CodeBuddy**, **WorkBuddy**, **Grok Build**, **Kiro CLI**, **Kimi Code CLI (Kimi-CLI)**, **Qwen Code**, **ZCode**, **CodeWhale**, **opencode**, **MiMo Code**, **Pi**, **OpenClaw**, **Hermes Agent**, **Qoder**, **QoderWork**, **QwenWork (千问办公)**, **Reasonix CLI**, **DeepSeek Harness**, and **TraeCode (Trae CN)**.
+> Supports Windows 11, macOS, and Ubuntu/Linux. Windows releases provide separate x64 and ARM64 installers. Source builds require Node.js. Works with **Claude Code**, **Codex CLI**, **Copilot CLI**, **Gemini CLI**, **Antigravity CLI (agy)**, **Cursor Agent**, **CodeBuddy**, **WorkBuddy**, **Grok Build**, **Kiro CLI**, **Kimi Code CLI (Kimi-CLI)**, **Qwen Code**, **ZCode**, **CodeWhale**, **opencode**, **MiMo Code**, **Pi**, **OMP**, **OpenClaw**, **Hermes Agent**, **Qoder**, **QoderWork**, **QwenWork (千问办公)**, **Reasonix CLI**, **DeepSeek Harness**, and **TraeCode (Trae CN)**.
 
 ## Features
 
@@ -57,6 +57,7 @@ Thinking when you prompt, typing when tools run, grooving or juggling for subage
 - **opencode** — optional [plugin integration](https://opencode.ai/docs/plugins) via the effective file under `~/.config/opencode/` (`config.json` → `opencode.json` → `opencode.jsonc`, later wins) (install from Settings → Agents or run `node hooks/opencode-install.js`); zero-latency event streaming and permission bubbles with Allow/Always/Deny. Child sessions spawned by the `task` tool are headless and do not participate in the visible multi-session animation fanout
 - **MiMo Code** — optional [plugin integration](https://opencode.ai/docs/plugins) via the effective file under `~/.config/mimocode/` (`config.json` → `mimocode.json` → default `mimocode.jsonc`, later wins; install from Settings → Agents or run `npm run install:mimocode-plugin`); shares the same `@mimo-ai/plugin` SDK and permission behavior as opencode. Its `task` child sessions are likewise headless
 - **Pi** — optional global extension via `~/.pi/agent/extensions/clawd-on-desk` (install from Settings → Agents or run `npm run install:pi-extension`); state-only interactive lifecycle and tool activity updates while preserving Pi's default YOLO behavior
+- **OMP (oh-my-pi)** — optional global extension via `~/.omp/agent/extensions/clawd-on-desk` (install from Settings → Agents or run `npm run install:omp-extension`); state-only interactive lifecycle and tool activity updates. `session_stop` records a completion candidate, and the following terminal `agent_end` commits it only after OMP has confirmed that no extension requested a continuation, so the finish chime waits for the turn to settle. If the community bridge `clawd-on-desk-omp.ts` is already present, Clawd leaves it in place and skips its own install
 - **OpenClaw** — optional state-only plugin integration via `~/.openclaw/openclaw.json` (install from Settings → Agents or run `npm run install:openclaw-plugin`; OpenClaw also needs an initialized config); local `openclaw tui --local` sessions drive Clawd animations, without permission bubbles or terminal focus in Phase 1
 - **Hermes Agent** — optional [plugin integration](https://hermes-agent.org/) via Hermes' managed plugin directory (install from Settings → Agents or run `npm run install:hermes-plugin`); state, sessions, SessionEnd, terminal focus, and supported permission bubbles are available; **Settings → Remote SSH** can deploy the same plugin to a Hermes install on a remote host
 - **Qoder** — optional state-only command hooks via `~/.qoder/settings.json` (install from Settings → Agents or run `npm run install:qoder-hooks`); Phase 1 drives Clawd animations only — Qoder permission prompts are observed as notifications, and every Allow / Deny choice stays in Qoder's own flow
@@ -185,7 +186,7 @@ npm install
 npm start
 ```
 
-**Claude Code** and **Codex CLI** work out of the box with auto-registered hooks. For **Copilot CLI**, **Gemini CLI**, **Antigravity CLI (agy)**, **Cursor Agent**, **CodeBuddy**, **WorkBuddy**, **Kiro CLI**, **Kimi Code CLI (Kimi-CLI)**, **Qwen Code**, **ZCode**, **CodeWhale**, **opencode**, **MiMo Code**, **Pi**, **OpenClaw**, **Hermes Agent**, **Qoder**, **QoderWork**, **QwenWork (千问办公)**, **Reasonix CLI**, **DeepSeek Harness**, and **TraeCode (Trae CN)**, install the integration from **Settings → Agents** first; Clawd then keeps it synced while it remains enabled. Also covers remote SSH, WSL, and platform-specific notes (macOS / Linux): **[docs/guides/setup-guide.md](docs/guides/setup-guide.md)**
+**Claude Code** and **Codex CLI** work out of the box with auto-registered hooks. For **Copilot CLI**, **Gemini CLI**, **Antigravity CLI (agy)**, **Cursor Agent**, **CodeBuddy**, **WorkBuddy**, **Kiro CLI**, **Kimi Code CLI (Kimi-CLI)**, **Qwen Code**, **ZCode**, **CodeWhale**, **opencode**, **MiMo Code**, **Pi**, **OMP**, **OpenClaw**, **Hermes Agent**, **Qoder**, **QoderWork**, **QwenWork (千问办公)**, **Reasonix CLI**, **DeepSeek Harness**, and **TraeCode (Trae CN)**, install the integration from **Settings → Agents** first; Clawd then keeps it synced while it remains enabled. Also covers remote SSH, WSL, and platform-specific notes (macOS / Linux): **[docs/guides/setup-guide.md](docs/guides/setup-guide.md)**
 
 Want to run Claude Code / Codex CLI / Copilot CLI / Hermes Agent on a remote server and surface state plus permission bubbles in your local Clawd? Use the in-app **Settings → Remote SSH → Deploy / Repair Hooks**. Full walkthrough, shared-server isolation boundary, Doctor boundary, and FAQ: **[docs/guides/guide-remote-ssh.md](docs/guides/guide-remote-ssh.md)**
 
@@ -384,6 +385,22 @@ Thanks to everyone who has helped make Clawd better:
     <td align="center" valign="top" width="110"><a href="https://github.com/eugenewang5425"><img src="https://github.com/eugenewang5425.png" width="50" style="border-radius:50%" /><br /><sub>eugenewang5425</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/draintovmasyan783-creator"><img src="https://github.com/draintovmasyan783-creator.png" width="50" style="border-radius:50%" /><br /><sub>draintovmasyan783-creator</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/Yueh-H"><img src="https://github.com/Yueh-H.png" width="50" style="border-radius:50%" /><br /><sub>Yueh-H</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/TalexDreamSoul"><img src="https://github.com/TalexDreamSoul.png" width="50" style="border-radius:50%" /><br /><sub>TalexDreamSoul</sub></a></td>
+  </tr>
+  <tr>
+    <td align="center" valign="top" width="110"><a href="https://github.com/FuZoe"><img src="https://github.com/FuZoe.png" width="50" style="border-radius:50%" /><br /><sub>FuZoe</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/undefined-moe"><img src="https://github.com/undefined-moe.png" width="50" style="border-radius:50%" /><br /><sub>undefined-moe</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/pu-1205"><img src="https://github.com/pu-1205.png" width="50" style="border-radius:50%" /><br /><sub>pu-1205</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/Free-LZJ"><img src="https://github.com/Free-LZJ.png" width="50" style="border-radius:50%" /><br /><sub>Free-LZJ</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/easyhak"><img src="https://github.com/easyhak.png" width="50" style="border-radius:50%" /><br /><sub>easyhak</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/jlimcode"><img src="https://github.com/jlimcode.png" width="50" style="border-radius:50%" /><br /><sub>jlimcode</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/xfurqan0"><img src="https://github.com/xfurqan0.png" width="50" style="border-radius:50%" /><br /><sub>xfurqan0</sub></a></td>
+  </tr>
+  <tr>
+    <td align="center" valign="top" width="110"><a href="https://github.com/brantshin"><img src="https://github.com/brantshin.png" width="50" style="border-radius:50%" /><br /><sub>brantshin</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/mantertius"><img src="https://github.com/mantertius.png" width="50" style="border-radius:50%" /><br /><sub>mantertius</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/VonSdite"><img src="https://github.com/VonSdite.png" width="50" style="border-radius:50%" /><br /><sub>VonSdite</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/sunnyswag"><img src="https://github.com/sunnyswag.png" width="50" style="border-radius:50%" /><br /><sub>sunnyswag</sub></a></td>
   </tr>
 </table>
 
@@ -401,6 +418,7 @@ Source code is licensed under the [GNU Affero General Public License v3.0](LICEN
 - **Clawd** character is the property of [Anthropic](https://www.anthropic.com). This is an unofficial fan project, not affiliated with or endorsed by Anthropic.
 - **Calico cat (三花猫)** artwork by 鹿鹿 ([@rullerzhou-afk](https://github.com/rullerzhou-afk)). All rights reserved.
 - **Cloudling (云宝)** artwork by 鹿鹿 ([@rullerzhou-afk](https://github.com/rullerzhou-afk)). All rights reserved. Cloudling's visual direction includes an homage to the OpenAI Codex logo; Codex/OpenAI marks remain the property of OpenAI, and this project is not affiliated with or endorsed by OpenAI.
+- **Hash Sage (哈希仙人)** is distributed as an optional official theme from the [`rullerzhou-afk/clawd-themes`](https://github.com/rullerzhou-afk/clawd-themes) repository. Its artwork is copyright 鹿鹿 ([@rullerzhou-afk](https://github.com/rullerzhou-afk)); see the theme package for its license and full attribution. It is not covered by this project's AGPL-3.0 source license.
 - **Third-party contributions**: copyright retained by respective artists.
 
 **No cryptocurrency.** This project has no token, coin, NFT, or airdrop, and is not affiliated with any cryptocurrency project.

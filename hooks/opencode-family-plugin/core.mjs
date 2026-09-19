@@ -41,10 +41,11 @@
 //   runtime.json target. This is a same-OS-user trust boundary, not isolation
 //   from another malicious process already running as the same user.
 
-import { readFileSync, writeFileSync, mkdirSync, lstatSync, promises as fsp } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, lstatSync, statSync, realpathSync, promises as fsp } from "fs";
 import { homedir, platform } from "os";
-import { join, posix, win32 } from "path";
-import { randomBytes, timingSafeEqual } from "crypto";
+import { join, dirname, basename, posix, win32 } from "path";
+import { fileURLToPath } from "url";
+import { randomBytes, timingSafeEqual, createHash } from "crypto";
 import { execFileSync, execSync } from "child_process";
 import { createServer as createHttpServer } from "http";
 import {
@@ -247,6 +248,151 @@ export function extractContextUsageUsed(tokens) {
   }
   if (parts.length === 0 && cache == null) return null;
   return parts.reduce((a, b) => a + b, 0) + cacheNum;
+}
+
+// #1026 managed-layout inert gate.
+//
+// A managed generation under <home>/.clawd/integrations/opencode-family/<agent>/
+// homes/<configHash>/generations/<bundleHash>/opencode-family-plugin/core.mjs
+// is only "live" while its target owner record exists and points back at a
+// still-present app source marker. If Clawd is deleted/moved without cleanup,
+// the copied core must go inert — BEFORE the debug log is truncated, the PID
+// tree is walked, the reverse bridge is started or any event handler is
+// registered. This runs inside the host-invoked initializer, so the entry
+// module still default-exports exactly one callable function (#413).
+const MANAGED_TARGET_OWNER_LITERAL = "clawd-on-desk.opencode-family.target";
+const MANAGED_CORE_LAYOUT_RE = /\/generations\/([0-9a-f]{64})\/opencode-family-plugin\/core\.mjs$/i;
+const MANAGED_KNOWN_PATH_LIMIT = 16;
+
+function managedIsAbsolute(value) {
+  const normalized = String(value || "").replace(/\\/g, "/");
+  return normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized) || normalized.startsWith("//");
+}
+
+// Full standalone owner validation for the copied runtime gate. Mirrors the
+// installer/Doctor schema: a missing or corrupt record must go inert BEFORE any
+// side effect. Returns null when live, or { reason, released } otherwise.
+function managedOwnerProblem(owner, agentHome, config) {
+  if (!owner || typeof owner !== "object" || Array.isArray(owner)) return { reason: "owner-record-shape" };
+  if (owner.owner !== MANAGED_TARGET_OWNER_LITERAL || owner.schema !== 1) return { reason: "owner-record-foreign" };
+  if (config.agentId && owner.agentId !== config.agentId) return { reason: "owner-agent-mismatch" };
+
+  const expectedHash = basename(agentHome).toLowerCase();
+  if (typeof owner.configDirHash !== "string" || !/^[0-9a-f]{64}$/.test(owner.configDirHash)) {
+    return { reason: "owner-config-hash-malformed" };
+  }
+  if (owner.configDirHash.toLowerCase() !== expectedHash) {
+    return { reason: "owner-config-hash-mismatch" };
+  }
+  if (typeof owner.canonicalConfigDir !== "string" || !owner.canonicalConfigDir
+      || !managedIsAbsolute(owner.canonicalConfigDir)) {
+    return { reason: "owner-canonical-config-dir" };
+  }
+  if (createHash("sha256").update(owner.canonicalConfigDir).digest("hex") !== owner.configDirHash) {
+    return { reason: "owner-config-hash-inconsistent" };
+  }
+
+  if (!Array.isArray(owner.knownRegisteredPaths)
+      || owner.knownRegisteredPaths.length > MANAGED_KNOWN_PATH_LIMIT) {
+    return { reason: "owner-known-paths" };
+  }
+  const seen = new Set();
+  for (const value of owner.knownRegisteredPaths) {
+    if (typeof value !== "string" || !value || !managedIsAbsolute(value)) {
+      return { reason: "owner-known-path-invalid" };
+    }
+    const canonical = managedCanonicalPath(value);
+    if (canonical === null || seen.has(canonical)) return { reason: "owner-known-path-duplicate" };
+    seen.add(canonical);
+  }
+
+  const root = owner.activeSourceRoot;
+  const marker = owner.activeSourceMarker;
+  if (root === null || root === undefined) {
+    if (marker !== null && marker !== undefined) return { reason: "owner-released-pairing" };
+    return { reason: "owner-record-released", released: true };
+  }
+  if (typeof root !== "string" || !root || !managedIsAbsolute(root)) return { reason: "owner-source-root" };
+  if (typeof marker !== "string" || !marker || !managedIsAbsolute(marker)) return { reason: "owner-source-marker" };
+
+  const pluginDirName = typeof config.pluginDirName === "string" && config.pluginDirName
+    ? config.pluginDirName
+    : (typeof config.hookSource === "string" ? config.hookSource : "");
+  if (!pluginDirName) return { reason: "owner-plugin-dir-unknown" };
+  const fold = platform() === "win32" ? (value) => value.toLowerCase() : (value) => value;
+  const markerSlashed = marker.replace(/\\/g, "/");
+  if (fold(markerSlashed.slice(markerSlashed.lastIndexOf("/") + 1)) !== "index.mjs") {
+    return { reason: "source-marker-shape" };
+  }
+  const markerDir = markerSlashed.slice(0, markerSlashed.lastIndexOf("/"));
+  if (fold(markerDir.slice(markerDir.lastIndexOf("/") + 1)) !== fold(pluginDirName)) {
+    return { reason: "source-marker-plugin-dir" };
+  }
+  const markerRoot = markerDir.slice(0, markerDir.lastIndexOf("/"));
+  if (managedCanonicalPath(markerRoot) !== managedCanonicalPath(root)) {
+    return { reason: "source-marker-root-mismatch" };
+  }
+  return null;
+}
+
+// Standalone canonical identity (the copied core cannot import Clawd modules).
+// realpath resolves aliases; failure falls back to the lexical form, which is
+// fine here because liveness already requires the marker to be a real file.
+function managedCanonicalPath(value) {
+  if (typeof value !== "string" || !value) return null;
+  let resolved = value;
+  try {
+    resolved = typeof realpathSync.native === "function" ? realpathSync.native(value) : realpathSync(value);
+  } catch {
+    resolved = value;
+  }
+  let normalized = String(resolved).replace(/\\/g, "/");
+  while (normalized.length > 1 && normalized.endsWith("/")) normalized = normalized.slice(0, -1);
+  return platform() === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+export function evaluateManagedLayoutGate(metaUrl, config = {}) {
+  let corePath;
+  try {
+    corePath = fileURLToPath(metaUrl);
+  } catch {
+    return { mode: "source-direct", reason: "unresolvable-url" };
+  }
+  const normalized = String(corePath).replace(/\\/g, "/");
+  if (!MANAGED_CORE_LAYOUT_RE.test(normalized)) return { mode: "source-direct" };
+
+  // core.mjs → <gen>/opencode-family-plugin/core.mjs; owner.json lives three
+  // parent directories up at homes/<configHash>/owner.json.
+  const pluginDir = dirname(corePath);
+  const genDir = dirname(pluginDir);
+  const generationsDir = dirname(genDir);
+  const agentHome = dirname(generationsDir);
+  const ownerPath = join(agentHome, "owner.json");
+
+  let owner;
+  try {
+    const text = readFileSync(ownerPath, "utf8");
+    owner = JSON.parse(text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text);
+  } catch {
+    return { mode: "inert", reason: "owner-record-missing", ownerPath };
+  }
+  // Full owner-schema validation (literal/schema/agent, 64-hex target hash,
+  // absolute self-consistent canonicalConfigDir, bounded absolute history,
+  // source pairing, exact marker structure) BEFORE any side effect.
+  const problem = managedOwnerProblem(owner, agentHome, config);
+  if (problem) return { mode: "inert", reason: problem.reason, ownerPath };
+  // The marker must resolve to the expected regular file. A directory, a
+  // dangling symlink, or any non-file must go inert (statSync follows links,
+  // so a dangling symlink throws and a directory reports isFile()===false).
+  try {
+    const markerStat = statSync(owner.activeSourceMarker);
+    if (!markerStat || typeof markerStat.isFile !== "function" || !markerStat.isFile()) {
+      return { mode: "inert", reason: "source-marker-not-a-file", ownerPath };
+    }
+  } catch {
+    return { mode: "inert", reason: "source-marker-missing", ownerPath };
+  }
+  return { mode: "managed-live", ownerPath };
 }
 
 /**
@@ -1415,6 +1561,7 @@ export function createOpencodeFamilyPlugin(config) {
   // the whole plugin. The entry module must therefore expose exactly one
   // export: the default function. See #413.
   const __testInternals = {
+    evaluateManagedLayoutGate,
     buildStateBody,
     translateEvent,
     captureSessionDirectory,
@@ -2270,6 +2417,16 @@ export function createOpencodeFamilyPlugin(config) {
 
   // Plugin entrypoint (the host loads this via the entry's default export).
   const plugin = async (ctx) => {
+    // #1026 orphan inert gate: must run before every side effect (log reset,
+    // PID walk, bridge startup, handler registration). Returns an empty
+    // handler object so a stale managed copy can never emit state/permission.
+    const managedGate = evaluateManagedLayoutGate(import.meta.url, {
+      agentId: AGENT_ID,
+      pluginDirName: HOOK_SOURCE,
+    });
+    if (managedGate.mode === "inert") {
+      return { dispose: async () => {}, event: async () => {} };
+    }
     resetDebugLog();
     const instanceServerUrl = normalizeServerUrl(ctx && ctx.serverUrl);
     const instanceClient = ctx && ctx.client ? ctx.client : null;

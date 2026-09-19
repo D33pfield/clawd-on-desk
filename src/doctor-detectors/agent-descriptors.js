@@ -19,6 +19,7 @@ const codewhale = require("../../hooks/codewhale-install");
 const opencode = require("../../hooks/opencode-install");
 const mimocode = require("../../hooks/mimocode-install");
 const pi = require("../../hooks/pi-install");
+const omp = require("../../hooks/omp-install");
 const openclaw = require("../../hooks/openclaw-install");
 const hermes = require("../../hooks/hermes-install");
 const qoder = require("../../hooks/qoder-install");
@@ -90,6 +91,7 @@ const AGENT_DESCRIPTORS = Object.freeze([
     autoInstall: true,
     marker: "cursor-hook.js",
     nested: false,
+    scriptPath: cursor.resolveCursorHookScript(),
   }),
   Object.freeze({
     agentId: "gemini-cli",
@@ -271,6 +273,10 @@ const AGENT_DESCRIPTORS = Object.freeze([
     ),
     marker: "opencode-plugin",
     detection: "opencode-plugin",
+    // #1026: managedOpenCode Doctor branch + target home for the managed
+    // generation inspector. Never inferred from the registry path elsewhere.
+    managedMaterialization: getFamilyConfig("opencode").managedMaterialization === true,
+    managedHomeDir: path.resolve(opencode.DEFAULT_PARENT_DIR, "..", ".."),
   }),
   Object.freeze({
     agentId: "mimocode",
@@ -295,6 +301,8 @@ const AGENT_DESCRIPTORS = Object.freeze([
     // not-connected (R8 P2).
     marker: getFamilyConfig("mimocode").pluginDirName,
     detection: "opencode-plugin",
+    managedMaterialization: getFamilyConfig("mimocode").managedMaterialization === true,
+    managedHomeDir: path.resolve(mimocode.DEFAULT_PARENT_DIR, "..", ".."),
   }),
   Object.freeze({
     agentId: "pi",
@@ -307,6 +315,22 @@ const AGENT_DESCRIPTORS = Object.freeze([
     marker: pi.EXTENSION_FILE,
     coreFile: pi.CORE_FILE,
     markerFile: pi.MARKER_FILE,
+  }),
+  Object.freeze({
+    agentId: "omp",
+    agentName: agentName("omp"),
+    eventSource: agentEventSource("omp"),
+    // Resolved once, like DeepSeek Harness above: OMP's extension directory
+    // moves with PI_CONFIG_DIR / PI_CODING_AGENT_DIR / OMP_PROFILE, and install,
+    // the installation detector and Doctor must all judge the directory OMP
+    // would actually load rather than a fixed one.
+    parentDir: omp.resolveOmpAgentDir(),
+    configPath: omp.resolveExtensionDir(),
+    configMode: "omp-extension",
+    autoInstall: true,
+    marker: omp.EXTENSION_FILE,
+    coreFile: omp.CORE_FILE,
+    markerFile: omp.MARKER_FILE,
   }),
   Object.freeze({
     agentId: "openclaw",

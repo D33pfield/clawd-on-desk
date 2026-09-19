@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Notification, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, powerMonitor, clipboard, safeStorage } = require("electron");
+const { app, BrowserWindow, Notification, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, powerMonitor, clipboard, safeStorage, net } = require("electron");
 const { maybeRunPackageKoffiSmoke } = require("./package-koffi-smoke");
 if (maybeRunPackageKoffiSmoke({ app, BrowserWindow })) {
   return;
@@ -188,6 +188,7 @@ const createPetWindowRuntime = require("./pet-window-runtime");
 const { collectRequiredAssetFiles } = require("./theme-schema");
 const { describeGeometrySync } = require("./pet-accessory-state");
 const { createDisplayedVisualProjection } = require("./displayed-visual-projection");
+const { isVisualMirrored, resolveMirroredFile } = require("./mirrored-files");
 const { createTestReactionHandler } = require("./test-reaction");
 const createMacHideController = require("./mac-hide");
 const {
@@ -451,6 +452,8 @@ function _restartClawdNow() {
 
 let shortcutRuntime = null;
 let themeRuntime = null;
+// Official downloadable theme owner (created after the settings controller).
+let officialThemeMain = null;
 let agentRuntime = null;
 let sessionAutomationCoordinator = null;
 let sessionAutomationStore = null;
@@ -458,6 +461,7 @@ let systemWakeRecovery = null;
 let floatingWindowRuntime = null;
 let codexPetMain = null;
 let telegramApprovalIdentitySignature = "";
+let telegramDirectSendGateEnabled = null;
 let _telegramMigrationController = null;
 let telegramMigrationNudge = null;
 let feishuApprovalMigrationNudge = null;
@@ -588,6 +592,12 @@ const _settingsController = createSettingsController({
     getThemeInfo: (id) => themeRuntime.getThemeInfo(id),
     removeThemeDir: (id) => themeRuntime.removeThemeDir(id),
     getActiveTheme: () => themeRuntime.getActiveTheme(),
+    waitForThemeReloadSettled: (opts) => themeRuntime.waitForThemeReloadSettled(opts),
+    // Lazy getter: the official-theme owner is constructed after the controller
+    // (it depends on it), and only the command effect reads it.
+    get officialThemeManager() {
+      return officialThemeMain;
+    },
     globalShortcut,
     shortcutHandlers,
     // The controller is created before shortcutRuntime because each side needs
@@ -805,6 +815,7 @@ function safeConsoleError(...args) {
 // ── Theme loader ──
 const themeLoader = require("./theme-loader");
 const createCodexPetMain = require("./codex-pet-main");
+const createOfficialThemeMain = require("./official-theme-main");
 themeLoader.init(__dirname, app.getPath("userData"));
 themeRuntime = createThemeRuntime({
   themeLoader,
@@ -833,6 +844,7 @@ themeRuntime = createThemeRuntime({
   bumpAnimationOverridePreviewPosterGeneration,
   rebuildAllMenus: () => rebuildAllMenus(),
   isManagedTheme: (themeId) => codexPetMain && codexPetMain.isManagedTheme(themeId),
+  isOfficialManagedTheme: (themeId) => !!(officialThemeMain && officialThemeMain.isManagedTheme(themeId)),
 });
 themeLoader.bindActiveThemeRuntime(themeRuntime);
 
@@ -877,7 +889,12 @@ const settingsWindowRuntime = createSettingsWindowRuntime({
     // the display until the next commit or restart.
     endTextScalePreview();
   },
-  onAfterClosed: () => maybeDestroyIdleAnimationPreviewPosterWindow(),
+  onAfterClosed: () => {
+    // An animation preview started from Settings outlives the window otherwise:
+    // a state preview holds for the whole clip, up to a minute.
+    if (animationOverridesMain) animationOverridesMain.cancelAnimationPreview();
+    maybeDestroyIdleAnimationPreviewPosterWindow();
+  },
 });
 
 const permissionAutomationConfirmationRuntime = createPermissionAutomationConfirmationRuntime({
@@ -939,6 +956,36 @@ codexPetMain = createCodexPetMain({
   themeLoader,
 });
 const REGISTER_PROTOCOL_DEV_ARG = codexPetMain.REGISTER_PROTOCOL_DEV_ARG;
+
+// Official downloadable themes: the catalog is fetched lazily, downloads go
+// through manager-owned staging, and the final commit/uninstall run under the
+// settings controller's shared `theme` lock. All window/menu closures are lazy.
+officialThemeMain = createOfficialThemeMain({
+  app,
+  fs,
+  net,
+  path,
+  themeLoader,
+  settingsController: _settingsController,
+  getActiveTheme: () => getActiveTheme(),
+  waitForThemeReloadSettled: (opts) => themeRuntime.waitForThemeReloadSettled(opts),
+  rebuildAllMenus: () => rebuildAllMenus(),
+  sendToSettingsWindow: (channel, payload) => broadcastSettingsWindow(channel, payload),
+  getLang: () => lang,
+});
+// Startup crash recovery is intentionally narrow: only the manager's own
+// download/staging roots, only strictly valid id/version/nonce names, only
+// orphans older than the retention window.
+try {
+  const removedOrphans = officialThemeMain.cleanupOrphans();
+  if (removedOrphans.length > 0) {
+    console.log(`Clawd: cleared ${removedOrphans.length} stale official-theme artifact(s)`);
+  }
+  officialThemeMain.refreshInstalledScan();
+} catch (err) {
+  console.warn("Clawd: official theme startup cleanup failed:", err && err.message);
+}
+
 // Lenient load so a missing/corrupt user-selected theme can't brick boot.
 // If lenient fell back to "clawd" OR the variant fell back to "default",
 // hydrate prefs to match so the store stays truth.
@@ -1438,14 +1485,25 @@ function inferVisualSource(displayState, file) {
     : "state";
 }
 
+// Last free-roam walk heading sent to the renderer (roam visuals face right).
+let roamHeadingLeft = false;
+
 function requestDisplayedVisual(displayState, file, options = {}) {
   if (!displayedVisualProjection) return null;
   const activeTheme = getActiveTheme();
+  // A mirrored visual (left mini edge, leftward roam) may show a variant with
+  // pre-mirrored glyphs (theme mirroredFiles). It shares the original's
+  // silhouette, so the hit box still comes from the original file.
+  const visualFile = resolveMirroredFile(activeTheme, file, isVisualMirrored(activeTheme, displayState, {
+    miniMode: _mini.getMiniMode(),
+    miniEdge: _mini.getMiniEdge(),
+    roamHeadingLeft,
+  }));
   return displayedVisualProjection.request({
     themeId: activeTheme && activeTheme._id,
     logicalState: options.logicalState || _state.getCurrentState(),
     displayState,
-    file,
+    file: visualFile,
     hitBox: _state.resolveHitBoxForSvg(file),
     source: options.source || inferVisualSource(displayState, file),
     deliver: options.deliver || ((payload) => sendRawToRenderer("state-change", payload)),
@@ -2269,7 +2327,21 @@ const _stateCtx = {
     // R1a: best-effort completion notifications. Must never throw or block the
     // broadcast — the companion computes synchronously and fires sends async.
     if (telegramCompanion) {
-      try { telegramCompanion.onSnapshot(snapshot); } catch {}
+      try {
+        const telegramSnapshot = {
+          ...snapshot,
+          sessions: Array.isArray(snapshot && snapshot.sessions)
+            ? snapshot.sessions.map((entry) => {
+              const runtimeEntry = entry && entry.id ? sessions.get(String(entry.id)) : null;
+              return {
+                ...entry,
+                agentPid: runtimeEntry && runtimeEntry.agentPid || null,
+              };
+            })
+            : [],
+        };
+        telegramCompanion.onSnapshot(telegramSnapshot);
+      } catch {}
     }
     // Slack completion pings ride the same fanout; the client dedupes internally
     // and fires sends async, so this never throws or blocks the broadcast.
@@ -2299,6 +2371,11 @@ const _stateCtx = {
     codexWorkingStaleMs,
     detachedIdleStaleMs,
   }),
+  hasReplyableCompletionMapping: (sessionId, session) => !!(
+    telegramDirectSend
+    && typeof telegramDirectSend.hasReplyableCompletionMapping === "function"
+    && telegramDirectSend.hasReplyableCompletionMapping(sessionId, session)
+  ),
   getSessionAliases: () => _settingsController.get("sessionAliases"),
   getSessionAutomationRecords: () =>
     sessionAutomationStore ? sessionAutomationStore.list() : [],
@@ -3726,6 +3803,12 @@ function telegramTokenFileDigest(filePath) {
   }
 }
 
+function invalidateTelegramDirectSendMappings(reason, options = {}) {
+  if (!telegramDirectSend || typeof telegramDirectSend.invalidateMappings !== "function") return;
+  telegramDirectSend.invalidateMappings(options);
+  try { telegramApprovalLog("debug", "direct-send mappings invalidated", { reason }); } catch {}
+}
+
 function writeTelegramApprovalToken(token) {
   const paths = getTelegramApprovalPaths();
   const beforeDigest = telegramTokenFileDigest(paths.tokenEnvFilePath);
@@ -3750,6 +3833,12 @@ function writeTelegramApprovalToken(token) {
   }
   if (result && result.status === "ok") {
     const identityChanged = beforeDigest !== telegramTokenFileDigest(paths.tokenEnvFilePath);
+    if (identityChanged) {
+      invalidateTelegramDirectSendMappings("token_changed");
+      if (telegramNativeRunner && typeof telegramNativeRunner.resetOffset === "function") {
+        telegramNativeRunner.resetOffset();
+      }
+    }
     if (_telegramMigrationController
       && typeof _telegramMigrationController.reconcileConfiguration === "function") {
       void _telegramMigrationController.reconcileConfiguration({ identityChanged });
@@ -3768,29 +3857,78 @@ async function initTelegramMigrationController() {
   const {
     createClipboardFallbackDeliveryAdapter,
     createTelegramDirectSend,
-    createWindowsPasteOnlyDeliveryAdapter,
   } = require("./telegram-direct-send");
+  const { createWindowsConsoleInputDeliveryAdapter } = require("./windows-console-input");
+  const { createCodexQueueDeliveryAdapter } = require("./codex-queue-delivery");
+  const { deriveCodexHomeFromTranscriptPath } = require("./codex-thread-id");
+  const {
+    isCodexCliOriginator,
+    isCodexDesktopOriginator,
+  } = require("../hooks/codex-originator");
   const { createTelegramNativeRunner } = require("./telegram-native-runner");
   const { createTelegramFetchTransport } = require("./telegram-fetch-transport");
   const tokenStore = envFileTokenStore({ filePath: paths.tokenEnvFilePath });
-  telegramDirectSend = createTelegramDirectSend({
-    getSessionSnapshot: () => _state && typeof _state.buildSessionSnapshot === "function"
+  const getTelegramDirectSendSnapshot = () => {
+    const snapshot = _state && typeof _state.buildSessionSnapshot === "function"
       ? _state.buildSessionSnapshot()
-      : { sessions: [] },
+      : { sessions: [] };
+    const snapshotSessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
+    return {
+      ...snapshot,
+      sessions: snapshotSessions.map((entry) => {
+        const runtimeEntry = entry && entry.id ? sessions.get(String(entry.id)) : null;
+        return {
+          ...entry,
+          agentPid: runtimeEntry && runtimeEntry.agentPid || null,
+          // Direct Send keeps this main-process-only. It is derived from the
+          // authoritative rollout path and never enters the shared UI snapshot.
+          codexHome: deriveCodexHomeFromTranscriptPath(
+            runtimeEntry && runtimeEntry.transcriptPath,
+            process.platform,
+          ),
+        };
+      }),
+    };
+  };
+  const windowsConsoleDeliveryAdapter = createWindowsConsoleInputDeliveryAdapter();
+  const codexQueueDeliveryAdapter = createCodexQueueDeliveryAdapter({
+    osPlatform: process.platform,
+    log: telegramApprovalLog,
+  });
+  telegramDirectSend = createTelegramDirectSend({
+    getSessionSnapshot: getTelegramDirectSendSnapshot,
     getPendingPermissions: () => pendingPermissions,
     focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
-    deliveryAdapter: createWindowsPasteOnlyDeliveryAdapter({
-      clipboard,
-      restoreClipboardOnSuccess: true,
-    }),
+    deliveryAdapter: windowsConsoleDeliveryAdapter,
+    getDeliveryAdapter: ({ entry } = {}) => {
+      if (!entry || entry.agentId !== "codex") return windowsConsoleDeliveryAdapter;
+      const originator = entry.codexOriginator || entry.originator;
+      if (isCodexDesktopOriginator(originator)) return codexQueueDeliveryAdapter;
+      if (isCodexCliOriginator(originator) && entry.codexHome) return codexQueueDeliveryAdapter;
+      // A CLI session without store provenance keeps the established Windows
+      // Console path. On other hosts that adapter fails into clipboard fallback.
+      if (isCodexCliOriginator(originator)) return windowsConsoleDeliveryAdapter;
+      // An unknown originator must not inherit a known Codex delivery path.
+      // The queue adapter rejects it through canDeliver(), which sends this
+      // reply to the clipboard fallback without injecting OS input.
+      return codexQueueDeliveryAdapter;
+    },
     fallbackAdapter: createClipboardFallbackDeliveryAdapter({ clipboard }),
     isEnabled: () => {
       const snap = _telegramMigrationController && typeof _telegramMigrationController.getSnapshot === "function"
         ? _telegramMigrationController.getSnapshot()
         : null;
       return !!(snap && snap.state === "NATIVE_ACTIVE"
+        && telegramNativeRunner && typeof telegramNativeRunner.isPolling === "function"
+        && telegramNativeRunner.isPolling()
         && getTelegramApprovalPrefs().r3DirectSendEnabled === true);
     },
+    getRouteGeneration: () => (
+      telegramNativeRunner
+      && typeof telegramNativeRunner.getRouteGeneration === "function"
+        ? telegramNativeRunner.getRouteGeneration()
+        : null
+    ),
     osPlatform: process.platform,
     getLang: () => lang,
     log: telegramApprovalLog,
@@ -3830,6 +3968,8 @@ async function initTelegramMigrationController() {
         ? _telegramMigrationController.getSnapshot()
         : null;
       return !!(snap && snap.state === "NATIVE_ACTIVE"
+        && telegramNativeRunner && typeof telegramNativeRunner.isPolling === "function"
+        && telegramNativeRunner.isPolling()
         && getTelegramApprovalPrefs().r3DirectSendEnabled === true);
     },
     onTextMessage: (payload) => telegramDirectSend && telegramDirectSend.handleTextMessage(payload),
@@ -3856,16 +3996,50 @@ async function initTelegramMigrationController() {
     getClient: () => getTelegramCompanionClient(),
     getLang: () => _settingsController.get("lang") || lang || "en",
     getCompletionOutputMode: () => getTelegramApprovalPrefs().completionOutputMode || "off",
-    getNotifyOnComplete: () => getTelegramApprovalPrefs().notifyOnComplete === true,
+    getNotifyOnComplete: () => {
+      const prefs = getTelegramApprovalPrefs();
+      // Direct replies need a Telegram message to bind to even when the user
+      // keeps assistant output disabled. Treat the explicit reply opt-in as a
+      // bare completion-ping opt-in without changing the stored legacy flag.
+      return prefs.notifyOnComplete === true || prefs.r3DirectSendEnabled === true;
+    },
     // Native-active client present. The companion still advances its dedupe map
     // while native is inactive, and internally decides whether to send a bare
     // ping or require assistant output based on tgApproval prefs.
     isEnabled: () => !!getTelegramCompanionClient(),
-    onNotificationSent: ({ entry, messageId }) => {
+    getNotificationContext: (entry) => (
+      telegramDirectSend
+      && typeof telegramDirectSend.createCompletionNotificationContext === "function"
+        ? telegramDirectSend.createCompletionNotificationContext(entry)
+        : null
+    ),
+    isNotificationRouteCurrent: (context) => (
+      telegramDirectSend
+      && typeof telegramDirectSend.isCompletionNotificationRouteCurrent === "function"
+        ? telegramDirectSend.isCompletionNotificationRouteCurrent(context)
+        : false
+    ),
+    onNotificationSent: ({ entry, messageId, chatId, notificationContext }) => {
       if (telegramDirectSend && typeof telegramDirectSend.registerCompletionNotification === "function") {
+        // The notification context freezes the live agent PID when completion
+        // is observed. Keep this lookup only as a compatibility fallback for
+        // callers that do not provide that context; registration always
+        // prefers the earlier frozen identity so a reused session id cannot be
+        // rebound while Telegram delivery is in flight.
+        const runtimeEntry = entry && entry.id
+          ? sessions.get(String(entry.id))
+          : null;
         telegramDirectSend.registerCompletionNotification({
           messageId,
+          chatId,
           sessionId: entry && entry.id,
+          agentId: entry && entry.agentId,
+          sourcePid: entry && entry.sourcePid,
+          agentPid: runtimeEntry && runtimeEntry.agentPid || (entry && entry.agentPid),
+          editor: entry && entry.editor,
+          wtHwnd: entry && entry.wtHwnd,
+          orcaPaneKey: entry && entry.orcaPaneKey,
+          notificationContext,
         });
       }
     },
@@ -3878,6 +4052,7 @@ async function initTelegramMigrationController() {
   telegramApprovalIdentitySignature = buildTelegramApprovalIdentitySignature(
     getTelegramApprovalPrefs()
   );
+  telegramDirectSendGateEnabled = getTelegramApprovalPrefs().r3DirectSendEnabled === true;
   _telegramMigrationController = createTelegramMigrationController({
     native: nativeRunner,
     readPrefs: () => readTelegramMigrationPrefsForController(),
@@ -3947,6 +4122,7 @@ async function initTelegramMigrationController() {
   telegramApprovalIdentitySignature = buildTelegramApprovalIdentitySignature(
     getTelegramApprovalPrefs()
   );
+  telegramDirectSendGateEnabled = getTelegramApprovalPrefs().r3DirectSendEnabled === true;
   return _telegramMigrationController;
 }
 
@@ -4492,11 +4668,22 @@ feishuApprovalMigrationNudge = createFeishuApprovalMigrationNudge({
 _settingsController.subscribeKey("tgApproval", (value) => {
   syncTelegramSessionAutomationRoute();
   if (suppressTelegramMigrationReconcile > 0) return;
+  const normalized = telegramApprovalSettings.normalizeTelegramApproval(value);
+  const nextDirectSendEnabled = normalized.r3DirectSendEnabled === true;
+  const directSendGateChanged = telegramDirectSendGateEnabled !== null
+    && nextDirectSendEnabled !== telegramDirectSendGateEnabled;
+  telegramDirectSendGateEnabled = nextDirectSendEnabled;
+  if (directSendGateChanged) {
+    invalidateTelegramDirectSendMappings("direct_send_toggle_changed", {
+      notificationRouteChanged: false,
+    });
+  }
   const nextSignature = buildTelegramApprovalIdentitySignature(value);
   const identityChanged = telegramApprovalIdentitySignature !== ""
     && nextSignature !== telegramApprovalIdentitySignature;
   telegramApprovalIdentitySignature = nextSignature;
   if (!identityChanged) return;
+  invalidateTelegramDirectSendMappings("recipient_changed");
   if (_telegramMigrationController
     && typeof _telegramMigrationController.reconcileConfiguration === "function") {
     void _telegramMigrationController.reconcileConfiguration({ identityChanged: true });
@@ -4730,6 +4917,7 @@ const settingsIpcRuntime = registerSettingsIpc({
   ),
   themeLoader,
   codexPetMain,
+  officialThemeMain,
   getSettingsWindow,
   getActiveTheme: () => getActiveTheme(),
   getLang: () => lang,
@@ -4786,7 +4974,9 @@ const sessionHistoryRuntime = createSessionHistoryRuntime({
     _runtimeAgentGate.isAgentEnabled(agentId)
     && _runtimeAgentGate.isAgentIntegrationInstalled(agentId)
   ),
-  launchClaudeSession,
+  launchClaudeSession: (mode, cwd, sessionId, profile) => (
+    launchClaudeSession(mode, cwd, sessionId, {}, profile)
+  ),
 });
 
 registerSessionIpc({
@@ -5286,7 +5476,18 @@ const _roamCtx = {
   get miniTransitioning() { return _mini.getMiniTransitioning(); },
   applyState: (state, svgOverride, opts) => _state.applyState(state, svgOverride, opts),
   setState: (state, svgOverride, opts) => _state.setState(state, svgOverride, opts),
-  setRoamHeading: (headingLeft) => sendToRenderer("roam-heading", !!headingLeft),
+  setRoamHeading: (headingLeft) => {
+    const turned = roamHeadingLeft !== !!headingLeft;
+    roamHeadingLeft = !!headingLeft;
+    sendToRenderer("roam-heading", roamHeadingLeft);
+    // A turn between walks keeps the "roam" state, so setState() sends no new
+    // visual; re-request it when the theme has a mirrored variant to swap.
+    const roamSvg = _state.getCurrentSvg();
+    if (turned && _state.getCurrentState() === "roam"
+      && resolveMirroredFile(getActiveTheme(), roamSvg, true) !== roamSvg) {
+      sendToRenderer("state-change", "roam", roamSvg);
+    }
+  },
   // #640: hold still while the user types into a bubble text field (macOS)
   isImeEditingActive: () => pendingPermissions.some(
     (p) => p
@@ -5695,6 +5896,10 @@ if (!gotTheLock) {
     }
     if (quitCleanupStarted) return;
     quitCleanupStarted = true;
+    // Cancel any live official-theme download and drop this round's `.part`.
+    if (officialThemeMain) {
+      try { officialThemeMain.cancelInstall(); } catch {}
+    }
     trayBalloonOwner.dispose();
     holidayAccessoryRuntime.dispose();
     if (systemWakeRecovery) systemWakeRecovery.dispose();

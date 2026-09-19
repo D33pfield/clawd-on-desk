@@ -10,9 +10,12 @@
 //
 // Deliberately NOT stripped: `orcaPaneKey`, `cwd` and `host`. Those are opaque
 // labels, not handles onto a local process — `orcaPaneKey` in particular is the
-// one identifier the secure transport is still allowed to send.
+// one identifier the secure transport is still allowed to send. A Windows
+// Terminal HWND is local-machine process metadata, so a remote value is never
+// allowed to participate in focus or terminal-identity merging.
 const REMOTE_STRIPPED_PROCESS_FIELDS = Object.freeze([
   "sourcePid",
+  "wtHwnd",
   "agentPid",
   "pidChain",
   "editor",
@@ -27,7 +30,9 @@ function stripRemoteProcessMetadata(fields, remoteProfile) {
   const source = fields && typeof fields === "object" ? fields : {};
   if (!remoteProfile) return source;
   const stripped = { ...source };
-  for (const key of REMOTE_STRIPPED_PROCESS_FIELDS) stripped[key] = null;
+  for (const key of REMOTE_STRIPPED_PROCESS_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(source, key)) stripped[key] = null;
+  }
   return stripped;
 }
 

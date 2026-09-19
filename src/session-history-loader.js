@@ -10,7 +10,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { loadSessionHistory } = require("../hooks/session-history");
+const { loadSessionHistory, normalizeClaudeProfile } = require("../hooks/session-history");
 const { normalizeClaudeSessionId } = require("../hooks/claude-session-id");
 
 const DEFAULT_HISTORY_LIMIT = 25;
@@ -24,12 +24,16 @@ function encodeClaudeProjectDir(cwd) {
   return cwd.replace(/[^A-Za-z0-9-]/g, "-");
 }
 
-function getClaudeProjectsDir(options = {}) {
-  if (typeof options.claudeProjectsDir === "string" && options.claudeProjectsDir) {
-    return path.resolve(options.claudeProjectsDir);
+function getClaudeProjectsDir(profile, options = {}) {
+  const normalizedProfile = normalizeClaudeProfile(profile);
+  if (!normalizedProfile) return null;
+  if (normalizedProfile.kind === "default") {
+    if (typeof options.claudeProjectsDir === "string" && options.claudeProjectsDir) {
+      return path.resolve(options.claudeProjectsDir);
+    }
+    return path.join(os.homedir(), ".claude", "projects");
   }
-  const configDir = process.env.CLAUDE_CONFIG_DIR;
-  return path.join(configDir || path.join(os.homedir(), ".claude"), "projects");
+  return path.join(normalizedProfile.configDir, "projects");
 }
 
 /**
@@ -42,14 +46,16 @@ function getClaudeProjectsDir(options = {}) {
  *
  * Returns true (present), false (confidently missing), or null (unknown).
  */
-function probeTranscript(agentId, sessionId, cwd, options = {}) {
+function probeTranscript(agentId, sessionId, cwd, profile, options = {}) {
   if (agentId !== "claude-code") return null;
   try {
     if (!sessionId || normalizeClaudeSessionId(sessionId) !== sessionId) return null;
   } catch { return null; }
   const dirName = encodeClaudeProjectDir(cwd);
   if (!dirName) return null;
-  const projectDir = path.join(getClaudeProjectsDir(options), dirName);
+  const projectsDir = getClaudeProjectsDir(profile, options);
+  if (!projectsDir) return null;
+  const projectDir = path.join(projectsDir, dirName);
   try {
     const stat = fs.lstatSync(projectDir);
     if (!stat.isDirectory() || stat.isSymbolicLink()) return null;
@@ -86,10 +92,14 @@ function loadResumableSessionHistory(options = {}) {
   const rows = [];
   for (const record of records) {
     if (activeRawSessionIds.has(record.sessionId)) continue;
-    const transcript = probeTranscript(record.agentId, record.sessionId, record.cwd, options);
+    const profileVerified = record.version >= 2 && !!normalizeClaudeProfile(record.profile);
+    const transcript = profileVerified
+      ? probeTranscript(record.agentId, record.sessionId, record.cwd, record.profile, options)
+      : null;
     rows.push({
       agentId: record.agentId,
       sessionId: record.sessionId,
+      historyKey: record.historyKey,
       cwd: record.cwd,
       title: record.title,
       lastState: record.lastState,
@@ -99,6 +109,7 @@ function loadResumableSessionHistory(options = {}) {
       interrupted: record.interrupted,
       // null means "could not determine" — the row is still offered.
       transcriptPresent: transcript,
+      resumeDisabledReason: profileVerified ? null : "profile-unverified",
     });
     if (rows.length >= limit) break;
   }
@@ -108,21 +119,21 @@ function loadResumableSessionHistory(options = {}) {
 /**
  * Resolve a resume request coming from the Dashboard back to a trusted row.
  *
- * The renderer sends only an agent id and session id. Everything the launcher
+ * The renderer sends only an agent id and opaque history key. Everything the launcher
  * acts on — above all the working directory — is read back from the store here
  * rather than taken from the message, so a renderer cannot choose the folder a
  * session is relaunched in.
  */
-function resolveResumeTarget(agentId, sessionId, options = {}) {
-  if (agentId !== "claude-code" || typeof sessionId !== "string") return null;
-  try {
-    if (!sessionId || normalizeClaudeSessionId(sessionId) !== sessionId) return null;
-  } catch { return null; }
+function resolveResumeTarget(agentId, historyKey, options = {}) {
+  if (agentId !== "claude-code" || typeof historyKey !== "string"
+    || !/^[a-f0-9]{32}$/.test(historyKey)) return null;
   const records = loadSessionHistory({ ...options, limit: undefined });
   const match = records.find(
-    (record) => record.agentId === agentId && record.sessionId === sessionId,
+    (record) => record.agentId === agentId && record.historyKey === historyKey,
   );
   if (!match) return null;
+  const profile = match.version >= 2 ? normalizeClaudeProfile(match.profile) : null;
+  if (!profile) return null;
   if (!match.cwd || !path.isAbsolute(match.cwd)) return null;
   try {
     const stat = fs.lstatSync(match.cwd);
@@ -130,7 +141,13 @@ function resolveResumeTarget(agentId, sessionId, options = {}) {
   } catch {
     return null; // the project folder is gone; resuming there would fail anyway.
   }
-  return { agentId: match.agentId, sessionId: match.sessionId, cwd: match.cwd };
+  return {
+    agentId: match.agentId,
+    sessionId: match.sessionId,
+    historyKey: match.historyKey,
+    cwd: match.cwd,
+    profile,
+  };
 }
 
 module.exports = {

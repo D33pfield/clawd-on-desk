@@ -77,6 +77,7 @@ function makeRuntime(overrides = {}) {
     syncOpencodePluginImpl: () => calls.push({ name: "opencode" }),
     syncMimocodePluginImpl: () => calls.push({ name: "mimocode" }),
     syncPiExtensionImpl: () => calls.push({ name: "pi" }),
+    syncOmpExtensionImpl: () => calls.push({ name: "omp" }),
     syncOpenClawPluginImpl: () => calls.push({ name: "openclaw" }),
     repairOpenClawPluginImpl: () => {
       calls.push({ name: "openclaw-repair" });
@@ -188,6 +189,26 @@ describe("integration sync runtime", () => {
     ]);
   });
 
+  it("fallback sync surfaces a statusline {error} without failing the hooks-sync status", () => {
+    allowedIntegrationFailureWarningPatterns.push(
+      /^Clawd:\s+failed to sync Claude Code statusline:\s+boom$/
+    );
+    const { runtime } = makeRuntime({
+      ctx: { syncClawdHooksImpl: undefined, claudeQuotaCollectionEnabled: true },
+    });
+    withPatchedExport("../hooks/install.js", "registerHooks", () => ({ added: 1, updated: 0, removed: 0 }), () => {
+      withPatchedExport(
+        "../hooks/install.js",
+        "registerClaudeStatusline",
+        () => ({ installed: false, error: { reason: "invalid-appimage-path", message: "boom" } }),
+        () => {
+          const result = runtime.syncClawdHooks({ source: "startup", automatic: false });
+          assert.strictEqual(result.status, "ok");
+        }
+      );
+    });
+  });
+
   it("repairIntegrationForAgent('claude-code') syncs as an explicit, non-automatic doctor repair", () => {
     const { runtime, calls } = makeRuntime();
 
@@ -290,6 +311,7 @@ describe("integration sync runtime", () => {
       "deepseek-harness",
       "mimocode",
       "pi",
+      "omp",
       "openclaw",
       "hermes",
       "qoder",
@@ -325,6 +347,7 @@ describe("integration sync runtime", () => {
       "deepseek-harness",
       "opencode",
       "mimocode",
+      "omp",
       "openclaw",
       "hermes",
       "qoder",
@@ -407,6 +430,40 @@ describe("integration sync runtime", () => {
       name: "codebuddy",
       options: { permissionTarget: { mode: "custom", url: "https://approval.example.test/permission" } },
     }]);
+  });
+
+  it("forwards options to the opencode/mimocode sync impls and forces silent (#1026)", () => {
+    const seen = [];
+    const { runtime } = makeRuntime({
+      ctx: {
+        syncOpencodePluginImpl: (options) => { seen.push({ name: "opencode", options }); return { status: "ok" }; },
+        syncMimocodePluginImpl: (options) => { seen.push({ name: "mimocode", options }); return { status: "ok" }; },
+      },
+    });
+
+    runtime.syncIntegrationForAgent("opencode", {
+      homeDir: "/tmp/home",
+      configPath: "/tmp/home/.config/opencode/opencode.json",
+      managedRoot: "/tmp/managed",
+      source: "startup",
+      automatic: true,
+    });
+    runtime.syncIntegrationForAgent("mimocode", { homeDir: "/tmp/home2" });
+
+    assert.deepStrictEqual(seen, [
+      {
+        name: "opencode",
+        options: {
+          homeDir: "/tmp/home",
+          configPath: "/tmp/home/.config/opencode/opencode.json",
+          managedRoot: "/tmp/managed",
+          source: "startup",
+          automatic: true,
+          silent: true,
+        },
+      },
+      { name: "mimocode", options: { homeDir: "/tmp/home2", silent: true } },
+    ]);
   });
 
   it("reads saved custom integration options during startup sync", () => {
@@ -564,6 +621,30 @@ describe("integration sync runtime", () => {
     }
   });
 
+  it("preserves a Cursor ownership conflict instead of reporting startup sync success", () => {
+    const conflict = {
+      status: "error",
+      reason: "cursor-hook-conflict",
+      conflicts: [{ event: "stop", index: 0 }],
+      added: 0,
+      updated: 0,
+      skipped: 0,
+    };
+    const { runtime } = makeRuntime({
+      ctx: { syncCursorHooksImpl: () => conflict },
+    });
+    assert.strictEqual(runtime.syncIntegrationForAgent("cursor-agent"), conflict);
+  });
+
+  it("normalizes an injected empty Cursor count result as not installed", () => {
+    const { runtime } = makeRuntime({
+      ctx: { syncCursorHooksImpl: () => ({ added: 0, updated: 0, skipped: 0 }) },
+    });
+    const result = runtime.syncIntegrationForAgent("cursor-agent");
+    assert.strictEqual(result.status, "skipped");
+    assert.strictEqual(result.reason, "cursor-not-installed");
+  });
+
   it("syncIntegrationForAgent treats installed:false results as skipped", () => {
     const cases = [
       {
@@ -579,6 +660,13 @@ describe("integration sync runtime", () => {
         modulePath: "../hooks/pi-install.js",
         exportName: "registerPiExtension",
         reason: "pi-not-found",
+      },
+      {
+        agentId: "omp",
+        ctxKey: "syncOmpExtensionImpl",
+        modulePath: "../hooks/omp-install.js",
+        exportName: "registerOmpExtension",
+        reason: "omp-not-found",
       },
       {
         agentId: "openclaw",

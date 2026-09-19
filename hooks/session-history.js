@@ -32,7 +32,8 @@ const {
   cleanupOrphanedLeaseLocks,
 } = require("./session-recovery-lease");
 
-const HISTORY_VERSION = 1;
+const LEGACY_HISTORY_VERSION = 1;
+const HISTORY_VERSION = 2;
 const HISTORY_DIR_NAME = "session-history-v1";
 const HISTORY_FILE_PREFIX = "session-history-v1-";
 const MAX_HISTORY_BYTES = 16 * 1024;
@@ -47,7 +48,7 @@ const REFRESH_INTERVAL_MS = 30 * 1000;
 // than equality.
 const BOOT_TOLERANCE_MS = 5 * 60 * 1000;
 
-const ALLOWED_RECORD_KEYS = new Set([
+const LEGACY_ALLOWED_RECORD_KEYS = new Set([
   "version",
   "agentId",
   "sessionId",
@@ -59,6 +60,12 @@ const ALLOWED_RECORD_KEYS = new Set([
   "endedAt",
   "bootApproxAt",
 ]);
+const ALLOWED_RECORD_KEYS = new Set([
+  ...LEGACY_ALLOWED_RECORD_KEYS,
+  "profile",
+  "historyKey",
+]);
+const MAX_CLAUDE_CONFIG_DIR_LENGTH = 1024;
 
 const SUSTAINED_STATES = new Set(["thinking", "working", "juggling"]);
 
@@ -88,6 +95,39 @@ function normalizeTitle(value) {
   const title = value.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
   if (!title) return null;
   return title.length > 120 ? title.slice(0, 120) : title;
+}
+
+function normalizeClaudeProfile(profile) {
+  if (!profile || typeof profile !== "object" || Array.isArray(profile)) return null;
+  const keys = Object.keys(profile).sort();
+  if (keys.length !== 2 || keys[0] !== "configDir" || keys[1] !== "kind") return null;
+  if (profile.kind === "default" && profile.configDir === null) {
+    return { kind: "default", configDir: null };
+  }
+  if (profile.kind !== "custom" || typeof profile.configDir !== "string") return null;
+  const raw = profile.configDir.trim();
+  if (!raw || raw.length > MAX_CLAUDE_CONFIG_DIR_LENGTH
+    || /[\u0000-\u001f\u007f-\u009f]/u.test(raw) || !path.isAbsolute(raw)) return null;
+  const configDir = path.normalize(raw);
+  return configDir === raw ? { kind: "custom", configDir } : null;
+}
+
+function resolveClaudeProfileFromEnv(options = {}) {
+  const env = options.env && typeof options.env === "object" ? options.env : process.env;
+  if (!Object.prototype.hasOwnProperty.call(env, "CLAUDE_CONFIG_DIR")
+    || env.CLAUDE_CONFIG_DIR === undefined || env.CLAUDE_CONFIG_DIR === null
+    || env.CLAUDE_CONFIG_DIR === "") {
+    return { kind: "default", configDir: null };
+  }
+  if (typeof env.CLAUDE_CONFIG_DIR !== "string") return null;
+  const raw = env.CLAUDE_CONFIG_DIR.trim();
+  if (!raw || raw.length > MAX_CLAUDE_CONFIG_DIR_LENGTH
+    || /[\u0000-\u001f\u007f-\u009f]/u.test(raw) || !path.isAbsolute(raw)) return null;
+  return { kind: "custom", configDir: path.normalize(raw) };
+}
+
+function profileIdentity(profile) {
+  return profile.kind === "custom" ? `custom\0${profile.configDir}` : "default";
 }
 
 // Boot identity without spawning anything. The Windows lease writer is bound
@@ -138,24 +178,36 @@ function ensureHistoryDir(options = {}) {
   }
 }
 
-function historyHash(agentId, sessionId) {
-  return crypto.createHash("sha256").update(`${agentId}\0${sessionId}`).digest("hex").slice(0, 32);
+function historyHash(agentId, sessionId, profile, version = HISTORY_VERSION) {
+  const input = version === LEGACY_HISTORY_VERSION
+    ? `${agentId}\0${sessionId}`
+    : `${agentId}\0${sessionId}\0${profileIdentity(profile)}`;
+  return crypto.createHash("sha256").update(input).digest("hex").slice(0, 32);
 }
 
 function getHistoryFilePath(agentId, sessionId, options = {}) {
   const normalizedAgentId = normalizeAgentId(agentId);
   const normalizedSessionId = normalizeSessionId(sessionId);
   if (!normalizedAgentId || !normalizedSessionId) return null;
+  const version = options.version === LEGACY_HISTORY_VERSION
+    ? LEGACY_HISTORY_VERSION
+    : HISTORY_VERSION;
+  const profile = version === LEGACY_HISTORY_VERSION
+    ? { kind: "default", configDir: null }
+    : normalizeClaudeProfile(options.profile || { kind: "default", configDir: null });
+  if (!profile) return null;
   return path.join(
     getHistoryDir(options),
-    `${HISTORY_FILE_PREFIX}${historyHash(normalizedAgentId, normalizedSessionId)}.json`,
+    `${HISTORY_FILE_PREFIX}${historyHash(normalizedAgentId, normalizedSessionId, profile, version)}.json`,
   );
 }
 
 function validateRecord(record, options = {}) {
   if (!record || typeof record !== "object" || Array.isArray(record)) return null;
-  if (Object.keys(record).some((key) => !ALLOWED_RECORD_KEYS.has(key))) return null;
-  if (record.version !== HISTORY_VERSION) return null;
+  const version = record.version;
+  if (version !== LEGACY_HISTORY_VERSION && version !== HISTORY_VERSION) return null;
+  const allowedKeys = version === LEGACY_HISTORY_VERSION ? LEGACY_ALLOWED_RECORD_KEYS : ALLOWED_RECORD_KEYS;
+  if (Object.keys(record).some((key) => !allowedKeys.has(key))) return null;
   const agentId = normalizeAgentId(record.agentId);
   const sessionId = normalizeSessionId(record.sessionId);
   if (!agentId || !SUPPORTED_AGENT_IDS.has(agentId) || !sessionId
@@ -170,16 +222,29 @@ function validateRecord(record, options = {}) {
   if (cwd !== record.cwd) return null;
   const title = record.title === null ? null : normalizeTitle(record.title);
   if (title !== record.title) return null;
+  const profile = version === HISTORY_VERSION ? normalizeClaudeProfile(record.profile) : null;
+  if (version === HISTORY_VERSION && !profile) return null;
+  const historyKey = historyHash(
+    agentId,
+    sessionId,
+    profile || { kind: "default", configDir: null },
+    version,
+  );
+  if (version === HISTORY_VERSION && record.historyKey !== historyKey) return null;
   if (options.filePath) {
     const expected = getHistoryFilePath(agentId, sessionId, {
       historyDir: path.dirname(options.filePath),
+      version,
+      profile,
     });
     if (!expected || path.basename(expected) !== path.basename(options.filePath)) return null;
   }
   return {
-    version: HISTORY_VERSION,
+    version,
     agentId,
     sessionId,
+    profile,
+    historyKey,
     cwd,
     title,
     lastState: record.lastState,
@@ -289,8 +354,11 @@ function recordSessionHistoryFromStateBody(body, options = {}) {
   const classified = classifyStateBodyForRecovery(body, options);
   if (!classified) return { written: false, reason: "unclassified" };
 
+  const profile = resolveClaudeProfileFromEnv(options);
+  if (!profile) return { written: false, reason: "invalid-profile" };
+
   const dir = ensureHistoryDir(options);
-  const filePath = dir ? getHistoryFilePath(agentId, sessionId, { historyDir: dir }) : null;
+  const filePath = dir ? getHistoryFilePath(agentId, sessionId, { historyDir: dir, profile }) : null;
   if (!filePath) return { written: false, reason: "path" };
 
   try {
@@ -347,6 +415,8 @@ function recordSessionHistoryFromStateBody(body, options = {}) {
       version: HISTORY_VERSION,
       agentId,
       sessionId,
+      profile,
+      historyKey: historyHash(agentId, sessionId, profile),
       cwd,
       title,
       lastState,
@@ -421,6 +491,7 @@ function loadSessionHistory(options = {}) {
 }
 
 module.exports = {
+  LEGACY_HISTORY_VERSION,
   HISTORY_VERSION,
   HISTORY_DIR_NAME,
   HISTORY_FILE_PREFIX,
@@ -428,6 +499,9 @@ module.exports = {
   MAX_HISTORY_FILES,
   REFRESH_INTERVAL_MS,
   BOOT_TOLERANCE_MS,
+  MAX_CLAUDE_CONFIG_DIR_LENGTH,
+  normalizeClaudeProfile,
+  resolveClaudeProfileFromEnv,
   getHistoryDir,
   getHistoryFilePath,
   getBootApproxAt,

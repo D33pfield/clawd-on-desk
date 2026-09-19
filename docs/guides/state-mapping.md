@@ -116,6 +116,31 @@ Pi uses a global extension (`~/.pi/agent/extensions/clawd-on-desk`) and maps int
 
 Pi is state-only in Clawd: Clawd does not intercept permissions or add confirmation prompts, so Pi keeps its default YOLO execution behavior.
 
+## OMP Extension Events
+
+OMP (oh-my-pi) uses a per-agent extension directory — `~/.omp/agent/extensions/clawd-on-desk` for the default environment — and maps interactive-session lifecycle events to shared Clawd states:
+
+| OMP Extension Event | Clawd Event | State |
+|---|---|---|
+| session_start | SessionStart | idle |
+| session_switch / session_branch | SessionStart | idle |
+| before_agent_start | UserPromptSubmit | thinking |
+| tool_call | PreToolUse | working |
+| tool_result (ok) | PostToolUse | working |
+| tool_result (isError) | PostToolUseFailure | error |
+| session_stop candidate + following agent_end (`willContinue !== true`) | Stop | attention |
+| session_before_compact | PreCompact | sweeping |
+| session_compact | PostCompact | attention |
+| session_shutdown | SessionEnd | remove session; idle if no live sessions |
+
+Three behaviours differ from the Pi extension deliberately:
+
+- **Completion is committed across `session_stop` and the following `agent_end`.** `session_stop` is a pre-settle aggregation hook: another extension can still request a hidden continuation after Clawd's handler runs. Clawd records a main-session candidate there, then commits it only when OMP's following `agent_end` does not carry `willContinue: true`. Scheduling pauses, built-in retries and extension continuations therefore do not play the finish chime.
+- **`session_switch` / `session_branch` are reported, and the session being left is retired** with a synthetic `SessionEnd`. OMP can move an interactive terminal to another conversation with no shutdown for the old one, which would otherwise leave a live HUD row for a session nothing reports on again.
+- **A `session_title` is always sent.** Several interactive OMP sessions legitimately share one working directory, and the folder-name fallback would render every row — and every jump target — identically.
+
+OMP is state-only in Clawd: Clawd does not intercept permissions or add confirmation prompts, so OMP keeps its own execution behavior.
+
 ## Mini Mode
 
 Drag to the right screen edge (or right-click → "Mini Mode") to enter mini mode — half-body visible at screen edge, peeking out on hover.
@@ -130,3 +155,29 @@ Drag to the right screen edge (or right-click → "Mini Mode") to enter mini mod
 ## Click Reactions
 
 Easter eggs — try double-clicking, rapid 4-clicks, or poking Clawd repeatedly to discover hidden reactions.
+
+## Hash Sage (optional official theme)
+
+Hash Sage (哈希仙人) is **not** bundled with Clawd. It is an optional official theme downloaded on demand from the independent `rullerzhou-afk/clawd-themes` repository (Settings → Theme → Official themes). Once installed it runs as an external APNG theme with the same logical states, the approved SVG effects baked into each APNG, and no cursor eye tracking:
+
+| State | Hash Sage animation |
+|---|---|
+| idle | 空手待机 — standing breath (approved sample; the full idle set is not final yet) |
+| idle random pool (after 20 s without mouse movement) | 小云捉迷藏 — a little cloud flies in, circles her with a gold trail, plays on her fingertip and flies off; starts and ends on the idle pose |
+| thinking | 掐诀推演 — palm compass turns, code glyphs rise |
+| working (1 session) | 执笔制符 — writes the verification talisman |
+| working (2 sessions) / juggling (1 subagent) | 御剑 · 哈希符文 — twin swords with hash runes |
+| working (3+ sessions) / juggling (2+ subagents) | 忙碌协作 — two paper spirits help out |
+| attention | 完成收功 — unrolls the seal scroll |
+| notification | 小铃轻唤 — rings the small bell |
+| error | 怎么又炸了 — the talisman backfires |
+| sweeping / carrying | 拂尘引纸 / 牵云运匣 |
+| yawning → dozing → collapsing → sleeping → waking | 哈欠入盹 → 托腮轻盹 → 云来安睡 → 云上代码梦 → 伸懒腰醒来 |
+| DND sleep transition | 直接安睡 |
+| roam, mini crab-walk | 乘云而行 (drawn heading right, mirrored when heading left) |
+| drag / double-click / annoyed, 4-click | 张手轻摆 / 小小吃惊 / 有点嫌弃 |
+| mini idle / enter / hover peek | 贴边探头 / 从右侧走入 / 探出与呼吸 |
+| mini alert / task complete / working | 摇铃 / 竖卷收功 / 挥符 |
+| mini enter-sleep / sleep (DND) | 闭眼入场 / 贴墙睡眠呼吸 |
+
+Re-downloading after an uninstall is a lossy upgrade: it clears this theme's customizations and Clawd-managed sound overrides.

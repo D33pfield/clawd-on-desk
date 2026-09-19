@@ -123,6 +123,14 @@
     agentInstallationHintsFetched: false,
     agentInstallationHintsPromise: null,
     themeList: null,
+    themeListPromise: null,
+    officialThemeList: null,
+    officialThemePromise: null,
+    officialThemeListFetched: false,
+    officialThemeCatalogStatus: null,
+    officialThemeCatalogVersion: null,
+    officialThemeOperation: null,
+    officialThemePendingThemeId: null,
     codexPetsRefreshPending: false,
     codexPetZipImportPending: false,
     userThemeZipImportPending: false,
@@ -1809,12 +1817,26 @@
   }
 
   function fetchThemes() {
+    if (runtime.themeListPromise) return runtime.themeListPromise;
+    // Official metadata is network-backed. Start it beside the local scan, but
+    // never join it to the promise that gates the Theme tab's first paint.
+    void fetchOfficialThemes()
+      .then(() => {
+        // If the official list wins the race, the local-list completion owns
+        // the first paint. Rendering while themeList is still null would
+        // re-enter fetchThemes from renderThemeTab and can starve the pending
+        // listThemes IPC reply with an all-microtask render/fetch loop.
+        if (state.activeTab === "theme" && runtime.themeList !== null) {
+          requestRender({ content: true, preserveScroll: true });
+        }
+      })
+      .catch(() => {});
     if (!window.settingsAPI || typeof window.settingsAPI.listThemes !== "function") {
       runtime.themeList = [];
       return Promise.resolve([]);
     }
     const previousThemeList = Array.isArray(runtime.themeList) ? runtime.themeList : [];
-    return window.settingsAPI.listThemes().then((list) => {
+    const themeListPromise = window.settingsAPI.listThemes().then((list) => {
       const nextThemeList = Array.isArray(list) ? list : [];
       // Built-in themes make an empty successful list impossible in a healthy
       // install. Main also returns [] when enumeration throws, so preserve an
@@ -1829,6 +1851,44 @@
       runtime.themeList = previousThemeList;
       return previousThemeList;
     });
+    runtime.themeListPromise = themeListPromise;
+    void themeListPromise.finally(() => {
+      if (runtime.themeListPromise === themeListPromise) runtime.themeListPromise = null;
+    });
+    return themeListPromise;
+  }
+
+  // The official catalog is fetched independently from the local theme list.
+  // A failed list keeps whatever was rendered before, exactly like listThemes.
+  function fetchOfficialThemes() {
+    if (runtime.officialThemePromise) return runtime.officialThemePromise;
+    if (!window.settingsAPI || typeof window.settingsAPI.listOfficialThemes !== "function") {
+      runtime.officialThemeList = Array.isArray(runtime.officialThemeList) ? runtime.officialThemeList : [];
+      runtime.officialThemeListFetched = true;
+      return Promise.resolve(runtime.officialThemeList);
+    }
+    const previous = Array.isArray(runtime.officialThemeList) ? runtime.officialThemeList : [];
+    const officialThemePromise = window.settingsAPI.listOfficialThemes().then((result) => {
+      const themes = result && Array.isArray(result.themes) ? result.themes : [];
+      runtime.officialThemeList = themes.length === 0 && previous.length > 0 && !(result && result.status === "ok")
+        ? previous
+        : themes;
+      runtime.officialThemeCatalogStatus = (result && result.catalogStatus) || "offline";
+      runtime.officialThemeCatalogVersion = result ? result.catalogVersion : null;
+      runtime.officialThemeListFetched = true;
+      return runtime.officialThemeList;
+    }).catch((err) => {
+      console.warn("settings: listOfficialThemes failed", err);
+      runtime.officialThemeList = previous;
+      runtime.officialThemeCatalogStatus = "offline";
+      runtime.officialThemeListFetched = true;
+      return previous;
+    });
+    runtime.officialThemePromise = officialThemePromise;
+    void officialThemePromise.finally(() => {
+      if (runtime.officialThemePromise === officialThemePromise) runtime.officialThemePromise = null;
+    });
+    return officialThemePromise;
   }
 
   function emptyAnimationOverridesData() {
@@ -2009,6 +2069,14 @@
       showToast(t("shortcutErrorRegistrationFailed"), { error: true });
     }
     if (state.activeTab === "shortcuts") requestRender({ content: true });
+  }
+
+  // main owns the single official-theme operation; the renderer only mirrors
+  // its phase so a Settings reload can never restart or lose a live download.
+  function applyOfficialThemeProgress(progress) {
+    if (!progress || typeof progress !== "object") return;
+    runtime.officialThemeOperation = progress.phase && progress.phase !== "idle" ? progress : null;
+    if (state.activeTab === "theme") requestRender({ content: true, preserveScroll: true });
   }
 
   function clearTransientStateForChanges(changes) {
@@ -2379,8 +2447,10 @@
     finishShortcutRecording,
     handleShortcutRecordKey,
     applyShortcutFailures,
+    applyOfficialThemeProgress,
     fetchAgentInstallationHints,
     fetchThemes,
+    fetchOfficialThemes,
     fetchAnimationOverridesData,
     applyAnimationPreviewPoster,
     stopAssetPickerPolling,
