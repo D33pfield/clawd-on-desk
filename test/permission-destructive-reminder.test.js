@@ -1426,7 +1426,8 @@ function liveResponse() {
 
 // The rendered strings are the contract a human reads on the card, so the
 // lanes below assert them verbatim rather than by substring.
-const EN = require("../src/i18n.js").i18n.en;
+const { i18n: RUNTIME_I18N, SUPPORTED_LANGS } = require("../src/i18n.js");
+const EN = RUNTIME_I18N.en;
 
 function makeRuntime(ctxOverrides = {}, entryOverrides = {}) {
   const ctx = {
@@ -1669,11 +1670,11 @@ describe("destructive reminder — runtime behavior", () => {
     });
     assert.equal(on.permission.maybeStartRemoteApproval(on.entry), true);
     assert.equal(requests.length, 1);
-    assert.match(requests[0].detail, /matched: force push/);
+    assert.match(requests[0].detail, /Automatic approval paused: force push/);
     assert.doesNotMatch(requests[0].detail, /force-push/,
       "the stable diagnostic tag must not leak into user-visible copy");
     assert.ok(
-      requests[0].fields.some((field) => /matched: force push/.test(field.value)),
+      requests[0].fields.some((field) => /Automatic approval paused: force push/.test(field.value)),
       "the reason must be a field, not only buried in the detail blob"
     );
 
@@ -1682,7 +1683,7 @@ describe("destructive reminder — runtime behavior", () => {
       getTelegramApprovalClient: () => client,
     });
     assert.equal(off.permission.maybeStartRemoteApproval(off.entry), true);
-    assert.doesNotMatch(requests[1].detail, /matched: force push/);
+    assert.doesNotMatch(requests[1].detail, /Automatic approval paused: force push/);
     assert.doesNotMatch(requests[1].detail, /force-push/,
       "the internal tag must stay absent when the reminder setting is off");
   });
@@ -1735,7 +1736,7 @@ describe("destructive reminder — runtime behavior", () => {
       EN.approvalDetailIrreversibleValue.replace("{reason}", EN_FORCE_PUSH_REASON),
       "tier 2 must render the weaker irreversible wording, verbatim"
     );
-    assert.match(requests[0].detail, /may not be recoverable/,
+    assert.match(requests[0].detail, /Potentially destructive action: force push/,
       "and the same line must reach the plain-text detail");
 
     // Tier 2 must not borrow tier 1's wording: nothing stopped this request,
@@ -1752,7 +1753,7 @@ describe("destructive reminder — runtime behavior", () => {
       EN.approvalDetailReminderValue.replace("{reason}", EN_FORCE_PUSH_REASON),
       "tier 1 keeps the held wording"
     );
-    assert.doesNotMatch(weak.value, /Held for your review/,
+    assert.doesNotMatch(weak.value, /Automatic approval paused/,
       "tier 2 must never claim Clawd stopped a request it did not stop");
 
     // The arm a cross-family reviewer named as missing: automation is ON, but
@@ -1805,12 +1806,12 @@ describe("destructive reminder — runtime behavior", () => {
 describe("destructive reminder — tier 1 requires the same gates sweep uses (#1021 review 3)", () => {
   // reminderIsWhyThisIsPending() used to re-evaluate automation policy with a
   // PARTIAL copy of canAutoResolvePendingPermission()'s entry-level gates, so
-  // it could answer "yes, the reminder is why this is pending" (tier 1: "Held
-  // for your review") even when Codex permission intercept or the subagent
-  // automation gate was already going to hold the request regardless of the
+  // it could answer "yes, the reminder is why this is pending" (tier 1:
+  // "Automatic approval paused") even when Codex permission intercept or the
+  // subagent automation gate was already going to hold the request regardless of the
   // reminder. sweep()/canOfferSessionTrust() -- via
   // canAutoResolvePendingPermission() -- would never have resolved that
-  // entry, so tier 2 ("Destructive action ... (matched)") is the honest line.
+  // entry, so tier 2 ("Potentially destructive action") is the honest line.
   //
   // The lanes above named "remote-only" never set entry.remoteOnly = true and
   // never created a real session-automation grant, so they never modelled
@@ -1927,7 +1928,7 @@ describe("destructive reminder — tier 1 requires the same gates sweep uses (#1
     assert.equal(
       remoteFieldValue(rt),
       EN.approvalDetailIrreversibleValue.replace("{reason}", EN_FORCE_PUSH_REASON),
-      'the remote card must render tier 2 wording, not "Held for your review"'
+      'the remote card must render tier 2 wording, not "Automatic approval paused"'
     );
   });
 
@@ -2010,7 +2011,7 @@ describe("destructive reminder — the setting is scanned eagerly and pinned per
     // used to re-read the live setting on every call -- including from
     // canAutoResolvePendingPermission(), which sweep()/session-grant flows
     // call much later than accept time. That let an already-pending, already
-    // displayed "Held for your review" request become sweep-resolvable the
+    // displayed "Automatic approval paused" request become sweep-resolvable the
     // instant the operator turned the setting off, with no human action on
     // THIS request and no re-render of the card that was already shown.
     let reminderEnabled = true;
@@ -2106,6 +2107,47 @@ describe("destructive reminder — wiring", () => {
     const renderer = fs.readFileSync(path.join(SRC, "bubble-renderer.js"), "utf8");
     assert.match(renderer, /data\.reminderTag/);
     assert.match(renderer, /reminderHeldHint/);
+  });
+
+  it("explains the safety action without exposing matcher jargon in any locale", () => {
+    const renderer = fs.readFileSync(path.join(SRC, "bubble-renderer.js"), "utf8");
+    const expected = {
+      en: ["Automatic approval paused: {reason}", "Potentially destructive action: {reason}"],
+      zh: ["已暂停自动批准：{reason}", "可能的破坏性操作：{reason}"],
+      "zh-TW": ["已暫停自動允許：{reason}", "可能的破壞性操作：{reason}"],
+      ko: ["자동 승인을 일시 중지했습니다: {reason}", "파괴적일 수 있는 작업: {reason}"],
+      ja: ["自動承認を一時停止しました：{reason}", "破壊的な可能性がある操作：{reason}"],
+      "pt-BR": ["A aprovação automática foi pausada: {reason}", "Ação potencialmente destrutiva: {reason}"],
+      es: ["Aprobación automática pausada: {reason}", "Acción potencialmente destructiva: {reason}"],
+    };
+    const legacyJargon = [
+      "matched: {reason}",
+      "匹配：{reason}",
+      "符合：{reason}",
+      "일치: {reason}",
+      "一致: {reason}",
+      "correspondeu: {reason}",
+      "coincidencia: {reason}",
+    ];
+
+    for (const lang of SUPPORTED_LANGS) {
+      const [held, destructive] = expected[lang];
+      assert.equal(RUNTIME_I18N[lang].approvalDetailReminderValue, held, `${lang} tier 1`);
+      assert.equal(RUNTIME_I18N[lang].approvalDetailIrreversibleValue, destructive, `${lang} tier 2`);
+      assert.ok(
+        renderer.includes(`reminderHeldHint: "${held}"`),
+        `${lang} local bubble must use the same action-oriented tier-1 copy`
+      );
+    }
+    for (const phrase of legacyJargon) {
+      assert.ok(!renderer.includes(phrase), `local bubble still exposes matcher jargon: ${phrase}`);
+      for (const lang of SUPPORTED_LANGS) {
+        assert.ok(
+          !`${RUNTIME_I18N[lang].approvalDetailReminderValue}\n${RUNTIME_I18N[lang].approvalDetailIrreversibleValue}`.includes(phrase),
+          `${lang} remote approval still exposes matcher jargon: ${phrase}`
+        );
+      }
+    }
   });
 
   it("the settings row carries its limits on the second description line", () => {

@@ -2237,7 +2237,7 @@ function permissionReminderHolds(permEntry) {
 // permission intercept or the subagent automation gate is off -- sweep()
 // would never have resolved that entry (canAutoResolvePendingPermission
 // returns false), yet this function said the reminder was why it was
-// pending, so the card rendered Tier 1 ("Held for your review") when the
+// pending, so the card rendered Tier 1 ("Automatic approval paused") when the
 // request needed a human regardless (Tier 2 is correct).
 //
 // Fix: derive from canAutoResolvePendingPermission() itself -- the same
@@ -3127,8 +3127,8 @@ function buildRemoteApprovalPayload(permEntry) {
   //
   // Two tiers, mirroring bubble-renderer.js's badge exactly, because the local
   // card degrades to a weaker line where this used to degrade to silence:
-  //   held BY the reminder        -> "Held for your review - matched: X"
-  //   matched but pending anyway  -> "Destructive action ... (matched: X)"
+  //   held BY the reminder        -> "Automatic approval paused: X"
+  //   destructive but pending anyway -> "Potentially destructive action: X"
   // The second tier is the case the old single-tier code dropped. It is the
   // ONLY tier a remote-only operator can ever see: bubbles are off, so the
   // local irreversible badge that carries this hint is not on their screen at

@@ -75,7 +75,7 @@ function setSessionTag(data) {
 const BUBBLE_STRINGS = {
   en: {
     irreversibleHint: "Destructive action \u2014 may not be recoverable",
-    reminderHeldHint: "Held for your review — matched: {reason}",
+    reminderHeldHint: "Automatic approval paused: {reason}",
     autoAcceptEdits: "Auto-accept edits",
     switchToPlanMode: "Switch to plan mode",
     allowInDir: "Allow {tool} in {dir}/",
@@ -126,7 +126,7 @@ const BUBBLE_STRINGS = {
   },
   zh: {
     irreversibleHint: "\u7834\u574F\u6027\u64CD\u4F5C\u2014\u2014\u53EF\u80FD\u65E0\u6CD5\u6062\u590D",
-    reminderHeldHint: "已暂停等你确认 — 匹配：{reason}",
+    reminderHeldHint: "已暂停自动批准：{reason}",
     autoAcceptEdits: "\u81EA\u52A8\u63A5\u53D7\u7F16\u8F91",
     switchToPlanMode: "\u5207\u6362\u5230 Plan \u6A21\u5F0F",
     allowInDir: "\u5141\u8BB8 {tool} \u5728 {dir}/",
@@ -177,7 +177,7 @@ const BUBBLE_STRINGS = {
   },
   "zh-TW": {
     irreversibleHint: "\u7834\u58DE\u6027\u64CD\u4F5C\u2014\u2014\u53EF\u80FD\u7121\u6CD5\u5FA9\u539F",
-    reminderHeldHint: "已暫停等你確認 — 符合：{reason}",
+    reminderHeldHint: "已暫停自動允許：{reason}",
     autoAcceptEdits: "自動接受編輯",
     switchToPlanMode: "切換到計劃模式",
     allowInDir: "允許 {tool} 在 {dir}/",
@@ -228,7 +228,7 @@ const BUBBLE_STRINGS = {
   },
   ko: {
     irreversibleHint: "\uD30C\uAD34\uC801 \uC791\uC5C5 \u2014 \uBCF5\uAD6C\uB418\uC9C0 \uC54A\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4",
-    reminderHeldHint: "확인을 기다리며 멈췄습니다 — 일치: {reason}",
+    reminderHeldHint: "자동 승인을 일시 중지했습니다: {reason}",
     autoAcceptEdits: "\uD3B8\uC9D1 \uC790\uB3D9 \uC2B9\uC778",
     switchToPlanMode: "Plan \uBAA8\uB4DC\uB85C \uC804\uD658",
     allowInDir: "{dir}/\uC5D0\uC11C {tool} \uD5C8\uC6A9",
@@ -279,7 +279,7 @@ const BUBBLE_STRINGS = {
   },
   ja: {
     irreversibleHint: "\u7834\u58CA\u7684\u306A\u64CD\u4F5C \u2014 \u5FA9\u5143\u3067\u304D\u306A\u3044\u53EF\u80FD\u6027\u304C\u3042\u308A\u307E\u3059",
-    reminderHeldHint: "確認のため保留しました — 一致: {reason}",
+    reminderHeldHint: "自動承認を一時停止しました：{reason}",
     autoAcceptEdits: "編集を自動承認",
     switchToPlanMode: "Plan モードに切り替え",
     allowInDir: "{dir}/ で {tool} を許可",
@@ -330,7 +330,7 @@ const BUBBLE_STRINGS = {
   },
   "pt-BR": {
     irreversibleHint: "Ação destrutiva — pode não ter volta",
-    reminderHeldHint: "Pausado para sua revisão — correspondeu: {reason}",
+    reminderHeldHint: "A aprovação automática foi pausada: {reason}",
     autoAcceptEdits: "Aceitar edições automaticamente",
     switchToPlanMode: "Mudar para o modo plano",
     allowInDir: "Permitir {tool} em {dir}/",
@@ -381,7 +381,7 @@ const BUBBLE_STRINGS = {
   },
   es: {
     irreversibleHint: "Acción destructiva — puede ser irreversible",
-    reminderHeldHint: "En espera de tu revisión — coincidencia: {reason}",
+    reminderHeldHint: "Aprobación automática pausada: {reason}",
     autoAcceptEdits: "Aceptar ediciones automáticamente",
     switchToPlanMode: "Cambiar al modo plan",
     allowInDir: "Permitir {tool} en {dir}/",
