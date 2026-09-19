@@ -309,6 +309,16 @@ function makeFamilyInstaller(agentId) {
       };
     }
 
+    if (!target.canonicalConfigDirResolved) {
+      return {
+        status: "error",
+        reason: "config-dir-identity-unresolved",
+        message: `could not resolve a filesystem identity for ${target.configDir}; refusing managed registration`,
+        configPath,
+        pluginDir: toEntryPath(sourcePluginDir),
+      };
+    }
+
     if (!options.configPath) {
       let exists = false;
       try { exists = fsImpl.statSync(target.configDir).isDirectory(); } catch {}
@@ -681,6 +691,21 @@ function makeFamilyInstaller(agentId) {
     const { rootUnknown, target, configPath } = resolveManagedOperation(options);
     const sourcePluginDir = resolveSourcePluginDir();
     if (options.pluginDir) return unregisterManagedOverride(options, configPath, sourcePluginDir);
+    if (!rootUnknown && !target.canonicalConfigDirResolved) {
+      return {
+        status: "error",
+        reason: "config-dir-identity-unresolved",
+        message: `could not resolve a filesystem identity for ${target.configDir}; refusing managed unregistration`,
+        configPath,
+        pluginDir: toEntryPath(sourcePluginDir),
+        registrationRemoved: false,
+        activeEntryRemaining: null,
+        managedFilesRemoved: false,
+        residualPaths: [],
+        warnings: [],
+        mutatedPaths: [],
+      };
+    }
     const isOverride = false;
     const cleanupAllowed = !rootUnknown && Boolean(options.homeDir || options.managedRoot);
     const ownerOptions = { platform, pluginDirName: cfg.pluginDirName };
@@ -695,6 +720,30 @@ function makeFamilyInstaller(agentId) {
       ? { state: "unmanaged", record: null }
       : managedGeneration.readOwnerRecord(target, agentId, fsImpl, ownerOptions);
     let ownerRecord = (ownerRead.state === "owned" || ownerRead.state === "released") ? ownerRead.record : null;
+    const sourceRoot = path.dirname(sourcePluginDir);
+    const liveOtherSourceConflict = (ownerState) => {
+      if (!ownerState || ownerState.state !== "owned" || !ownerState.record) return null;
+      if (canonicalEqual(ownerState.record.activeSourceRoot, sourceRoot, fsImpl, platform)) return null;
+      if (!managedGeneration.isLiveSourceMarker(ownerState.record.activeSourceMarker, fsImpl)) return null;
+      return {
+        status: "error",
+        reason: "owner-conflict",
+        message: `target is owned by another live Clawd source: ${ownerState.record.activeSourceRoot}. Uninstall from that source or remove its marker first.`,
+        configPath,
+        pluginDir: toEntryPath(sourcePluginDir),
+        activeSourceRoot: ownerState.record.activeSourceRoot,
+        activeSourceMarker: ownerState.record.activeSourceMarker,
+        registrationRemoved: false,
+        activeEntryRemaining: true,
+        managedFilesRemoved: false,
+        residualPaths: [],
+        warnings: [],
+        mutatedPaths: [],
+      };
+    };
+
+    const ownerConflict = liveOtherSourceConflict(ownerRead);
+    if (ownerConflict) return ownerConflict;
 
     let expectedCanonicalDir = null;
     if (isOverride) {
@@ -796,6 +845,8 @@ function makeFamilyInstaller(agentId) {
       const lockedOwner = (cleanupAllowed)
         ? managedGeneration.readOwnerRecord(target, agentId, fsImpl, ownerOptions)
         : { state: "unmanaged", record: null };
+      const lockedConflict = liveOtherSourceConflict(lockedOwner);
+      if (lockedConflict) return lockedConflict;
       ownerRecord = (lockedOwner.state === "owned" || lockedOwner.state === "released") ? lockedOwner.record : null;
 
       const apply = jsonc.applyManagedUnregister({ cfg, configPath, candidates, makeContext, options });

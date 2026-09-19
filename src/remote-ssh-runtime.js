@@ -1908,6 +1908,10 @@ function createRemoteSshRuntime(deps = {}) {
       state.nextRetryAt = null;
       if (state.stopped || state.connectionGeneration !== reconnectGeneration) return;
       if (!state.serializedTransport && state.transportInspection) {
+        // Publish the cleared deadline before transport inspection can
+        // suspend this continuation. Paths without this await immediately
+        // publish startConnect's fresh state and need no intermediate frame.
+        emitStatus(state);
         try {
           const matches = await ordinaryTargetStillMatches(state);
           if (state.stopped || state.connectionGeneration !== reconnectGeneration) return;

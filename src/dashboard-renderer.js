@@ -525,16 +525,26 @@ function handleQuickKeydown(event) {
     dismissQuickRound();
     return;
   }
-  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-  if (!/^[1-9]$/.test(event.key)) return;
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  const physicalKey = physicalDigit(event);
+  if (!physicalKey) return;
+  // With NumLock off, Chromium keeps `code: "Numpad2"` but reports the
+  // navigation meaning in `key` (for example, "ArrowDown"). Leave those
+  // navigation keys to the page instead of silently jumping to a session.
+  // Main-row Digit codes remain layout-independent for AZERTY and peers.
+  if (physicalKey.startsWith("Numpad") && !/^[1-9]$/.test(event.key)) return;
+  // Shift is part of typing the digit on layouts such as AZERTY. Only accept
+  // it when `code` proves which physical digit key was pressed; the key-only
+  // fallback must keep modified shortcuts out of Quick Select.
+  if (event.shiftKey && physicalKey.startsWith("key:")) return;
+  const digit = Number(physicalKey.slice(-1));
   event.preventDefault();
   event.stopPropagation();
-  const physicalKey = physicalDigit(event);
-  if (physicalKey) quick.held.add(physicalKey);
+  quick.held.add(physicalKey);
   clearQuickTimer();
   // First target wins for the whole hold; auto-repeat never re-targets.
   if (quick.pending || event.repeat) return;
-  const entry = quick.entries[Number(event.key) - 1];
+  const entry = quick.entries[digit - 1];
   if (!entry) return;
   if (!entry.canFocus) {
     setQuickFeedback("dashboardQuickSelectUnavailable");
@@ -1739,7 +1749,7 @@ let sessionHistoryReloadRequested = false;
 const sessionHistoryActionState = new Map();
 
 function historyKey(row) {
-  return `${row.agentId}\u0000${row.sessionId}`;
+  return row.historyKey;
 }
 
 async function reloadSessionHistory(options = {}) {
@@ -1781,6 +1791,7 @@ function isHistoryResumePending(state, now = Date.now()) {
 }
 
 async function resumeHistoryRow(row) {
+  if (row.resumeDisabledReason) return;
   const key = historyKey(row);
   if (isHistoryResumePending(sessionHistoryActionState.get(key))) return;
   sessionHistoryActionState.set(key, { status: "pending" });
@@ -1789,7 +1800,7 @@ async function resumeHistoryRow(row) {
   try {
     result = await window.dashboardAPI.resumeSession({
       agentId: row.agentId,
-      sessionId: row.sessionId,
+      historyKey: row.historyKey,
     });
   } catch {
     result = null;
@@ -1834,6 +1845,13 @@ function createSessionHistoryCard(row, now) {
       t("dashboardHistoryTranscriptMissing")
     ));
   }
+  if (row.resumeDisabledReason === "profile-unverified") {
+    meta.appendChild(createText(
+      "span",
+      "session-history-flag is-missing",
+      t("dashboardHistoryProfileUnverified")
+    ));
+  }
   const folder = sessionHistoryFolderLabel(row.cwd);
   const elapsed = formatElapsed(Math.max(0, now - row.lastEventAt));
   meta.appendChild(document.createTextNode(folder ? `${folder} · ${elapsed}` : elapsed));
@@ -1850,7 +1868,7 @@ function createSessionHistoryCard(row, now) {
   button.textContent = pending
     ? t("dashboardHistoryResuming")
     : t("dashboardHistoryResume");
-  button.disabled = pending;
+  button.disabled = pending || !!row.resumeDisabledReason;
   button.addEventListener("click", () => { void resumeHistoryRow(row); });
   actions.appendChild(button);
   if (state && (state.status === "error" || (state.status === "submitted" && !pending))) {

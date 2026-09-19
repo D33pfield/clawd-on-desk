@@ -16,6 +16,7 @@ const {
   processAlive,
 } = require("./shared-process");
 const { resolveSessionTitle } = require("./cursor-session-title");
+const { CURSOR_HOOK_SENTINEL } = require("./json-utils");
 
 // Grok scans Claude-compatible settings by default and must never produce a
 // phantom cursor-agent session. Only the runner-injected official
@@ -121,7 +122,7 @@ safetyTimer = setTimeout(() => finish("{}"), SAFETY_TIMEOUT_MS);
 
 readStdinJson()
   .then((payload) => {
-    const argvOverride = process.argv[2];
+    const argvOverride = process.argv[2] === CURSOR_HOOK_SENTINEL ? process.argv[3] : process.argv[2];
     const hookNameResolved = argvOverride || (payload && payload.hook_event_name) || "";
     const mapped = resolveStateAndEvent(payload, hookNameResolved);
     const outLine = stdoutForCursorHook(hookNameResolved);

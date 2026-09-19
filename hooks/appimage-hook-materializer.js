@@ -65,6 +65,44 @@ function isTextuallyInside(rootDir, target) {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+// Exact compatibility grammar for commands written by released AppImage
+// builds before hook materialization existed. Basename alone is never enough:
+// the path must be rooted in the AppImage FUSE mount and end at the packaged
+// hooks entry. This is intentionally lexical because the old mount is normally
+// gone by the time an upgrade repairs the persisted command.
+function isLegacyAppImageHookPath(value, filename) {
+  const normalized = String(value || "").replace(/\\/g, "/");
+  const escaped = String(filename || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (!escaped || /[\/\\]/.test(String(filename || ""))) return false;
+  return new RegExp(
+    // AppImage uses the first six basename characters plus six random
+    // alphanumerics. Released Clawd artifacts used `Clawd-on-Desk-*` (and the
+    // older electron-builder default `Clawd on Desk-*`), so their exact mount
+    // prefixes are `Clawd-` and `Clawd `. A broad `Clawd*` prefix would still
+    // claim an unrelated `ClawdSomething.AppImage` mount (`ClawdSXXXXXX`).
+    `^/tmp/\\.mount_Clawd(?:-| )[A-Za-z0-9]{6}(?:/[^/]+)*/resources/app\\.asar\\.unpacked/hooks/${escaped}$`
+  ).test(normalized);
+}
+
+// A sentinel-bearing command may survive a release change while its old
+// content-addressed generation remains valid. Accept only the exact managed
+// layout (one 20-hex generation directory plus the expected entry filename),
+// never an arbitrary same-basename path.
+function isManagedAppImageHookTarget(value, filename, options = {}) {
+  const root = options.materializedRoot
+    || path.join(options.homeDir || os.homedir(), ".clawd", "appimage-hooks");
+  const normalizedRoot = String(path.resolve(root)).replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalizedValue = String(value || "").replace(/\\/g, "/");
+  const relative = normalizedValue.startsWith(`${normalizedRoot}/`)
+    ? normalizedValue.slice(normalizedRoot.length + 1)
+    : "";
+  if (!relative) return false;
+  const parts = relative.split("/");
+  return parts.length === 2
+    && /^[a-f0-9]{20}$/.test(parts[0])
+    && parts[1] === filename;
+}
+
 // The hooks root is an explicit boundary, never "the common ancestor of every
 // entry" — the latter would silently widen to the repo root when a caller adds
 // an entry under agents/ or src/, accepting files outside hooks/. Callers that
@@ -352,6 +390,8 @@ module.exports = {
   AppImageHookMaterializerError,
   scanRelativeRequires,
   collectRelativeHookClosure,
+  isLegacyAppImageHookPath,
+  isManagedAppImageHookTarget,
   planAppImageHookBundle,
   isAppImageHookBundleComplete,
   materializeAppImageHookBundle,

@@ -1,6 +1,6 @@
 {
   "name": "clawd-on-desk",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A desktop pet that reacts to your Claude Code sessions in real-time.",
   "main": "src/main.js",
   "scripts": {
@@ -205,7 +205,8 @@
   "devDependencies": {
     "@electron/asar": "^3.4.1",
     "electron": "^41.10.4",
-    "electron-builder": "^26.15.7"
+    "electron-builder": "^26.15.7",
+    "js-yaml": "^4.1.0"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.71.1",

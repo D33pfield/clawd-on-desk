@@ -80,15 +80,15 @@ describe("#1026 managed OpenCode Doctor", () => {
     assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "opencode" });
   });
 
-  it("reports an exact legacy source entry as a repairable legacy-path migration", () => {
+  it("requires manual review for an unverified legacy-looking source entry", () => {
     const home = makeHome();
     writeJson(path.join(home, ".config", "opencode", "opencode.json"), { plugin: ["/app/hooks/opencode-plugin"] });
-    // Point the real source resolver at a temp hooks dir is not possible; the
-    // source path constant is stable, so this asserts the category produced
-    // for the real packaged source path.
+    // This literal is not the resolved source path for the current checkout.
+    // A basename match alone cannot establish ownership.
     const detail = runOne(managedDescriptor(home)).details[0];
-    assert.ok(["legacy-path", "broken-path"].includes(detail.status), detail.status);
-    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "opencode" });
+    assert.strictEqual(detail.status, "needs-review");
+    assert.strictEqual(detail.fixAction, undefined);
+    assert.ok(detail.opencodeRemediation && detail.opencodeRemediation.length >= 1);
   });
 
   it("reports a modified Clawd-like copy as needs-review with no Fix and remediation", () => {

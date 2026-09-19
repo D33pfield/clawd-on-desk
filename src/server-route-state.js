@@ -64,6 +64,21 @@ const RECAP_PERMISSION_BOUNDARY_AGENT_IDS = new Set([
 // metadata drop; only this header allows a metadata sender to advance its
 // application-level dedup baseline.
 const CLAWD_METADATA_ACCEPTED_HEADER = "X-Clawd-Metadata-Accepted";
+const MAX_PERMISSION_LIFECYCLE_SESSION_ID_LENGTH = 512;
+
+function hasExplicitPermissionLifecycleSessionIdentity(rawSessionId, agentId) {
+  if (typeof rawSessionId !== "string") return false;
+  const normalized = rawSessionId.trim();
+  if (!normalized || normalized.length > MAX_PERMISSION_LIFECYCLE_SESSION_ID_LENGTH) return false;
+  if (/[\u0000-\u001f\u007f]/u.test(normalized)) return false;
+  const lowered = normalized.toLowerCase();
+  if (lowered === "default") return false;
+  const normalizedAgentId = typeof agentId === "string" ? agentId.trim().toLowerCase() : "";
+  if (normalizedAgentId && (lowered === `${normalizedAgentId}:default` || lowered === `${normalizedAgentId}:`)) {
+    return false;
+  }
+  return true;
+}
 
 function normalizeHwndString(value) {
   if (value === null || value === undefined) return null;
@@ -232,7 +247,7 @@ function handleStatePost(req, res, options) {
       if (data.display_svg === null) display_svg = null;
       else if (typeof data.display_svg === "string") display_svg = pathApi.basename(data.display_svg);
       else display_svg = undefined;
-      const wtHwnd = normalizeHwndString(data.wt_hwnd ?? data.wtHwnd);
+      const rawWtHwnd = normalizeHwndString(data.wt_hwnd ?? data.wtHwnd);
       const cwd = typeof data.cwd === "string" ? data.cwd : "";
       const rawAgentPid = data.agent_pid ?? data.claude_pid ?? data.cursor_pid;
       // Stripped at the parse boundary rather than at the updateSession call so
@@ -241,6 +256,7 @@ function handleStatePost(req, res, options) {
       // `cwd` and `host` are untouched by design — see remote-process-metadata.js.
       const {
         sourcePid: source_pid,
+        wtHwnd,
         agentPid,
         pidChain,
         editor,
@@ -248,6 +264,7 @@ function handleStatePost(req, res, options) {
         tmuxClient,
       } = stripRemoteProcessMetadata({
         sourcePid: Number.isFinite(data.source_pid) && data.source_pid > 0 ? Math.floor(data.source_pid) : null,
+        wtHwnd: rawWtHwnd,
         agentPid: Number.isFinite(rawAgentPid) && rawAgentPid > 0 ? Math.floor(rawAgentPid) : null,
         pidChain: Array.isArray(data.pid_chain) ? data.pid_chain.filter(n => Number.isFinite(n) && n > 0) : null,
         editor: (data.editor === "code" || data.editor === "cursor") ? data.editor : null,
@@ -256,6 +273,10 @@ function handleStatePost(req, res, options) {
       }, remoteProfile);
       const orcaPaneKey = normalizeOrcaPaneKey(data.orca_pane_key);
       const agentId = agentIdentity.agentId;
+      const hasExplicitPermissionLifecycleSession = hasExplicitPermissionLifecycleSessionIdentity(
+        session_id,
+        agentId,
+      );
       const trustedProfileId = remoteProfile && typeof remoteProfile.profileId === "string"
         ? remoteProfile.profileId
         : "local";
@@ -285,6 +306,11 @@ function handleStatePost(req, res, options) {
       const subagentType = agentIdentity.source === "subagent"
         ? agentIdentity.subagentType
         : reportedSubagentType;
+      // Invalid wire identities may still contribute bounded lifecycle state,
+      // but they must not create attacker-chosen state buckets. Permission
+      // cleanup remains gated by the original verdict captured above.
+      if (!hasExplicitPermissionLifecycleSession) session_id = undefined;
+      const usesBuiltInDefaultStateBucket = !session_id && agentIdentity.source !== "custom";
       // State sessions share one process-wide Map keyed only by session id.
       // Registered custom applications commonly send generic ids such as
       // "default" or "project-a", so namespace them at the trust boundary to
@@ -299,7 +325,17 @@ function handleStatePost(req, res, options) {
           ? rawCustomSessionId
           : `${customSessionPrefix}${rawCustomSessionId}`;
       }
+      // Missing/default built-in identities are deliberately ineligible for
+      // permission cleanup, but their lifecycle state still needs a bounded
+      // bucket. Namespace that fallback by agent so one agent cannot replace
+      // or end another agent's `default` state. Keep the public raw id below
+      // as `default` so Kiro's cwd-scoped aliases and existing UI contracts do
+      // not acquire the internal namespace.
+      if (!session_id) session_id = `${agentId}:default`;
       const sessionIdentity = resolveSessionIdentity(session_id, trustedProfileId, "default");
+      const rawStateSessionId = usesBuiltInDefaultStateBucket
+        ? "default"
+        : sessionIdentity.rawSessionId;
       session_id = sessionIdentity.sessionId;
       const host = remoteProfile && typeof remoteProfile.displayHost === "string"
         ? remoteProfile.displayHost
@@ -854,7 +890,18 @@ function handleStatePost(req, res, options) {
             : behaviorFor;
           ctx.resolvePermissionEntry(candidates[0], behavior, message);
         };
-        if (event === "PostToolUse" || event === "PostToolUseFailure" || event === "Stop") {
+        const permissionLifecycleEvent = event === "PostToolUse"
+          || event === "PostToolUseFailure"
+          || event === "Stop"
+          || event === "SessionEnd"
+          || event === "UserPromptSubmit"
+          || event === "PreToolUse";
+        if (!hasExplicitPermissionLifecycleSession && permissionLifecycleEvent
+          && typeof ctx.debugLog === "function") {
+          ctx.debugLog("state-permission-cleanup-skipped reason=missing-or-invalid-session-id");
+        }
+        if (hasExplicitPermissionLifecycleSession
+          && (event === "PostToolUse" || event === "PostToolUseFailure" || event === "Stop")) {
           const perm = findPendingPermissionForStateEvent(ctx.pendingPermissions, {
             sessionId: sid,
             agentId,
@@ -890,7 +937,7 @@ function handleStatePost(req, res, options) {
         // change"); PreToolUse(non-ExitPlanMode) = Claude started executing after
         // plan approval. SessionEnd is authoritative and clears both plan and
         // human-question entries without inventing a user decision.
-        if (event === "SessionEnd") {
+        if (hasExplicitPermissionLifecycleSession && event === "SessionEnd") {
           // A main-thread SessionEnd is authoritative for the whole agent
           // session and must clear requests from every subagent. A SessionEnd
           // emitted by a subagent only closes that subagent's own requests; its
@@ -903,13 +950,13 @@ function handleStatePost(req, res, options) {
           ))) {
             ctx.resolvePermissionEntry(stale, "no-decision", "Session ended");
           }
-        } else if (
+        } else if (hasExplicitPermissionLifecycleSession && (
           event === "UserPromptSubmit"
           || (
             event === "PreToolUse"
             && stateEventInteraction.intent !== INTERACTION_INTENT.PLAN_REVIEW
           )
-        ) {
+        )) {
           const stalePlans = pendingForSource().filter((entry) => (
             entry.interaction
             && entry.interaction.intent === INTERACTION_INTENT.PLAN_REVIEW
@@ -944,7 +991,7 @@ function handleStatePost(req, res, options) {
             ...(recapBoundary ? { recapBoundary } : {}),
             ...((recapIsSubagent || codexHookState.headless === true) ? { recapIsSubagent: true } : {}),
             profileId: sessionIdentity.profileId,
-            rawSessionId: sessionIdentity.rawSessionId,
+            rawSessionId: rawStateSessionId,
             host,
             wslDistro,
             headless: headless || codexHookState.headless === true,

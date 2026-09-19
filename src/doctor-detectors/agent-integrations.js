@@ -12,6 +12,7 @@ const { getAgent } = require("../../agents/registry");
 const { commandMatchesMarker, findHookCommands } = require("../../hooks/json-utils");
 const { GEMINI_HOOK_EVENTS } = require("../../hooks/gemini-install");
 const { ANTIGRAVITY_HOOK_EVENTS, HOOK_GROUP_ID: ANTIGRAVITY_HOOK_GROUP_ID } = require("../../hooks/antigravity-install");
+const cursor = require("../../hooks/cursor-install");
 const {
   hasUserPermissionHookInOtherFiles,
   hasUserPermissionHookInSettingsJson,
@@ -499,6 +500,54 @@ function validateCommandList(descriptor, commands, options) {
     scriptPath: first.scriptPath || null,
     commandFragment: first.fragment || String(commands[0] || "").slice(0, 128),
   });
+}
+
+function validateCursorCommandList(descriptor, settings, options) {
+  const runtime = cursor.resolveCursorHookRuntime({
+    platform: options.platform || process.platform,
+    processEnv: options.env,
+    homeDir: options.homeDir,
+    sourceScript: descriptor.scriptPath || cursor.resolveCursorHookScript(),
+    fs: options.fs,
+  }, { materialize: false });
+  if (!runtime.ok) {
+    return makeDetail(descriptor, "needs-review", {
+      level: "warning",
+      detail: `Cursor hook runtime could not be resolved: ${runtime.message || runtime.reason}`,
+      hookCommandIssue: runtime.reason || "cursor-hook-runtime-unavailable",
+    });
+  }
+  const records = [];
+  if (settings && settings.hooks && typeof settings.hooks === "object") {
+    for (const [event, entries] of Object.entries(settings.hooks)) {
+      if (!Array.isArray(entries)) continue;
+      entries.forEach((entry, index) => {
+        if (!entry || typeof entry.command !== "string") return;
+        const verdict = cursor.classifyCursorHookCommand(
+          entry.command,
+          runtime.target,
+          options.platform || process.platform,
+          { homeDir: options.homeDir, materializedRoot: runtime.materializedRoot }
+        );
+        records.push({ event, index, command: entry.command, ...verdict });
+      });
+    }
+  }
+  const ambiguous = records.filter((record) => record.classification === "ambiguous");
+  if (ambiguous.length) {
+    const first = ambiguous[0];
+    return makeDetail(descriptor, "needs-review", {
+      level: "warning",
+      detail: `${descriptor.configPath} has ${ambiguous.length} Cursor hook command(s) with ambiguous ownership`,
+      hookCommandIssue: "cursor-hook-conflict",
+      commandFragment: String(first.command || "").slice(0, 128),
+      conflictingHookEvent: first.event,
+    });
+  }
+  const owned = records
+    .filter((record) => record.classification === "owned")
+    .map((record) => record.command);
+  return validateCommandList(descriptor, owned, options);
 }
 
 function findHookCommandsForEvent(settings, eventName, marker, options) {
@@ -1564,6 +1613,8 @@ function checkFileMode(descriptor, options) {
       findCodexPlatformHookCommands(settings, descriptor.marker, options.platform || process.platform),
       options
     );
+  } else if (descriptor.agentId === "cursor-agent") {
+    detail = validateCursorCommandList(descriptor, settings, options);
   } else {
     detail = validateCommandList(
       descriptor,

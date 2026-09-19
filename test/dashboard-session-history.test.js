@@ -151,6 +151,7 @@ function historyRow(overrides = {}) {
   return {
     agentId: "claude-code",
     sessionId: "abc-123",
+    historyKey: "a".repeat(32),
     cwd: "/Users/me/Workspace/thunderstone",
     title: "Rework the banner scheduler",
     lastState: "working",
@@ -229,7 +230,7 @@ describe("dashboard session history section", () => {
     assert.equal(button.disabled, false);
   });
 
-  it("sends only the agent and session id when resuming", async () => {
+  it("sends only the agent and opaque history key when resuming", async () => {
     const app = loadDashboard({ history: [historyRow()] });
     await flush();
 
@@ -239,7 +240,25 @@ describe("dashboard session history section", () => {
     assert.equal(app.resumeCalls.length, 1);
     // The working directory must be resolved in main from the store, never
     // chosen by the renderer.
-    assert.deepEqual(app.resumeCalls[0], { agentId: "claude-code", sessionId: "abc-123" });
+    assert.deepEqual(app.resumeCalls[0], {
+      agentId: "claude-code",
+      historyKey: "a".repeat(32),
+    });
+  });
+
+  it("keeps legacy profile-unverified rows visible but disables Resume", async () => {
+    const app = loadDashboard({ history: [historyRow({
+      resumeDisabledReason: "profile-unverified",
+      transcriptPresent: null,
+    })] });
+    await flush();
+
+    const button = byClass(app.root, "session-history-resume")[0];
+    assert.equal(button.disabled, true);
+    assert.ok(textOf(app.root).includes(i18n.en.dashboardHistoryProfileUnverified));
+    await button.dispatch("click");
+    await flush();
+    assert.deepEqual(app.resumeCalls, []);
   });
 
   it("surfaces a failed resume without losing the row", async () => {

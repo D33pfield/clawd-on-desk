@@ -9,6 +9,8 @@ const { Worker } = require("node:worker_threads");
 const { once } = require("node:events");
 
 const {
+  LEGACY_HISTORY_VERSION,
+  HISTORY_VERSION,
   HISTORY_FILE_PREFIX,
   MAX_HISTORY_AGE_MS,
   REFRESH_INTERVAL_MS,
@@ -75,6 +77,35 @@ describe("durable session history", () => {
   }
 
   describe("recording", () => {
+    it("separates identical Claude session ids by recorded profile provenance", () => {
+      const customConfigDir = path.join(historyDir, "custom-claude");
+      const defaultResult = recordSessionHistoryFromStateBody(body(), writeOpts(T0, BOOT_A, {
+        env: {},
+      }));
+      const customResult = recordSessionHistoryFromStateBody(body(), writeOpts(T0 + 1, BOOT_A, {
+        env: { CLAUDE_CONFIG_DIR: customConfigDir },
+      }));
+
+      assert.equal(defaultResult.written, true);
+      assert.equal(customResult.written, true);
+      assert.notEqual(defaultResult.filePath, customResult.filePath);
+      assert.notEqual(defaultResult.record.historyKey, customResult.record.historyKey);
+      assert.deepEqual(defaultResult.record.profile, { kind: "default", configDir: null });
+      assert.deepEqual(customResult.record.profile, { kind: "custom", configDir: customConfigDir });
+      assert.equal(loadSessionHistory(readOpts(T0 + 10)).length, 2);
+    });
+
+    it("refuses invalid custom Claude profile provenance before writing", () => {
+      for (const configDir of ["relative/profile", "bad\nprofile", "x".repeat(1025)]) {
+        const result = recordSessionHistoryFromStateBody(body(), writeOpts(T0, BOOT_A, {
+          env: { CLAUDE_CONFIG_DIR: configDir },
+        }));
+        assert.equal(result.written, false);
+        assert.equal(result.reason, "invalid-profile");
+      }
+      assert.equal(fs.readdirSync(historyDir).length, 0);
+    });
+
     it("rejects path-bearing session IDs and never persists prompt-derived titles", () => {
       for (const session_id of ["../private", "a/b", "a\\b"]) {
         assert.equal(recordSessionHistoryFromStateBody(body({ session_id }), writeOpts(T0)).written, false);
@@ -398,7 +429,7 @@ describe("durable session history", () => {
 
     it("preserves foreign schema rows on write and during count pruning", () => {
       const result = recordSessionHistoryFromStateBody(body(), writeOpts(T0));
-      const foreign = JSON.stringify({ ...result.record, version: 2 });
+      const foreign = JSON.stringify({ ...result.record, version: HISTORY_VERSION + 1 });
       fs.writeFileSync(result.filePath, foreign);
       assert.equal(recordSessionHistoryFromStateBody(body(), writeOpts(T0 + 1000)).reason, "invalid-record");
       for (let i = 0; i < 3; i++) recordSessionHistoryFromStateBody(body({ session_id: `s-${i}` }), writeOpts(T0 + i));
@@ -408,7 +439,7 @@ describe("durable session history", () => {
 
     it("rejects foreign, oversized, and misfiled records", () => {
       const valid = {
-        version: 1,
+        version: LEGACY_HISTORY_VERSION,
         agentId: "claude-code",
         sessionId: "session-alpha",
         cwd: "/work/project",
@@ -425,11 +456,14 @@ describe("durable session history", () => {
       fs.writeFileSync(wrongName, JSON.stringify(valid));
       assert.equal(readHistoryFile(wrongName), null);
 
-      const goodPath = getHistoryFilePath("claude-code", "session-alpha", { historyDir });
+      const goodPath = getHistoryFilePath("claude-code", "session-alpha", {
+        historyDir,
+        version: LEGACY_HISTORY_VERSION,
+      });
       fs.writeFileSync(goodPath, JSON.stringify({ ...valid, extra: "unexpected" }));
       assert.equal(readHistoryFile(goodPath), null, "unknown keys must be rejected");
 
-      fs.writeFileSync(goodPath, JSON.stringify({ ...valid, version: 2 }));
+      fs.writeFileSync(goodPath, JSON.stringify({ ...valid, version: HISTORY_VERSION + 1 }));
       assert.equal(readHistoryFile(goodPath), null, "a future version must be rejected");
 
       fs.writeFileSync(goodPath, "{ not json");

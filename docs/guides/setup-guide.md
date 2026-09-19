@@ -290,7 +290,7 @@ node ~/.claude/hooks/install.js
 node ~/.claude/hooks/install.js --statusline
 ```
 
-For another hook agent, use its installer filename from the table in the copied directory and keep its listed flags. The Claude CLI checks the requested hook entry points and their local dependencies before writing configuration; if files are missing or unreadable, restore the complete set from the same source version and retry.
+For another hook agent, use its installer filename from the table in the copied directory and keep its listed flags. The Claude and Kimi CLIs check the requested hook entry points and their transitive local dependencies before writing configuration; if files are missing or unreadable, restore the complete set from the same source version and retry. Pair's Kimi payload is also tested by loading the copied runtime entry point without an `agents/` tree, so installer success is not treated as runtime-load proof on its own.
 
 Claude's default WSL hook command currently has unquoted paths. Keep the final Linux Node and hook paths free of spaces; quoting the Windows **copy source** is supported, but successful installation from a path containing spaces does not prove the generated hook can execute from it.
 

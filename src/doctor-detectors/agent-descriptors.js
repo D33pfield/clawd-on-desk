@@ -91,6 +91,7 @@ const AGENT_DESCRIPTORS = Object.freeze([
     autoInstall: true,
     marker: "cursor-hook.js",
     nested: false,
+    scriptPath: cursor.resolveCursorHookScript(),
   }),
   Object.freeze({
     agentId: "gemini-cli",

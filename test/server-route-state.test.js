@@ -795,7 +795,7 @@ describe("server-route-state POST", () => {
       // Untouched by the gate: opaque labels, not handles on a local process.
       orcaPaneKey: "tab-9:leaf-3",
       cwd: "/home/user/repo",
-      wtHwnd: "123456",
+      wtHwnd: null,
       host: "workbox",
     });
 
@@ -1926,11 +1926,25 @@ describe("server-route-state POST", () => {
     }));
 
     assert.strictEqual(res.statusCode, 200);
-    assert.strictEqual(res.calls.updateSession[0][0], localSessionKey("default"));
+    assert.strictEqual(res.calls.updateSession[0][0], localSessionKey("claude-code:default"));
+    assert.strictEqual(res.calls.updateSession[0][3].rawSessionId, "default");
     assert.deepStrictEqual(
       res.calls.updateSession[0][3].sessionAutomationIdentity,
       { eligible: false, reason: "placeholder-session-id" }
     );
+  });
+
+  it("keeps an explicit state's canonical and public raw session ids normalized together", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "  abc-123  ",
+      event: "PreToolUse",
+      agent_id: "claude-code",
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession[0][0], localSessionKey("abc-123"));
+    assert.strictEqual(res.calls.updateSession[0][3].rawSessionId, "abc-123");
   });
 
   it("marks only local process-bound Codex TUI state identities eligible", async () => {

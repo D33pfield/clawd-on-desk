@@ -63,24 +63,65 @@ function familyManagedRoot(agentId) {
 function resolveCanonical(target, platform, fsImpl) {
   const plat = platform || process.platform;
   const fsy = fsImpl || fs;
-  const normalize = (value) => (plat === "win32" ? path.win32.normalize(value) : path.posix.normalize(value));
+  const modifier = plat === "win32" ? path.win32 : path.posix;
+  const normalize = (value) => modifier.normalize(value);
   let normalized = normalize(target);
   let resolved = false;
-  try {
-    const real = typeof fsy.realpathSync.native === "function"
-      ? fsy.realpathSync.native(normalized)
-      : fsy.realpathSync(normalized);
-    if (real) {
-      normalized = normalize(real);
-      resolved = true;
+  const realpathSync = fsy && typeof fsy.realpathSync === "function"
+    ? (typeof fsy.realpathSync.native === "function"
+      ? (value) => fsy.realpathSync.native(value)
+      : (value) => fsy.realpathSync(value))
+    : null;
+  if (realpathSync) {
+    // The config leaf may not exist yet (for example, an explicit configPath
+    // under a symlinked HOME). Resolve the nearest existing ancestor and add
+    // the missing lexical suffix back. Creating those missing components as
+    // ordinary directories preserves the identity; a later symlink may
+    // intentionally resolve to a different filesystem identity.
+    let cursor = normalized;
+    const missingSuffix = [];
+    while (cursor) {
+      try {
+        const real = realpathSync(cursor);
+        if (real) {
+          // Windows can report ENOENT (instead of ENOTDIR) for a missing path
+          // below an existing file. If we walked up at least one component,
+          // only a real directory may anchor the missing lexical suffix;
+          // otherwise a file such as ~/.config could be mistaken for a safe
+          // config-directory ancestor.
+          if (missingSuffix.length > 0) {
+            let isDirectory = false;
+            try {
+              isDirectory = fsy.statSync(real).isDirectory();
+            } catch {}
+            if (!isDirectory) break;
+          }
+          normalized = normalize(missingSuffix.length
+            ? modifier.join(real, ...missingSuffix)
+            : real);
+          resolved = true;
+        }
+        break;
+      } catch (err) {
+        // ENOENT means the lexical leaf is missing, so walking to an existing
+        // ancestor is safe. ENOTDIR means an existing component is a file (or
+        // otherwise not traversable as a directory); never reinterpret that
+        // conflict as a missing leaf and mint a managed identity beneath it.
+        if (!err || err.code !== "ENOENT") break;
+        const parent = modifier.dirname(cursor);
+        if (!parent || parent === cursor) break;
+        const basename = modifier.basename(cursor);
+        if (!basename) break;
+        missingSuffix.unshift(basename);
+        cursor = parent;
+      }
     }
-  } catch {
-    // keep the lexical normalized form; `resolved` stays false
   }
+  // Keep the lexical normalized form when no ancestor can be resolved;
+  // `resolved` stays false so mutation callers can fail closed.
   if (plat === "win32") normalized = normalized.toLowerCase();
   // path.win32.normalize keeps a trailing separator when the input had one;
   // drop it (except at a root) so identity is stable.
-  const modifier = plat === "win32" ? path.win32 : path.posix;
   const root = modifier.parse(normalized).root;
   while (normalized.length > root.length && (normalized.endsWith("/") || normalized.endsWith("\\"))) {
     normalized = normalized.slice(0, -1);
@@ -154,7 +195,8 @@ function resolveManagedTarget(options = {}) {
     configDir = path.join(os.homedir(), ...cfg.configDirSegments);
   }
 
-  const canonicalConfigDir = canonicalizeTargetPath(configDir, platform, fsImpl);
+  const configIdentity = resolveCanonical(configDir, platform, fsImpl);
+  const canonicalConfigDir = configIdentity.canonical;
   const configDirHash = sha256Hex(canonicalConfigDir);
 
   let agentRoot;
@@ -171,6 +213,7 @@ function resolveManagedTarget(options = {}) {
     homeDir: homeDir || os.homedir(),
     configDir,
     canonicalConfigDir,
+    canonicalConfigDirResolved: configIdentity.resolved,
     configDirHash,
     agentRoot,
     targetRoot,

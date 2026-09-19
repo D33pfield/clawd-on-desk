@@ -38,11 +38,15 @@ const {
   findManagedClaudeEnvNodeBinCandidates,
 } = require("./json-utils");
 const {
-  scanRelativeRequires,
   planAppImageHookBundle,
   materializeAppImageHookBundle,
   isAppImageHookBundleComplete,
+  isLegacyAppImageHookPath,
 } = require("./appimage-hook-materializer");
+const {
+  findMissingHookDependencies,
+  formatMissingHookDependencies,
+} = require("./hook-dependency-preflight");
 
 function resolveClaudeHome(options = {}) {
   const env = options.env || process.env;
@@ -770,84 +774,6 @@ function preflightClaudeRuntime(options = {}) {
     }
   }
   return resolved;
-}
-
-// A hooks/ directory copied by hand can be missing a transitive dependency of
-// an entry point. That install still writes a perfectly valid settings.json,
-// so the installer prints success — and then every registered hook dies at
-// require time with MODULE_NOT_FOUND. Claude Code discards the stderr of
-// `async: true` hooks, so the failure is invisible from both ends: the user
-// sees a healthy install and a desktop pet that never moves.
-//
-// Walk the relative-require closure of the entry points we are about to
-// register and refuse to write while anything is missing. This mirrors the
-// manifest closure that test/remote-deploy.test.js enforces for HOOK_FILES,
-// except it runs against the directory actually being installed from. The
-// literal require grammar itself lives in the shared AppImage materializer so
-// this preflight and the closure collector can never disagree.
-function findMissingHookDependencies(entryNames, options = {}) {
-  const hooksDir = path.resolve(options.hooksDir || __dirname);
-  const statSync = options.statSync || fs.statSync;
-  const readFileSync = options.readFileSync || fs.readFileSync;
-  const missing = [];
-  const seen = new Set();
-  const queue = entryNames.map((name) => ({ name, from: null }));
-
-  while (queue.length) {
-    const entry = queue.shift();
-    const absPath = path.resolve(hooksDir, entry.name);
-    const name = path.relative(hooksDir, absPath).split(path.sep).join("/");
-    const { from } = entry;
-    if (seen.has(name)) continue;
-    seen.add(name);
-
-    if (!name || name === ".." || name.startsWith("../") || path.isAbsolute(name)) {
-      missing.push({ name, from, code: "OUTSIDE_HOOKS" });
-      continue;
-    }
-
-    let content;
-    try {
-      if (!statSync(absPath).isFile()) {
-        missing.push({ name, from, code: "NOT_FILE" });
-        continue;
-      }
-      content = readFileSync(absPath, "utf8");
-    } catch (err) {
-      missing.push({ name, from, code: err.code || "READ_FAILED" });
-      continue;
-    }
-
-    for (const spec of scanRelativeRequires(content)) {
-      const target = path.resolve(
-        path.dirname(absPath),
-        path.extname(spec) ? spec : `${spec}.js`
-      );
-      const relative = path.relative(hooksDir, target).split(path.sep).join("/");
-      queue.push({ name: relative, from: name });
-    }
-  }
-
-  return missing;
-}
-
-function formatMissingHookDependencies(missing) {
-  const lines = [
-    "Clawd: refusing to install — required hook files are unavailable.",
-    "",
-  ];
-  for (const { name, from, code } of missing) {
-    lines.push(`  ${name} [${code}]${from ? `  (required by ${from})` : ""}`);
-  }
-  lines.push(
-    "",
-    "Restore missing files from the same complete Clawd source directory.",
-    "For unreadable files, check their permissions; copying alone may not fix them.",
-    "For a manual WSL copy, include every top-level JavaScript file:",
-    "",
-    "  cp /path/to/clawd-on-desk/hooks/*.js ~/.claude/hooks/"
-  );
-  return lines.join("\n");
 }
 
 function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
@@ -2253,6 +2179,149 @@ function readChainSidecarStatusLine(sidecarPath) {
   return null;
 }
 
+function canonicalStatuslinePath(value, platform = process.platform) {
+  let normalized = String(value || "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  if (platform === "win32" || /^[A-Za-z]:\//.test(normalized) || normalized.startsWith("//")) {
+    normalized = normalized.toLowerCase();
+  }
+  return normalized;
+}
+
+function isNodeStatuslineToken(value) {
+  const basename = String(value || "").replace(/\\/g, "/").split("/").pop().toLowerCase();
+  return basename === "node" || basename === "node.exe";
+}
+
+function validateRemoteStatuslinePrefix(prefix) {
+  let rest = String(prefix || "").trim();
+  if (!rest) return { ok: true, remote: false };
+  const allowed = new Set([
+    "CLAWD_REMOTE",
+    "CLAWD_SSH_REMOTE",
+    "CLAWD_REMOTE_IDENTITY_PATH",
+    "CLAWD_SSH_SECURE_MARKER_PATH",
+    "CLAWD_HOST_PREFIX_PATH",
+    "CLAWD_REMOTE_LAST_LOG_PATH",
+    "CLAWD_STATUSLINE_SIDECAR_PATH",
+  ]);
+  let sawRemote = false;
+  while (rest) {
+    const match = rest.match(/^([A-Z_]+)=((?:'(?:'\\''|[^'])*')|(?:"(?:\\"|[^"])*")|(?:\S+))(?:\s+|$)/);
+    if (!match || !allowed.has(match[1])) return { ok: false, remote: false };
+    if (match[1] === "CLAWD_REMOTE") {
+      if (match[2] !== "1") return { ok: false, remote: false };
+      sawRemote = true;
+    }
+    rest = rest.slice(match[0].length);
+  }
+  return { ok: sawRemote, remote: sawRemote };
+}
+
+function parseStrictClaudeStatuslineCommand(command, expectedScript, platform = process.platform) {
+  if (typeof command !== "string" || !command.trim() || /[\r\n\0]/.test(command)) return null;
+  let body = command.trim();
+  let suffix = "plain";
+  const localMatch = body.match(/\s+--local-chain\s+([a-f0-9]{32})$/);
+  if (localMatch) {
+    suffix = "local";
+    body = body.slice(0, localMatch.index);
+  } else if (/\s+--chain$/.test(body)) {
+    suffix = "remote-chain";
+    body = body.replace(/\s+--chain$/, "");
+  }
+  const scriptMatch = body.match(/^(.*)\s+"((?:\\"|[^"])*)"$/);
+  if (!scriptMatch) return null;
+  const scriptPath = scriptMatch[2].replace(/\\"/g, '"');
+  let head = scriptMatch[1].trim();
+  let nodeBin;
+  const quotedNode = head.match(/^(.*?)(?:^|\s)"((?:\\"|[^"])*)"$/);
+  if (quotedNode) {
+    head = quotedNode[1].trim();
+    nodeBin = quotedNode[2].replace(/\\"/g, '"');
+  } else {
+    const bareNode = head.match(/^(.*?)(?:^|\s)(\S+)$/);
+    if (!bareNode) return null;
+    head = bareNode[1].trim();
+    nodeBin = bareNode[2];
+  }
+  if (head.endsWith("&")) head = head.slice(0, -1).trim();
+  const prefix = validateRemoteStatuslinePrefix(head);
+  if (!prefix.ok && head) return null;
+  if (!isNodeStatuslineToken(nodeBin)) return null;
+  const exactScript = canonicalStatuslinePath(scriptPath, platform) === canonicalStatuslinePath(expectedScript, platform);
+  const legacyAppImage = platform === "linux" && !exactScript
+    && isLegacyAppImageHookPath(scriptPath, STATUSLINE_MARKER);
+  if (!exactScript && !legacyAppImage) return null;
+  if (suffix === "local" && prefix.remote) return null;
+  if (suffix === "remote-chain" && !prefix.remote) return null;
+  return { suffix, remote: prefix.remote, nodeBin, scriptPath, legacyAppImage };
+}
+
+function hasExactStatuslineMarker(command) {
+  return new RegExp(`(?:^|[\\\\/])${STATUSLINE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=["'\\s]|$)`, "i")
+    .test(String(command || ""));
+}
+
+function classifyManagedClaudeStatusline(existing, options = {}) {
+  const {
+    LOCAL_CHAIN_FLAG, requireOwnedLocalChain,
+    PLAIN_OWNER, REMOTE_CHAIN_OWNER,
+    readStatuslineOwnerRecord, ownerRecordMatchesCommand,
+  } = require("./claude-statusline-local-chain");
+  if (!existing || typeof existing.command !== "string" || !existing.command.trim()) {
+    return { classification: "foreign", mode: null };
+  }
+  const command = existing.command;
+  if (command.includes(` ${LOCAL_CHAIN_FLAG} `)) {
+    try {
+      const record = requireOwnedLocalChain(options.localSidecar, existing);
+      return { classification: "owned", mode: "local", record };
+    } catch (error) {
+      return { classification: "ambiguous", mode: "local", error };
+    }
+  }
+
+  let plainRecord = null;
+  let remoteRecord = null;
+  let plainRecordError = null;
+  let remoteRecordError = null;
+  try { plainRecord = readStatuslineOwnerRecord(options.plainOwnerPath, PLAIN_OWNER); } catch (error) { plainRecordError = error; }
+  try { remoteRecord = readStatuslineOwnerRecord(options.remoteSidecarPath, REMOTE_CHAIN_OWNER); } catch (error) { remoteRecordError = error; }
+  if (ownerRecordMatchesCommand(plainRecord, command)) {
+    return { classification: "owned", mode: "plain", record: plainRecord };
+  }
+  if (ownerRecordMatchesCommand(remoteRecord, command)) {
+    return { classification: "owned", mode: "remote", record: remoteRecord };
+  }
+
+  const parsed = parseStrictClaudeStatuslineCommand(command, options.expectedScript, options.platform);
+  if (parsed) {
+    if (parsed.remote || parsed.suffix === "remote-chain") {
+      if (remoteRecordError) {
+        const legacyOriginal = readChainSidecarStatusLine(options.remoteSidecarPath);
+        if (parsed.suffix === "remote-chain" && legacyOriginal) {
+          return { classification: "owned", mode: "remote", legacy: true, legacyOriginal, parsed };
+        }
+        return { classification: "ambiguous", mode: "remote", error: remoteRecordError };
+      }
+      if (parsed.suffix === "remote-chain" && !remoteRecord) {
+        const legacyOriginal = readChainSidecarStatusLine(options.remoteSidecarPath);
+        if (!legacyOriginal) return { classification: "ambiguous", mode: "remote" };
+        return { classification: "owned", mode: "remote", legacy: true, legacyOriginal, parsed };
+      }
+      if (remoteRecord) return { classification: "ambiguous", mode: "remote" };
+      return { classification: "owned", mode: "remote", legacy: !remoteRecord, parsed };
+    }
+    if (plainRecordError) return { classification: "ambiguous", mode: "plain", error: plainRecordError };
+    if (plainRecord) return { classification: "ambiguous", mode: "plain" };
+    return { classification: "owned", mode: "plain", legacy: !plainRecord, parsed };
+  }
+  return {
+    classification: hasExactStatuslineMarker(command) ? "ambiguous" : "foreign",
+    mode: null,
+  };
+}
+
 // Claude Code's statusLine setting is a single slot, not an event-keyed map
 // like hooks - only one script can render the visible status line at a
 // time. Default registration only takes an empty/owned slot. Explicit local
@@ -2264,6 +2333,8 @@ function registerClaudeStatusline(options = {}) {
   const {
     LOCAL_CHAIN_FLAG, LOCAL_CHAIN_FILE, statuslineFingerprint,
     createLocalChainRecord, requireOwnedLocalChain, resolveLocalChainShell,
+    PLAIN_OWNER_FILE, PLAIN_OWNER, REMOTE_CHAIN_FILE, REMOTE_CHAIN_OWNER,
+    readStatuslineOwnerRecord, writeStatuslineOwnerRecord, ownerRecordMatchesCommand,
   } = require("./claude-statusline-local-chain");
   const homeDir = options.homeDir || os.homedir();
   const settingsPath = resolveClaudeSettingsPath({ ...options, homeDir });
@@ -2325,17 +2396,37 @@ function registerClaudeStatusline(options = {}) {
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) settings = {};
 
   const existing = settings.statusLine && typeof settings.statusLine === "object" ? settings.statusLine : null;
-  const existingIsOurs = !!(existing && typeof existing.command === "string" && existing.command.includes(STATUSLINE_MARKER));
+  const platform = options.platform || process.platform;
+  const sidecarDir = options.settingsPath
+    ? path.join(path.dirname(settingsPath), "hooks")
+    : resolveClaudeHooksDir({ ...options, homeDir });
+  const localSidecar = options.localChainSidecarPath || path.join(sidecarDir, LOCAL_CHAIN_FILE);
+  const sidecarPath = options.chainSidecarPath || path.join(sidecarDir, REMOTE_CHAIN_FILE);
+  const plainOwnerPath = options.plainOwnerPath || path.join(sidecarDir, PLAIN_OWNER_FILE);
+  const ownership = classifyManagedClaudeStatusline(existing, {
+    expectedScript: targetStatuslineScript,
+    platform,
+    localSidecar,
+    remoteSidecarPath: sidecarPath,
+    plainOwnerPath,
+  });
+  if (ownership.classification === "ambiguous") {
+    throw new Error(`Claude statusline ownership is ambiguous; kept unchanged${ownership.error ? `: ${ownership.error.message}` : ""}`);
+  }
+  const existingIsOurs = ownership.classification === "owned";
+
+  const requestedMode = options.remote === true ? "remote" : "plain";
+  if (existingIsOurs && (ownership.mode === "plain" || ownership.mode === "remote")
+    && ownership.mode !== requestedMode) {
+    throw new Error(`Claude statusline is owned by ${ownership.mode} mode; unregister that mode before registering ${requestedMode} mode. Recovery records kept unchanged`);
+  }
 
   if (options.expectedStatuslineFingerprint !== undefined
     && statuslineFingerprint(existing) !== options.expectedStatuslineFingerprint) {
     throw new Error("Claude statusline changed while confirmation was open; please try again");
   }
-  const localSidecar = options.localChainSidecarPath
-    || path.join(options.settingsPath ? path.join(path.dirname(settingsPath), "hooks")
-      : resolveClaudeHooksDir({ ...options, homeDir }), LOCAL_CHAIN_FILE);
   const localChainRequested = options.remote !== true && options.chainExisting === true;
-  if (existingIsOurs && existing.command.includes(` ${LOCAL_CHAIN_FLAG} `)) {
+  if (existingIsOurs && ownership.mode === "local") {
     // Local consent cannot authorize a remote routing/mode migration. Refuse
     // before refreshing either file; the two recovery records are independent.
     if (options.remote === true) {
@@ -2343,7 +2434,6 @@ function registerClaudeStatusline(options = {}) {
         + `Statusline and local recovery record kept unchanged: ${localSidecar}`);
     }
     const record = requireOwnedLocalChain(localSidecar, existing);
-    const platform = options.platform || process.platform;
     if (record.platform !== platform) throw new Error("Statusline recovery record belongs to a different platform");
     const script = targetStatuslineScript;
     const nodeBin = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
@@ -2387,9 +2477,6 @@ function registerClaudeStatusline(options = {}) {
   // Legacy remote chain is independent from the consent-bound local record.
   const chainRequested = options.remote === true && options.chainExisting === true;
   const chainExplicitlyDisabled = options.remote === true && options.chainExisting === false;
-  const sidecarPath = options.chainSidecarPath
-    || path.join(resolveClaudeHooksDir({ ...options, homeDir }), "clawd-statusline-chain.json");
-
   if (existing && !existingIsOurs && !chainRequested) {
     if (!options.silent) console.log(`Clawd: existing Claude Code statusline detected at ${settingsPath} - leaving it in place`);
     return {
@@ -2399,21 +2486,23 @@ function registerClaudeStatusline(options = {}) {
   }
 
   let chainActive = false;
+  let chainedOriginal = null;
   if (existing && !existingIsOurs && chainRequested) {
-    // Capture the user's statusLine object verbatim BEFORE taking the slot -
-    // the sidecar is the single source for both the chained exec and the
-    // unregister restore.
-    writeJsonAtomic(sidecarPath, { statusLine: existing });
+    chainedOriginal = existing;
     chainActive = true;
-  } else if (existingIsOurs && existing.command.includes(STATUSLINE_CHAIN_FLAG)) {
-    const chainedOriginal = readChainSidecarStatusLine(sidecarPath);
+  } else if (existingIsOurs && ownership.mode === "remote" && existing.command.endsWith(` ${STATUSLINE_CHAIN_FLAG}`)) {
+    chainedOriginal = ownership.record ? ownership.record.statusLine : ownership.legacyOriginal;
     if (chainExplicitlyDisabled && chainedOriginal) {
       // A profile toggle is an explicit deploy target, not an omitted repair
       // preference. Turning it off restores the third-party slot and consumes
       // the sidecar exactly like unregister; otherwise Settings would mark an
       // off profile deployed while the remote silently kept --chain.
-      settings.statusLine = chainedOriginal;
-      writeJsonAtomic(writePath, settings);
+      const current = readJsonFile(settingsPath);
+      if (statuslineFingerprint(current.statusLine || null) !== statuslineFingerprint(existing)) {
+        throw new Error("Claude statusline changed during remote restoration; recovery record was retained");
+      }
+      current.statusLine = chainedOriginal;
+      writeJsonAtomic(writePath, current);
       try { fs.unlinkSync(sidecarPath); } catch {}
       if (!options.silent) console.log(`Clawd: restored existing Claude Code statusline at ${settingsPath}`);
       return {
@@ -2436,7 +2525,6 @@ function registerClaudeStatusline(options = {}) {
 
   const scriptPath = targetStatuslineScript;
   const nodeBin = (options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin()) || "node";
-  const platform = options.platform || process.platform;
   // No `& "..."` here: statusLine has no shell field, and on Windows Claude
   // Code runs this through Git Bash when Git is installed - the PowerShell
   // call-operator form is a bash syntax error and the statusline dies
@@ -2460,22 +2548,65 @@ function registerClaudeStatusline(options = {}) {
   const command = chainActive ? `${prefixed} ${STATUSLINE_CHAIN_FLAG}` : prefixed;
   const desired = { type: "command", command, padding: 0 };
 
+  const ownerPath = options.remote === true ? sidecarPath : plainOwnerPath;
+  const ownerLiteral = options.remote === true ? REMOTE_CHAIN_OWNER : PLAIN_OWNER;
+  let priorOwner = null;
+  try {
+    priorOwner = readStatuslineOwnerRecord(ownerPath, ownerLiteral);
+  } catch (error) {
+    // A legacy remote chain sidecar contains only the original statusLine.
+    // It is upgraded in place only after the strict current command above was
+    // recognized; any other malformed/foreign record remains a hard conflict.
+    if (!(options.remote === true && ownership.legacy === true && chainedOriginal)) throw error;
+  }
+  if (priorOwner && existingIsOurs && ownership.mode === (options.remote === true ? "remote" : "plain")
+    && !ownerRecordMatchesCommand(priorOwner, existing.command)) {
+    throw new Error(`Claude statusline ownership record does not match; kept unchanged: ${ownerPath}`);
+  }
+  if (priorOwner && options.remote === true && chainActive
+    && statuslineFingerprint(priorOwner.statusLine || null) !== statuslineFingerprint(chainedOriginal || null)) {
+    throw new Error(`Claude statusline recovery record does not match; kept unchanged: ${ownerPath}`);
+  }
+  const ownerRecord = {
+    ...(priorOwner || {}),
+    owner: ownerLiteral,
+    version: 1,
+    ...(options.remote === true ? { statusLine: chainActive ? chainedOriginal : (priorOwner && priorOwner.statusLine) || null } : {}),
+    managedCommand: command,
+    ...(existingIsOurs && existing.command !== command ? { previousManagedCommand: existing.command } : {}),
+  };
+  const ownerBefore = priorOwner ? statuslineFingerprint(priorOwner) : null;
+  writeStatuslineOwnerRecord(ownerPath, ownerRecord);
+  const ownershipChanged = ownerBefore !== statuslineFingerprint(ownerRecord);
+
   const changed = !existing || JSON.stringify(existing) !== JSON.stringify(desired);
   if (changed) {
-    settings.statusLine = desired;
-    writeJsonAtomic(writePath, settings);
+    const current = fs.existsSync(settingsPath) ? readJsonFile(settingsPath) : {};
+    if (statuslineFingerprint(current.statusLine || null) !== statuslineFingerprint(existing)) {
+      throw new Error("Claude statusline changed during registration; ownership record was retained");
+    }
+    current.statusLine = desired;
+    if (fs.existsSync(writePath)) writeLocalStatuslineSettings(writePath, current, options);
+    else writeJsonAtomic(writePath, current);
+    // Consume only a record that classified the just-replaced slot. Stale or
+    // foreign evidence is never deleted merely because the target mode changed.
+    const obsoleteOwnerPath = options.remote === true ? plainOwnerPath : sidecarPath;
+    if (existingIsOurs && ownership.mode !== (options.remote === true ? "remote" : "plain") && ownership.record) {
+      try { fs.unlinkSync(obsoleteOwnerPath); } catch {}
+    }
   }
 
   if (!options.silent) {
     console.log(`Clawd Claude Code statusline -> ${settingsPath}${changed ? " (updated)" : " (already up to date)"}${chainActive ? " (chained)" : ""}`);
   }
 
-  return { installed: true, changed, skippedExisting: false, chained: chainActive, settingsPath };
+  return { installed: true, changed: changed || ownershipChanged, skippedExisting: false, chained: chainActive, settingsPath };
 }
 
 function unregisterClaudeStatusline(options = {}) {
   const {
     LOCAL_CHAIN_FLAG, LOCAL_CHAIN_FILE, statuslineFingerprint, requireOwnedLocalChain,
+    PLAIN_OWNER_FILE, REMOTE_CHAIN_FILE,
   } = require("./claude-statusline-local-chain");
   const homeDir = options.homeDir || os.homedir();
   const settingsPath = resolveClaudeSettingsPath({ ...options, homeDir });
@@ -2489,16 +2620,36 @@ function unregisterClaudeStatusline(options = {}) {
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) settings = {};
 
   const existing = settings.statusLine && typeof settings.statusLine === "object" ? settings.statusLine : null;
-  const existingIsOurs = !!(existing && typeof existing.command === "string" && existing.command.includes(STATUSLINE_MARKER));
+  const platform = options.platform || process.platform;
+  const resolved = resolveClaudeHookPathsReadOnly({ ...options, homeDir });
+  const expectedScript = resolved && resolved.ok === true
+    ? resolved.target.statusline
+    : getClaudeStatuslineScriptPath();
+  const sidecarDir = options.settingsPath
+    ? path.join(path.dirname(settingsPath), "hooks")
+    : resolveClaudeHooksDir({ ...options, homeDir });
+  const localSidecar = options.localChainSidecarPath || path.join(sidecarDir, LOCAL_CHAIN_FILE);
+  const sidecarPath = options.chainSidecarPath || path.join(sidecarDir, REMOTE_CHAIN_FILE);
+  const plainOwnerPath = options.plainOwnerPath || path.join(sidecarDir, PLAIN_OWNER_FILE);
+  const ownership = classifyManagedClaudeStatusline(existing, {
+    expectedScript,
+    platform,
+    localSidecar,
+    remoteSidecarPath: sidecarPath,
+    plainOwnerPath,
+  });
 
-  if (!existingIsOurs) {
+  if (ownership.classification !== "owned") {
+    if (ownership.classification === "ambiguous") {
+      throw new Error(`Claude statusline ownership is ambiguous; kept unchanged${ownership.error ? `: ${ownership.error.message}` : ""}`);
+    }
     return { installed: !!existing, removed: 0, changed: false, settingsPath };
   }
+  if (ownership.legacy === true && !(ownership.parsed && ownership.parsed.legacyAppImage === true)) {
+    throw new Error("Claude statusline ownership evidence is missing or legacy; run registration repair before uninstall");
+  }
 
-  if (existing.command.includes(` ${LOCAL_CHAIN_FLAG} `)) {
-    const localSidecar = options.localChainSidecarPath
-      || path.join(options.settingsPath ? path.join(path.dirname(settingsPath), "hooks")
-        : resolveClaudeHooksDir({ ...options, homeDir }), LOCAL_CHAIN_FILE);
+  if (ownership.mode === "local" && existing.command.includes(` ${LOCAL_CHAIN_FLAG} `)) {
     const record = requireOwnedLocalChain(localSidecar, existing);
     const current = readJsonFile(settingsPath);
     if (statuslineFingerprint(current.statusLine || null) !== statuslineFingerprint(existing)) {
@@ -2519,15 +2670,18 @@ function unregisterClaudeStatusline(options = {}) {
   // A chained slot restores the user's original statusLine object from the
   // sidecar instead of leaving the slot empty; the sidecar is consumed
   // either way so no stale copy outlives the registration it served.
-  const sidecarPath = options.chainSidecarPath
-    || path.join(resolveClaudeHooksDir({ ...options, homeDir }), "clawd-statusline-chain.json");
-  const chained = existing.command.includes(STATUSLINE_CHAIN_FLAG)
-    ? readChainSidecarStatusLine(sidecarPath)
+  const chained = ownership.mode === "remote"
+    ? ((ownership.record && ownership.record.statusLine) || ownership.legacyOriginal || null)
     : null;
-  if (chained) settings.statusLine = chained;
-  else delete settings.statusLine;
-  const backupPath = writeJsonAtomicWithBackup(writePath, settings, options);
-  try { fs.unlinkSync(sidecarPath); } catch {}
+  const current = readJsonFile(settingsPath);
+  if (statuslineFingerprint(current.statusLine || null) !== statuslineFingerprint(existing)) {
+    throw new Error("Claude statusline changed during removal; ownership record was retained");
+  }
+  if (chained) current.statusLine = chained;
+  else delete current.statusLine;
+  const backupPath = writeJsonAtomicWithBackup(writePath, current, options);
+  const ownerPath = ownership.mode === "remote" ? sidecarPath : plainOwnerPath;
+  try { fs.unlinkSync(ownerPath); } catch {}
   if (!options.silent) {
     console.log(`Clawd Claude Code statusline ${chained ? "restored chained original" : "removed"} -> ${settingsPath}`);
   }
@@ -2576,6 +2730,7 @@ module.exports = {
   registerClaudeStatusline,
   unregisterClaudeStatusline,
   __test: {
+    classifyManagedClaudeStatusline,
     findMissingHookDependencies,
     formatMissingHookDependencies,
     parseClaudeVersion,

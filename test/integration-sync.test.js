@@ -621,6 +621,30 @@ describe("integration sync runtime", () => {
     }
   });
 
+  it("preserves a Cursor ownership conflict instead of reporting startup sync success", () => {
+    const conflict = {
+      status: "error",
+      reason: "cursor-hook-conflict",
+      conflicts: [{ event: "stop", index: 0 }],
+      added: 0,
+      updated: 0,
+      skipped: 0,
+    };
+    const { runtime } = makeRuntime({
+      ctx: { syncCursorHooksImpl: () => conflict },
+    });
+    assert.strictEqual(runtime.syncIntegrationForAgent("cursor-agent"), conflict);
+  });
+
+  it("normalizes an injected empty Cursor count result as not installed", () => {
+    const { runtime } = makeRuntime({
+      ctx: { syncCursorHooksImpl: () => ({ added: 0, updated: 0, skipped: 0 }) },
+    });
+    const result = runtime.syncIntegrationForAgent("cursor-agent");
+    assert.strictEqual(result.status, "skipped");
+    assert.strictEqual(result.reason, "cursor-not-installed");
+  });
+
   it("syncIntegrationForAgent treats installed:false results as skipped", () => {
     const cases = [
       {
