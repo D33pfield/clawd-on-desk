@@ -1176,6 +1176,11 @@ describe("destructive reminder — takeover fail-closed regressions", () => {
       "a real command before the comment must retain its reason rather than becoming scan-error"
     );
     assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: `echo "safe # $(rm -rf /etc)"` }),
+      { hold: true, tag: "file-delete" },
+      "# inside double quotes is literal and must not hide an executing substitution"
+    );
+    assert.deepEqual(
       evaluatePermissionReminder("Bash", { command: "echo word# don't" }),
       { hold: true, tag: SCAN_ERROR_TAG },
       "# inside a word is literal, so the unmatched apostrophe remains real syntax"

@@ -569,6 +569,34 @@
           quoteStart = -1;
           continue;
         }
+        if (ch === "$" && cmd[i + 1] === "(" && cmd[i + 2] !== "(") {
+          let j;
+          try {
+            j = dollarSubstitutionEnd(cmd, i);
+          } catch (error) {
+            if (!(error instanceof ScanIncompleteError)) throw error;
+            incomplete = true;
+            break;
+          }
+          const body = cmd.slice(i + 2, j);
+          if (body.trim()) out.push({ body, start: i });
+          i = j;
+          continue;
+        }
+        if (ch === "`") {
+          let end;
+          try {
+            end = backtickEnd(cmd, i);
+          } catch (error) {
+            if (!(error instanceof ScanIncompleteError)) throw error;
+            incomplete = true;
+            break;
+          }
+          const body = cmd.slice(i + 1, end);
+          if (body.trim()) out.push({ body, start: i });
+          i = end;
+        }
+        continue;
       } else {
         if (ch === "\\" && cmd[i + 1] === "\n") {
           i++;
