@@ -1187,6 +1187,32 @@ describe("destructive reminder — takeover fail-closed regressions", () => {
     );
   });
 
+  it("keeps comment and separator characters literal inside double quotes", () => {
+    for (const command of [
+      'git commit -m "fix #123"',
+      'echo "a # b"',
+      'echo "a; # b"',
+      'echo "a| # b"',
+      'echo "a& # b"',
+    ]) {
+      assert.equal(evaluatePermissionReminder("Bash", { command }), null, command);
+    }
+
+    for (const command of [
+      `npm publish --dry-run ; echo "a # $(rm -rf /etc) b\nc"`,
+      `npm publish --dry-run ; echo "a # \`rm -rf /etc\` b\nc"`,
+      'npm publish --dry-run ; echo "a; # $(rm -rf /etc)"',
+      'npm publish --dry-run ; echo "a| # $(rm -rf /etc)"',
+      'npm publish --dry-run ; echo "a& # $(rm -rf /etc)"',
+    ]) {
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command }),
+        { hold: true, tag: "file-delete" },
+        command
+      );
+    }
+  });
+
   it("treats incomplete substitution syntax differently in the gate and display hint", () => {
     const {
       detectIrreversible,
