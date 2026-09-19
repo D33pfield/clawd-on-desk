@@ -322,6 +322,26 @@
   const SCAN_TRUNCATED = Symbol.for("clawd.permission-reminder.scan-truncated");
   // Wrappers that prefix a command without changing what it runs.
   const WRAPPER = /^(sudo(\s+-[A-Za-z]+)*|env|nohup|time|command)\s+|^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/;
+  // A shell interpreter is NOT one of those wrappers: `sh -c '<command>'` does not
+  // prefix a command, it carries one inside a quoted argument. Stripping the prefix
+  // leaves a quoted word that no anchored pattern can match, so the request reached
+  // the reminder as a single opaque segment and matched nothing.
+  //
+  // Measured on this branch before the change, with the plain spellings as controls:
+  //   git push origin main --force          -> {hold: true, tag: "force-push"}
+  //   rm -rf /tmp/x                         -> {hold: true, tag: "file-delete"}
+  //   git status                            -> null
+  //   sh -c 'git push origin main --force'  -> null
+  //   bash -c "rm -rf /tmp/x"               -> null
+  //   /bin/sh -c 'git push origin main --force' -> null
+  //   sh -c "sh -c 'rm -rf /tmp/x'"         -> null
+  //
+  // The body is handed back to segmentCommands, so it reuses the existing depth cap
+  // and segment budget rather than introducing a second recursion with its own bound.
+  // `python3 -c` and friends are deliberately outside the alternation: only a shell
+  // runs its -c argument as shell syntax, and widening this to every interpreter
+  // would start matching program source.
+  const SHELL_C = /^(?:\S*\/)?(?:ba|da|a|k|z)?sh(?:\s+-[A-Za-z]+)*\s+-[A-Za-z]*c[A-Za-z]*\s+(['"])([\s\S]*?)\1(?:\s|$)/;
 
   function splitOutsideQuotes(cmd) {
     // Quote-aware split: separators (&&, ||, ;, |, newline) only count OUTSIDE
@@ -718,6 +738,21 @@
       let guard = 0;
       while (WRAPPER.test(seg) && guard++ < 5) seg = seg.replace(WRAPPER, "");
       if (seg) out.push(seg);
+      // The interpreter line itself stays in `out` above: it is a real command, and a
+      // later pattern may want to see it. What is added here is the command it carries.
+      const shellC = SHELL_C.exec(seg);
+      if (shellC && shellC[2].trim() && d < 3 && out.length < SEGMENT_MAX) {
+        const carried = segmentCommands(shellC[2], d + 1);
+        incomplete = incomplete || carried.incomplete;
+        truncated = truncated || carried.truncated;
+        for (const inner of carried.segments) {
+          if (out.length >= SEGMENT_MAX) {
+            truncated = true;
+            break;
+          }
+          out.push(inner);
+        }
+      }
     }
     // Depth cap: a substitution inside a substitution is real but unbounded recursion
     // on attacker-shaped input is not worth it. 3 levels, and the segment cap applies.

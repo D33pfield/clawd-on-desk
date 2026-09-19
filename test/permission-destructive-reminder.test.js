@@ -88,6 +88,18 @@ const HOLD = [
   ["root glob", "rm -rf /*", "file-delete"],
   // -h is psql's HOST flag, so it must never be read as a help flag.
   ["sql drop with a host flag", "psql -h db -c 'DROP TABLE users'", "db-destroy"],
+  // A shell interpreter carries its command inside a quoted argument rather than
+  // prefixing it, so stripping the leading word left a quoted blob that no anchored
+  // pattern could match. Measured before the fix, with the plain spellings holding:
+  //   git push origin main --force         -> force-push
+  //   sh -c 'git push origin main --force' -> null
+  ["shell -c carries a force push", "sh -c 'git push origin main --force'", "force-push"],
+  ["shell -c carries a delete", 'bash -c "rm -rf /tmp/x"', "file-delete"],
+  ["shell -c by absolute path", "/bin/sh -c 'git push origin main --force'", "force-push"],
+  ["shell -c with bundled flags", "sh -ec 'rm -rf /tmp/x'", "file-delete"],
+  ["shell -c with a flag before -c", "sh -e -c 'rm -rf /tmp/x'", "file-delete"],
+  // Nesting is bounded by the same depth cap the substitution path already uses.
+  ["shell -c nested once", `sh -c "sh -c 'rm -rf /tmp/x'"`, "file-delete"],
 ];
 
 // UNMATCHED: the destructive words are there, but nothing destructive runs. These
@@ -102,6 +114,13 @@ const UNMATCHED = [
   ["select, not drop", "psql -c 'SELECT 1'", null],
   ["drop in an echo, no db client", "echo 'DROP TABLE users'", null],
   ["reading a file", "cat package.json", null],
+  // The interpreter rule must not widen into every -c interpreter: only a shell
+  // runs its -c argument as shell syntax. Reading program source as commands would
+  // start matching words that were never a command position.
+  ["python -c is program source", "python3 -c 'print(1)'", null],
+  ["shell running a script file", "sh script.sh", null],
+  ["shell -c carrying something harmless", "sh -c 'echo hi'", null],
+  ["remote execution is not a local shell", "ssh host 'ls'", null],
 ];
 
 // KNOWN_MISS: distinct from UNMATCHED on purpose. UNMATCHED means "nothing
