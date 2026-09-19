@@ -28,6 +28,7 @@
 //      the two apart so the reason can be reviewed rather than guessed at.
 const {
   detectIrreversibleMatches,
+  shouldScanIrreversibleCommand,
   SCAN_MAX,
   SCAN_TRUNCATED,
 } = require("./bubble-format");
@@ -672,7 +673,10 @@ function documentedException(match) {
  */
 function evaluatePermissionReminder(toolName, rawInput) {
   try {
-    const matches = detectIrreversibleMatches(toolName, buildReminderScanInput(rawInput));
+    const scanInput = shouldScanIrreversibleCommand(toolName)
+      ? buildReminderScanInput(rawInput)
+      : {};
+    const matches = detectIrreversibleMatches(toolName, scanInput);
     if (!matches.length) return null;
     let firstExcused = null;
     for (const match of matches) {

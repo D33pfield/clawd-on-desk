@@ -225,6 +225,17 @@ describe("destructive reminder — unmatched requests keep today's behavior", ()
     );
   });
 
+  it("does not treat an unrelated non-shell command field as a failed shell scan", () => {
+    for (const toolName of ["Read", "mcp__example__run", "unknown_tool"]) {
+      assert.equal(evaluatePermissionReminder(toolName, { command: { nested: true } }), null, toolName);
+    }
+    assert.deepEqual(
+      evaluatePermissionReminder("delete_file", { command: null }),
+      { hold: true, tag: "file-delete" },
+      "an explicit destructive tool is classified by its tool identity, not an unrelated field shape"
+    );
+  });
+
   it("a malformed argv fails closed from its first inspected element", () => {
     for (const command of [
       [["rm", "-rf", "src"]],
@@ -821,6 +832,17 @@ describe("destructive reminder — known misses at the inspection budget", () =>
     assert.deepEqual(
       evaluatePermissionReminder("Bash", { command: ": ; rm -rf /" }),
       { hold: true, tag: "file-delete" }
+    );
+  });
+
+  it("a syntax fragment beyond the segment cap remains a budget miss, not scan-error", () => {
+    const exhausted = new Array(50).fill(":").join(" ; ") + ' ; echo "unterminated';
+    const inside = new Array(49).fill(":").join(" ; ") + ' ; echo "unterminated';
+    assert.equal(evaluatePermissionReminder("Bash", { command: exhausted }), null);
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: inside }),
+      { hold: true, tag: SCAN_ERROR_TAG },
+      "the same malformed segment inside the budget must still fail closed"
     );
   });
 

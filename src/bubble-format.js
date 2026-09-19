@@ -406,7 +406,9 @@
         if (cmd[i + 1] === "|" && ch === "|") i++;  // consume '||' second bar
         segs.push(cur); cur = "";
         atWordStart = true;
-        if (segs.length >= SEGMENT_MAX) return segs;  // segment cap
+        if (segs.length >= SEGMENT_MAX) {
+          return { segments: segs, truncated: true };
+        }
         continue;
       }
       cur += ch;
@@ -417,7 +419,7 @@
       atWordStart = ch === " " || ch === "\t" || ch === "\n";
     }
     segs.push(cur);
-    return segs;
+    return { segments: segs, truncated: false };
   }
 
   // Command-substitution bodies are COMMAND POSITIONS that the quote-aware split
@@ -589,8 +591,11 @@
   function segmentCommands(cmd, depth) {
     const out = [];
     let incomplete = false;
+    let truncated = false;
     const d = depth || 0;
-    for (let seg of splitOutsideQuotes(cmd)) {
+    const direct = splitOutsideQuotes(cmd);
+    truncated = direct.truncated;
+    for (let seg of direct.segments) {
       seg = seg.trim();
       // A subshell or group opens with `(` and the command starts inside it, so
       // `echo safe; (rm -rf ./d)` had a segment beginning `(` that the anchored
@@ -612,20 +617,29 @@
     }
     // Depth cap: a substitution inside a substitution is real but unbounded recursion
     // on attacker-shaped input is not worth it. 3 levels, and the segment cap applies.
-    if (d < 3) {
+    if (d < 3 && !truncated) {
       const substitutions = substitutionBodies(cmd);
       incomplete = substitutions.incomplete;
-      for (const body of substitutions.bodies) {
-        if (out.length >= SEGMENT_MAX) break;
+      for (let bodyIndex = 0; bodyIndex < substitutions.bodies.length; bodyIndex++) {
+        if (out.length >= SEGMENT_MAX) {
+          truncated = true;
+          break;
+        }
+        const body = substitutions.bodies[bodyIndex];
         const nested = segmentCommands(body, d + 1);
         incomplete = incomplete || nested.incomplete;
-        for (const s of nested.segments) {
-          if (out.length >= SEGMENT_MAX) break;
-          out.push(s);
+        truncated = truncated || nested.truncated;
+        for (let segmentIndex = 0; segmentIndex < nested.segments.length; segmentIndex++) {
+          if (out.length >= SEGMENT_MAX) {
+            truncated = true;
+            break;
+          }
+          out.push(nested.segments[segmentIndex]);
         }
+        if (out.length >= SEGMENT_MAX && bodyIndex < substitutions.bodies.length - 1) truncated = true;
       }
     }
-    return { segments: out, incomplete };
+    return { segments: out, incomplete, truncated };
   }
 
   // One pattern list, two error policies. detectIrreversibleStrict lets a
@@ -666,6 +680,7 @@
         truncated = true;
       }
       const scan = segmentCommands(cmd);
+      truncated = truncated || scan.truncated;
       for (const seg of scan.segments) {
         for (const p of IRREVERSIBLE_PATTERNS) {
           if (p.re.test(seg)) {
@@ -716,6 +731,11 @@
     }
   }
 
+  function shouldScanIrreversibleCommand(name) {
+    const toolName = typeof name === "string" ? name.trim().toLowerCase() : "";
+    return SHELL_TOOLS.has(toolName);
+  }
+
   function parseMcpToolName(toolName) {
     if (typeof toolName !== "string" || !toolName) return null;
     const segs = toolName.split("__");
@@ -731,7 +751,7 @@
     return { server, tool, display };
   }
 
-  const api = { formatDetail, formatAntigravityDetail, formatReminderReason, truncate, firstStringValue, parseMcpToolName, detectIrreversible, detectIrreversibleStrict, detectIrreversibleMatches, SCAN_MAX, SEGMENT_MAX, SCAN_TRUNCATED };
+  const api = { formatDetail, formatAntigravityDetail, formatReminderReason, truncate, firstStringValue, parseMcpToolName, detectIrreversible, detectIrreversibleStrict, detectIrreversibleMatches, shouldScanIrreversibleCommand, SCAN_MAX, SEGMENT_MAX, SCAN_TRUNCATED };
 
   if (typeof module === "object" && module.exports) {
     module.exports = api;
