@@ -1,4 +1,4 @@
-const { formatDetail, truncate, parseMcpToolName, detectIrreversible } = window.ClawdBubbleFormat;
+const { formatDetail, formatReminderReason, truncate, parseMcpToolName, detectIrreversible } = window.ClawdBubbleFormat;
 const card = document.getElementById("card");
 const toolPill = document.getElementById("toolPill");
 const toolPillText = document.getElementById("toolPillText");
@@ -1463,7 +1463,7 @@ function show(data) {
     : null;
   if ((reminderTag || irreversible) && !isPlanReview) {
     irreversibleBadge.textContent = "\u26A0 " + (reminderTag
-      ? bubbleText(data.lang, "reminderHeldHint", { reason: reminderTag })
+      ? bubbleText(data.lang, "reminderHeldHint", { reason: formatReminderReason(reminderTag, data.lang) })
       : bubbleText(data.lang, "irreversibleHint"));
     irreversibleBadge.setAttribute("data-reason", reminderTag || irreversible.tag);
     irreversibleBadge.style.display = "";

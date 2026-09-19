@@ -22,6 +22,131 @@
     return Number.isFinite(max) ? truncate(value, max) : String(value == null ? "" : value);
   }
 
+  // Stable reminder tags are machine-facing diagnostics. Keep them on the
+  // entry/data attribute for tests and support logs, but never make a user
+  // decode `force-push`, `scan-error`, and friends in a localized approval
+  // card. Unknown future tags deliberately fall back to a generic localized
+  // label instead of leaking the identifier into UI or remote notifications.
+  const REMINDER_REASON_LABELS = Object.freeze({
+    en: Object.freeze({
+      "force-push": "force push",
+      "remote-delete": "remote branch deletion",
+      "branch-delete": "local branch deletion",
+      "history-rewrite": "history rewrite",
+      "file-delete": "file deletion",
+      "git-clean": "Git worktree cleanup",
+      publish: "package publication",
+      "repo-delete": "repository or release deletion",
+      "go-public": "public visibility change",
+      "infra-destroy": "infrastructure deletion",
+      "db-destroy": "database or schema deletion",
+      "scan-error": "command could not be safely analyzed",
+      "not-inspected": "request was not inspected",
+      unknown: "destructive action",
+    }),
+    zh: Object.freeze({
+      "force-push": "强制推送",
+      "remote-delete": "删除远程分支",
+      "branch-delete": "删除本地分支",
+      "history-rewrite": "重写历史",
+      "file-delete": "删除文件",
+      "git-clean": "清理 Git 工作区",
+      publish: "发布软件包",
+      "repo-delete": "删除仓库或发布版本",
+      "go-public": "改为公开可见",
+      "infra-destroy": "删除基础设施资源",
+      "db-destroy": "删除数据库或架构",
+      "scan-error": "无法安全分析命令",
+      "not-inspected": "请求未经检查",
+      unknown: "破坏性操作",
+    }),
+    "zh-TW": Object.freeze({
+      "force-push": "強制推送",
+      "remote-delete": "刪除遠端分支",
+      "branch-delete": "刪除本機分支",
+      "history-rewrite": "重寫歷史",
+      "file-delete": "刪除檔案",
+      "git-clean": "清理 Git 工作目錄",
+      publish: "發佈套件",
+      "repo-delete": "刪除儲存庫或發佈版本",
+      "go-public": "改為公開可見",
+      "infra-destroy": "刪除基礎設施資源",
+      "db-destroy": "刪除資料庫或結構描述",
+      "scan-error": "無法安全分析命令",
+      "not-inspected": "請求未經檢查",
+      unknown: "破壞性操作",
+    }),
+    ko: Object.freeze({
+      "force-push": "강제 푸시",
+      "remote-delete": "원격 브랜치 삭제",
+      "branch-delete": "로컬 브랜치 삭제",
+      "history-rewrite": "기록 다시 쓰기",
+      "file-delete": "파일 삭제",
+      "git-clean": "Git 작업 트리 정리",
+      publish: "패키지 게시",
+      "repo-delete": "저장소 또는 릴리스 삭제",
+      "go-public": "공개 상태로 변경",
+      "infra-destroy": "인프라 리소스 삭제",
+      "db-destroy": "데이터베이스 또는 스키마 삭제",
+      "scan-error": "명령을 안전하게 분석할 수 없음",
+      "not-inspected": "요청이 검사되지 않음",
+      unknown: "파괴적 작업",
+    }),
+    ja: Object.freeze({
+      "force-push": "強制プッシュ",
+      "remote-delete": "リモートブランチの削除",
+      "branch-delete": "ローカルブランチの削除",
+      "history-rewrite": "履歴の書き換え",
+      "file-delete": "ファイルの削除",
+      "git-clean": "Git 作業ツリーのクリーンアップ",
+      publish: "パッケージの公開",
+      "repo-delete": "リポジトリまたはリリースの削除",
+      "go-public": "公開設定への変更",
+      "infra-destroy": "インフラリソースの削除",
+      "db-destroy": "データベースまたはスキーマの削除",
+      "scan-error": "コマンドを安全に解析できませんでした",
+      "not-inspected": "リクエストは検査されていません",
+      unknown: "破壊的な操作",
+    }),
+    "pt-BR": Object.freeze({
+      "force-push": "push forçado",
+      "remote-delete": "exclusão de branch remota",
+      "branch-delete": "exclusão de branch local",
+      "history-rewrite": "reescrita do histórico",
+      "file-delete": "exclusão de arquivos",
+      "git-clean": "limpeza da árvore de trabalho do Git",
+      publish: "publicação de pacote",
+      "repo-delete": "exclusão de repositório ou versão",
+      "go-public": "mudança para visibilidade pública",
+      "infra-destroy": "exclusão de infraestrutura",
+      "db-destroy": "exclusão de banco de dados ou esquema",
+      "scan-error": "não foi possível analisar o comando com segurança",
+      "not-inspected": "a solicitação não foi inspecionada",
+      unknown: "ação destrutiva",
+    }),
+    es: Object.freeze({
+      "force-push": "push forzado",
+      "remote-delete": "eliminación de rama remota",
+      "branch-delete": "eliminación de rama local",
+      "history-rewrite": "reescritura del historial",
+      "file-delete": "eliminación de archivos",
+      "git-clean": "limpieza del árbol de trabajo de Git",
+      publish: "publicación de paquete",
+      "repo-delete": "eliminación de repositorio o versión",
+      "go-public": "cambio a visibilidad pública",
+      "infra-destroy": "eliminación de infraestructura",
+      "db-destroy": "eliminación de base de datos o esquema",
+      "scan-error": "no se pudo analizar el comando de forma segura",
+      "not-inspected": "la solicitud no fue inspeccionada",
+      unknown: "acción destructiva",
+    }),
+  });
+
+  function formatReminderReason(tag, lang) {
+    const dict = REMINDER_REASON_LABELS[lang] || REMINDER_REASON_LABELS.en;
+    return typeof tag === "string" && dict[tag] ? dict[tag] : dict.unknown;
+  }
+
   function formatAntigravityDetail(name, input, options) {
     const toolName = typeof name === "string" ? name.trim().toLowerCase() : "";
     if (!toolName) return "";
@@ -290,42 +415,131 @@
   // both the `$( … )` and the backtick spelling ALLOWED while the plain form HELD —
   // the same composition class the review named, in a different spelling.
   //
-  // This is a SECOND, ADDITIVE pass. It only ever appends segments, so its failure
-  // direction is a false HOLD (a human glance), never a missed delete. `$((` is
-  // arithmetic, not a command position, and is skipped; single quotes suppress both
-  // forms, so a quoted literal does not become a fake command position.
-  function substitutionBodies(cmd) {
-    const out = [];
-    for (let i = 0; i < cmd.length; i++) {
-      const ch = cmd[i];
-      if (ch === "\\") { i++; continue; }
-      if (ch === "'") {
-        const end = cmd.indexOf("'", i + 1);
-        if (end === -1) break;
-        i = end;
+  // This is a SECOND, ADDITIVE pass, but a truncated body can still HIDE a later
+  // match when an earlier match is excused. Keep its lexical state explicit:
+  // parentheses and apostrophes inside quotes are data, while substitutions inside
+  // double quotes still execute. `$((` is arithmetic, not a command position.
+  // A syntactically incomplete body throws; the enforcement caller converts that to
+  // a human hold while the display-only caller keeps its existing fail-quiet policy.
+  class ScanIncompleteError extends Error {
+    constructor(message) {
+      super(message);
+      this.name = "ScanIncompleteError";
+    }
+  }
+
+  function backtickEnd(cmd, start) {
+    for (let i = start + 1; i < cmd.length; i++) {
+      if (cmd[i] === "\\") {
+        if (i + 1 >= cmd.length) break;
+        i++;
         continue;
       }
-      if (ch === "$" && cmd[i + 1] === "(" && cmd[i + 2] !== "(") {
-        let depth = 1, body = "", j = i + 2;
-        for (; j < cmd.length; j++) {
-          const c = cmd[j];
-          if (c === "\\") { body += c + (cmd[j + 1] || ""); j++; continue; }
-          if (c === "(") depth++;
-          else if (c === ")") { depth--; if (depth === 0) break; }
-          body += c;
+      if (cmd[i] === "`") return i;
+    }
+    throw new ScanIncompleteError("unterminated command substitution");
+  }
+
+  function dollarSubstitutionEnd(cmd, start) {
+    let depth = 1;
+    let quote = null;
+    for (let i = start + 2; i < cmd.length; i++) {
+      const ch = cmd[i];
+      if (quote === "'") {
+        if (ch === "'") quote = null;
+        continue;
+      }
+      if (quote === '"') {
+        if (ch === "\\" && i + 1 < cmd.length && '$`"\\\n'.includes(cmd[i + 1])) {
+          i++;
+          continue;
         }
+        if (ch === '"') {
+          quote = null;
+          continue;
+        }
+        if (ch === "$" && cmd[i + 1] === "(" && cmd[i + 2] !== "(") {
+          i = dollarSubstitutionEnd(cmd, i);
+          continue;
+        }
+        if (ch === "`") {
+          i = backtickEnd(cmd, i);
+        }
+        continue;
+      }
+      if (ch === "\\") {
+        if (i + 1 >= cmd.length) break;
+        i++;
+        continue;
+      }
+      if (ch === "'" || ch === '"') {
+        quote = ch;
+        continue;
+      }
+      if (ch === "`") {
+        i = backtickEnd(cmd, i);
+        continue;
+      }
+      if (ch === "(") {
+        depth++;
+        continue;
+      }
+      if (ch === ")") {
+        depth--;
+        if (depth === 0) return i;
+      }
+    }
+    throw new ScanIncompleteError("unterminated command substitution");
+  }
+
+  function substitutionBodies(cmd) {
+    const out = [];
+    let quote = null;
+    for (let i = 0; i < cmd.length; i++) {
+      const ch = cmd[i];
+      if (quote === "'") {
+        if (ch === "'") quote = null;
+        continue;
+      }
+      if (quote === '"') {
+        if (ch === "\\" && i + 1 < cmd.length && '$`"\\\n'.includes(cmd[i + 1])) {
+          i++;
+          continue;
+        }
+        if (ch === '"') {
+          quote = null;
+          continue;
+        }
+      } else {
+        if (ch === "\\") {
+          if (i + 1 >= cmd.length) break;
+          i++;
+          continue;
+        }
+        if (ch === "'") {
+          quote = ch;
+          continue;
+        }
+        if (ch === '"') {
+          quote = ch;
+          continue;
+        }
+      }
+      if (ch === "$" && cmd[i + 1] === "(" && cmd[i + 2] !== "(") {
+        const j = dollarSubstitutionEnd(cmd, i);
+        const body = cmd.slice(i + 2, j);
         if (body.trim()) out.push(body);
         i = j;
         continue;
       }
       if (ch === "`") {
-        const end = cmd.indexOf("`", i + 1);
-        if (end === -1) break;
+        const end = backtickEnd(cmd, i);
         const body = cmd.slice(i + 1, end);
         if (body.trim()) out.push(body);
         i = end;
       }
     }
+    if (quote) throw new ScanIncompleteError("unterminated shell quote");
     return out;
   }
 
@@ -454,7 +668,7 @@
     return { server, tool, display };
   }
 
-  const api = { formatDetail, formatAntigravityDetail, truncate, firstStringValue, parseMcpToolName, detectIrreversible, detectIrreversibleStrict, detectIrreversibleMatches, SCAN_MAX, SEGMENT_MAX };
+  const api = { formatDetail, formatAntigravityDetail, formatReminderReason, truncate, firstStringValue, parseMcpToolName, detectIrreversible, detectIrreversibleStrict, detectIrreversibleMatches, SCAN_MAX, SEGMENT_MAX };
 
   if (typeof module === "object" && module.exports) {
     module.exports = api;

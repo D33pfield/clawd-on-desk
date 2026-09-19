@@ -6,7 +6,7 @@ const { getDefaultShortcuts } = require("./shortcut-actions");
 const { keepOutOfTaskbar } = require("./taskbar");
 const { clampTextScale, scaleWidth, scaleHeight, applyZoomToWindow } = require("./text-scale");
 const { createTranslator } = require("./i18n");
-const { firstStringValue, formatDetail, truncate, parseMcpToolName } = require("./bubble-format");
+const { firstStringValue, formatDetail, formatReminderReason, truncate, parseMcpToolName } = require("./bubble-format");
 const {
   getPermissionSessionKey,
   groupPermissionEntries,
@@ -3149,8 +3149,8 @@ function buildRemoteApprovalPayload(permEntry) {
   const reminderLine = !reminderTag
     ? null
     : (reminderIsWhyThisIsPending(permEntry)
-      ? interpolate(t("approvalDetailReminderValue"), "{reason}", reminderTag)
-      : interpolate(t("approvalDetailIrreversibleValue"), "{reason}", reminderTag));
+      ? interpolate(t("approvalDetailReminderValue"), "{reason}", formatReminderReason(reminderTag, ctx.lang))
+      : interpolate(t("approvalDetailIrreversibleValue"), "{reason}", formatReminderReason(reminderTag, ctx.lang)));
   const detail = [
     `${t("approvalDetailAgent")}: ${agentId}`,
     `${t("approvalDetailTool")}: ${toolName}`,

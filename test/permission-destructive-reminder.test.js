@@ -46,10 +46,12 @@ const {
 } = require("../src/permission-automation-policy");
 const { truncateDeep, PREVIEW_MAX } = require("../src/server-permission-utils");
 const initPermission = require("../src/permission");
+const { formatReminderReason } = require("../src/bubble-format");
 const { createSessionAutomationStore } = require("../src/session-automation-store");
 const { createSessionAutomationCoordinator } = require("../src/session-automation-coordinator");
 
 const SRC = path.join(__dirname, "..", "src");
+const EN_FORCE_PUSH_REASON = formatReminderReason("force-push", "en");
 
 // ---------------------------------------------------------------------------
 // 1. Fixture lists -- three of them, on purpose
@@ -206,8 +208,25 @@ describe("destructive reminder — unmatched requests keep today's behavior", ()
   });
 
   it("a shape that is not a command line yields no scan input", () => {
-    for (const command of [42, { cmd: "rm -rf src" }, [["rm", "-rf", "src"]], null]) {
+    for (const command of [42, { cmd: "rm -rf src" }, null]) {
       assert.equal(evaluatePermissionReminder("Bash", { command }), null, String(command));
+    }
+    assert.deepEqual(
+      buildReminderScanInput({ command: 42, script: "rm -rf /etc" }),
+      {},
+      "an unreadable higher-priority key must not fall through to another command field"
+    );
+  });
+
+  it("a malformed argv fails closed from its first inspected element", () => {
+    for (const command of [
+      [["rm", "-rf", "src"]],
+      [5, "&&", "rm", "-rf", "/etc"],
+    ]) {
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command }),
+        { hold: true, tag: SCAN_ERROR_TAG }
+      );
     }
   });
 });
@@ -350,8 +369,14 @@ const DRY_RUN_EXECUTES = [
 
 const DRY_RUN_PERFORMS_NOTHING = [
   ["the bare flag", "npm publish --dry-run", "publish"],
+  ["pnpm", "pnpm publish --dry-run", "publish"],
+  ["yarn", "yarn publish --dry-run", "publish"],
+  ["cargo", "cargo publish --dry-run", "publish"],
+  ["npm after an ordinary value option", "npm publish --access public --dry-run", "publish"],
   ["kubectl client-side", "kubectl delete po x --dry-run=client", "infra-destroy"],
+  ["kubectl after an ordinary value option", "kubectl delete -f prod.yaml --dry-run=client", "infra-destroy"],
   ["kubectl server-side", "kubectl delete po x --dry-run=server", "infra-destroy"],
+  ["git after an ordinary value option", "git push --push-option ci.skip --dry-run origin main --force", "force-push"],
 ];
 
 // A bare `--` ends option parsing: what follows is a positional argument, or an
@@ -954,6 +979,174 @@ describe("destructive reminder — a scan that cannot complete ends at the human
 });
 
 // ---------------------------------------------------------------------------
+// 2-b. Maintainer takeover regressions found after PR review
+// ---------------------------------------------------------------------------
+
+describe("destructive reminder — takeover fail-closed regressions", () => {
+  it("does not let an option operand masquerade as this invocation's safety flag", () => {
+    const cases = [
+      ["psql -c --dry-run -c 'DROP TABLE users'", "db-destroy"],
+      ["psql -c --help -c 'DROP TABLE users'", "db-destroy"],
+      ["npm publish --otp --dry-run", "publish"],
+      ["npm publish --workspace --help", "publish"],
+      ["git push --force --push-option --dry-run origin main", "force-push"],
+      ["git push --force --repo --dry-run origin main", "force-push"],
+      ["git push --force --exec --dry-run origin main", "force-push"],
+      ["git push --force -o --dry-run origin main", "force-push"],
+      ["kubectl delete --raw --dry-run=client namespace prod", "infra-destroy"],
+    ];
+    for (const [command, tag] of cases) {
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command }),
+        { hold: true, tag },
+        command
+      );
+    }
+  });
+
+  it("never grants generic safety exceptions to any matched database client", () => {
+    for (const command of [
+      "mysql -e --dry-run -e 'DROP TABLE users'",
+      "mysqlsh --sql -e --help -e 'DROP TABLE users'",
+      "mongosh --eval --dry-run --eval 'DROP TABLE users'",
+      "sqlite3 --cmd --help app.db 'DROP TABLE users'",
+    ]) {
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command }),
+        { hold: true, tag: "db-destroy" },
+        command
+      );
+    }
+  });
+
+  it("reads a plain force inside a git short-option cluster", () => {
+    for (const command of [
+      "git push --force-with-lease -fu origin main",
+      "git push --force-with-lease -uf origin main",
+    ]) {
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command }),
+        { hold: true, tag: "force-push" },
+        command
+      );
+    }
+    // `--` ends Git's option scope. A later word that looks like --force is a
+    // refspec/operand, not cancellation evidence for the lease exception.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", {
+        command: "git push --force-with-lease origin main -- --force",
+      }),
+      { hold: false, tag: "force-push", exception: "force-with-lease" }
+    );
+    // Conversely, a force-looking push-option VALUE is data, not cancellation
+    // evidence. The command-specific parser must not swing too far and turn a
+    // value operand into a real `-f`.
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", {
+        command: "git push --force-with-lease -o --force origin main",
+      }),
+      { hold: false, tag: "force-push", exception: "force-with-lease" }
+    );
+  });
+
+  it("does not let quotes truncate command-substitution coverage", () => {
+    const cases = [
+      [`echo "it's $(rm -rf /etc)"`, "file-delete"],
+      [`echo "don't $(rm -rf /etc) won't"`, "file-delete"],
+      [`echo "can't" ; echo "$(rm -rf /etc)"`, "file-delete"],
+      [`git commit -m "don't" && echo \`rm -rf /etc\``, "file-delete"],
+      [
+        `echo "$(git push --force-with-lease origin main)" ; echo "can't $(rm -rf /etc)"`,
+        "file-delete",
+      ],
+      [
+        `echo "$(git push --force-with-lease origin main && printf ')' && git reset --hard HEAD^)"`,
+        "history-rewrite",
+      ],
+    ];
+    for (const [command, tag] of cases) {
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command }),
+        { hold: true, tag },
+        command
+      );
+    }
+  });
+
+  it("treats incomplete substitution syntax differently in the gate and display hint", () => {
+    const {
+      detectIrreversible,
+      detectIrreversibleStrict,
+    } = require("../src/bubble-format");
+    for (const command of [
+      'echo "$(rm -rf /etc)',
+      "echo $(rm -rf /etc",
+      "echo `rm -rf /etc",
+    ]) {
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command }),
+        { hold: true, tag: SCAN_ERROR_TAG },
+        command
+      );
+      assert.equal(detectIrreversible("Bash", { command }), null, command);
+      assert.throws(() => detectIrreversibleStrict("Bash", { command }), command);
+    }
+  });
+
+  it("keeps argv inspection character-bounded without a lossy element cap", () => {
+    const command = [...new Array(300).fill("x"), "&&", "rm", "-rf", "/etc"];
+    assert.ok(command.join(" ").length < SCAN_MAX, "the destructive tail must be inside the character budget");
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command }),
+      { hold: true, tag: "file-delete" }
+    );
+  });
+
+  it("fails closed on a malformed argv inside the inspected prefix", () => {
+    for (const rawInput of [
+      { command: ["rm", "-rf", "/etc", 5] },
+      { command: ["rm", "-rf", "/etc", null] },
+      { command: ["rm", "-rf", "/etc", 5], script: "echo hi" },
+    ]) {
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", rawInput),
+        { hold: true, tag: SCAN_ERROR_TAG }
+      );
+    }
+  });
+
+  it("keeps disposable-path exceptions through ordinary output redirection", () => {
+    for (const command of [
+      "rm -rf dist 2>/dev/null",
+      "rm -rf dist > /dev/null",
+      "rm -rf dist > /dev/null 2>&1",
+      "rm -rf node_modules >>cleanup.log",
+    ]) {
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command }),
+        { hold: false, tag: "file-delete", exception: "disposable-path" },
+        command
+      );
+    }
+  });
+
+  it("pins the remaining depth and wrapper coverage limits explicitly", () => {
+    assert.equal(
+      evaluatePermissionReminder("Bash", { command: "$($($($(rm -rf /etc))))" }),
+      null,
+      "fourth-level substitution is an explicit known miss in this takeover"
+    );
+    assert.equal(
+      evaluatePermissionReminder("Bash", {
+        command: "command command command command command command rm -rf /etc",
+      }),
+      null,
+      "a sixth wrapper normalization pass is an explicit known miss in this takeover"
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 3. Downgrade-only, at the policy layer
 // ---------------------------------------------------------------------------
 
@@ -1303,9 +1496,11 @@ describe("destructive reminder — runtime behavior", () => {
     });
     assert.equal(on.permission.maybeStartRemoteApproval(on.entry), true);
     assert.equal(requests.length, 1);
-    assert.match(requests[0].detail, /force-push/);
+    assert.match(requests[0].detail, /matched: force push/);
+    assert.doesNotMatch(requests[0].detail, /force-push/,
+      "the stable diagnostic tag must not leak into user-visible copy");
     assert.ok(
-      requests[0].fields.some((field) => /force-push/.test(field.value)),
+      requests[0].fields.some((field) => /matched: force push/.test(field.value)),
       "the reason must be a field, not only buried in the detail blob"
     );
 
@@ -1314,7 +1509,7 @@ describe("destructive reminder — runtime behavior", () => {
       getTelegramApprovalClient: () => client,
     });
     assert.equal(off.permission.maybeStartRemoteApproval(off.entry), true);
-    assert.doesNotMatch(requests[1].detail, /force-push/);
+    assert.doesNotMatch(requests[1].detail, /matched: force push/);
   });
 
   // Field-measured 2026-09-16 (real machine, Telegram, bubbles off): the card
@@ -1362,7 +1557,7 @@ describe("destructive reminder — runtime behavior", () => {
     assert.ok(weak, "a remote-only operator must get the reminder FIELD, not just a blob");
     assert.equal(
       weak.value,
-      EN.approvalDetailIrreversibleValue.replace("{reason}", "force-push"),
+      EN.approvalDetailIrreversibleValue.replace("{reason}", EN_FORCE_PUSH_REASON),
       "tier 2 must render the weaker irreversible wording, verbatim"
     );
     assert.match(requests[0].detail, /may not be recoverable/,
@@ -1379,7 +1574,7 @@ describe("destructive reminder — runtime behavior", () => {
     assert.ok(strong, "the held case still carries the field");
     assert.equal(
       strong.value,
-      EN.approvalDetailReminderValue.replace("{reason}", "force-push"),
+      EN.approvalDetailReminderValue.replace("{reason}", EN_FORCE_PUSH_REASON),
       "tier 1 keeps the held wording"
     );
     assert.doesNotMatch(weak.value, /Held for your review/,
@@ -1410,7 +1605,7 @@ describe("destructive reminder — runtime behavior", () => {
     assert.ok(ineligibleField, "an ineligible session still gets the field");
     assert.equal(
       ineligibleField.value,
-      EN.approvalDetailIrreversibleValue.replace("{reason}", "force-push"),
+      EN.approvalDetailIrreversibleValue.replace("{reason}", EN_FORCE_PUSH_REASON),
       "automation on but inapplicable is still tier 2, not tier 1"
     );
 
@@ -1556,7 +1751,7 @@ describe("destructive reminder — tier 1 requires the same gates sweep uses (#1
     );
     assert.equal(
       remoteFieldValue(rt),
-      EN.approvalDetailIrreversibleValue.replace("{reason}", "force-push"),
+      EN.approvalDetailIrreversibleValue.replace("{reason}", EN_FORCE_PUSH_REASON),
       'the remote card must render tier 2 wording, not "Held for your review"'
     );
   });
@@ -1575,7 +1770,7 @@ describe("destructive reminder — tier 1 requires the same gates sweep uses (#1
     assert.equal(rt.permission.buildPermissionBubblePayload(rt.entry).reminderTag, "force-push");
     assert.equal(
       remoteFieldValue(rt),
-      EN.approvalDetailReminderValue.replace("{reason}", "force-push"),
+      EN.approvalDetailReminderValue.replace("{reason}", EN_FORCE_PUSH_REASON),
       "tier 1 wording"
     );
   });
@@ -1594,7 +1789,7 @@ describe("destructive reminder — tier 1 requires the same gates sweep uses (#1
     assert.equal(rt.permission.buildPermissionBubblePayload(rt.entry).reminderTag, null);
     assert.equal(
       remoteFieldValue(rt),
-      EN.approvalDetailIrreversibleValue.replace("{reason}", "force-push")
+      EN.approvalDetailIrreversibleValue.replace("{reason}", EN_FORCE_PUSH_REASON)
     );
   });
 
@@ -1612,7 +1807,7 @@ describe("destructive reminder — tier 1 requires the same gates sweep uses (#1
     assert.equal(rt.permission.buildPermissionBubblePayload(rt.entry).reminderTag, "force-push");
     assert.equal(
       remoteFieldValue(rt),
-      EN.approvalDetailReminderValue.replace("{reason}", "force-push")
+      EN.approvalDetailReminderValue.replace("{reason}", EN_FORCE_PUSH_REASON)
     );
   });
 });

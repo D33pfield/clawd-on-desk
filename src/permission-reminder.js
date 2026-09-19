@@ -47,15 +47,15 @@ const NOT_INSPECTED_TAG = "not-inspected";
 // hint uses, so the badge and the hold can never disagree about which text was
 // examined. Two shapes are supported: a command **string**, and an **array of
 // strings** (argv), which is joined with single spaces. Joining is a definition,
-// not a guess: it is the same text a shell would have received. Anything else
-// (a number, an object, a nested array) is not a command line and yields no
-// scan input.
+// not a guess: it is the same text a shell would have received. A malformed
+// element inside an inspected argv is a scan error; a wholly unsupported
+// top-level shape yields no scan input and cannot fall through to a lower-
+// priority command field.
 const COMMAND_KEYS = ["command", "CommandLine", "Command", "cmd", "script"];
 
-// Cap the argv join so a long array cannot be walked past the budget. This
-// bounds element COUNT only -- it does not bound the total bytes/chars of
-// those elements, which is why the join itself must be budget-aware (see
-// joinArgvBounded below; #1021 review 4).
+// Historical stress-test width retained as an exported compatibility constant.
+// It is no longer an element cap: SCAN_MAX characters are the inspection budget,
+// and joinArgvBounded() stops walking as soon as that budget is full.
 const ARGV_MAX = 256;
 
 // Reading an option out of a command line means reading ARGV, not text. The
@@ -91,6 +91,23 @@ function shellTokens(segment) {
   let bare = true;
   let bareHead = null;
   let quote = null;
+
+  function pushCurrent() {
+    if (!started) return;
+    tokens.push({ value: cur, bare, bareHead: bareHead !== false });
+    cur = "";
+    started = false;
+    bare = true;
+    bareHead = null;
+  }
+
+  function resetCurrent() {
+    cur = "";
+    started = false;
+    bare = true;
+    bareHead = null;
+  }
+
   for (let i = 0; i < segment.length; i++) {
     const ch = segment[i];
     if (quote) {
@@ -111,11 +128,45 @@ function shellTokens(segment) {
     // Bash's default IFS is space, tab and newline. A carriage return is NOT a
     // word separator -- it stays inside the word -- so /\s/ split words the
     // shell would have kept together.
-    if (ch === " " || ch === "\t" || ch === "\n") { if (started) { tokens.push({ value: cur, bare, bareHead: bareHead !== false }); cur = ""; started = false; bare = true; bareHead = null; } continue; }
+    if (ch === " " || ch === "\t" || ch === "\n") { pushCurrent(); continue; }
+    // Redirection syntax is not an argv word. Split it even when it is attached
+    // (`dist>out`, `2>/dev/null`, `&>>log`) so exception code can remove the
+    // operator and its target without mistaking either for a flag or rm operand.
+    // Quoted/escaped angle brackets reach neither branch and stay ordinary data.
+    if (ch === ">" || ch === "<") {
+      let prefix = "";
+      if (started && bare && /^\d+$/.test(cur)) {
+        prefix = cur;
+        resetCurrent();
+      } else if (started && bare && cur.endsWith("&")) {
+        const word = cur.slice(0, -1);
+        if (word) {
+          cur = word;
+          started = true;
+          pushCurrent();
+        } else {
+          resetCurrent();
+        }
+        prefix = "&";
+      } else {
+        pushCurrent();
+      }
+
+      let op = ch;
+      if (ch === ">" && segment[i + 1] === ">") { op = ">>"; i++; }
+      else if (ch === ">" && segment[i + 1] === "&") { op = ">&"; i++; }
+      else if (ch === "<" && segment[i + 1] === "<") {
+        op = segment[i + 2] === "<" ? "<<<" : "<<";
+        i += op.length - 1;
+      } else if (ch === "<" && segment[i + 1] === "&") { op = "<&"; i++; }
+      else if (ch === "<" && segment[i + 1] === ">") { op = "<>"; i++; }
+      tokens.push({ value: prefix + op, bare: true, bareHead: true, redirection: true });
+      continue;
+    }
     if (bareHead === null) bareHead = true;
     cur += ch; started = true;
   }
-  if (started) tokens.push({ value: cur, bare, bareHead: bareHead !== false });
+  pushCurrent();
   return tokens;
 }
 
@@ -135,16 +186,21 @@ const REDIRECTION_OP = /^\d*(?:>>?|<<<|<<?|>&|<&|&>>?|<>)$/;
 // --dry-run after it is still the option npm acts on. `--` is an ARGUMENT the
 // program itself interprets, so `rm -rf src '--' --dry-run` still ends options.
 // Hence: the terminator is matched on the VALUE, the operator only when BARE.
-function optionTokens(segment) {
+function commandTokens(segment) {
   const tokens = shellTokens(segment);
   // Redirection operands come off FIRST: in `npm publish > -- --dry-run` the
   // `--` is the redirection's FILE NAME, and searching for the terminator before
   // removing it truncated the command at a filename and lost the real flag.
   const afterRedirection = [];
   for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i].bare && REDIRECTION_OP.test(tokens[i].value)) { i++; continue; }
+    if (tokens[i].redirection || (tokens[i].bare && REDIRECTION_OP.test(tokens[i].value))) { i++; continue; }
     afterRedirection.push(tokens[i]);
   }
+  return afterRedirection;
+}
+
+function optionTokens(segment) {
+  const afterRedirection = commandTokens(segment);
   const end = afterRedirection.findIndex((t) => t.value === "--");
   const scoped = end === -1 ? afterRedirection : afterRedirection.slice(0, end);
   // 🟥 The head test is applied in ONE direction only, and the direction is the
@@ -155,14 +211,100 @@ function optionTokens(segment) {
   // its head is bare. Filtering both lists the same way excused a real
   // force-push, which is the failure this asymmetry exists to prevent.
   return {
+    tokens: scoped,
+    afterTerminator: end === -1 ? [] : afterRedirection.slice(end + 1),
     granting: scoped.filter((t) => t.bareHead).map((t) => t.value),
     all: scoped.map((t) => t.value),
   };
 }
 
-// A dry run performs nothing, whatever it is a dry run of, so this exception is
-// not scoped to one pattern. The VALUE decides, though, and only some values
-// mean "perform nothing": kubectl's `--dry-run=none` is the flag spelled out to
+const OPTION_SPECS = Object.freeze({
+  npmPublish: Object.freeze({
+    longBoolean: new Set(["--dry-run", "--help", "--json", "--provenance", "--ignore-scripts", "--foreground-scripts", "--workspaces", "--include-workspace-root"]),
+    longValue: new Set(["--otp", "--tag", "--workspace", "--registry", "--access", "--userconfig", "--loglevel", "--cache", "--provenance-file"]),
+    shortBoolean: new Set([]),
+    shortValue: new Set(["w"]),
+  }),
+  cargoPublish: Object.freeze({
+    longBoolean: new Set(["--dry-run", "--help", "--allow-dirty", "--no-verify", "--locked", "--offline", "--frozen"]),
+    longValue: new Set(["--token", "--registry", "--index", "--target", "--manifest-path", "--package", "--jobs", "--features", "--config"]),
+    shortBoolean: new Set(["q", "v"]),
+    shortValue: new Set(["p", "j", "F"]),
+  }),
+  kubectlDelete: Object.freeze({
+    longBoolean: new Set(["--dry-run", "--help", "--all", "--force", "--ignore-not-found", "--now", "--wait"]),
+    longValue: new Set(["--filename", "--namespace", "--selector", "--field-selector", "--output", "--grace-period", "--timeout", "--cascade", "--context", "--cluster", "--user", "--request-timeout", "--raw"]),
+    shortBoolean: new Set([]),
+    shortValue: new Set(["f", "n", "l", "o"]),
+  }),
+  gitPush: Object.freeze({
+    longBoolean: new Set(["--dry-run", "--help", "--force", "--force-with-lease", "--force-if-includes", "--delete", "--atomic", "--follow-tags", "--mirror", "--all", "--tags", "--prune", "--porcelain", "--quiet", "--verbose", "--set-upstream", "--no-verify", "--signed", "--ipv4", "--ipv6", "--progress"]),
+    longValue: new Set(["--repo", "--exec", "--receive-pack", "--push-option", "--recurse-submodules"]),
+    shortBoolean: new Set(["f", "u", "n", "q", "v", "4", "6"]),
+    shortValue: new Set(["o"]),
+  }),
+  terraformDestroy: Object.freeze({
+    longBoolean: new Set(["--help"]),
+    longValue: new Set([]),
+    shortBoolean: new Set([]),
+    shortValue: new Set([]),
+  }),
+});
+
+// Parse only enough of one reviewed command's option grammar to PROVE an
+// exception. Unknown option spellings fail closed for the exception. A quoted
+// option name can still consume a following value (the program receives the
+// same argv), but it never grants a safety exception itself.
+function reviewedInvocation(segment, commands, subcommand, spec) {
+  const options = optionTokens(segment);
+  const tokens = options.tokens;
+  if (tokens.length < 2 || !commands.has(tokens[0].value) || tokens[1].value !== subcommand) return null;
+
+  const flags = [];
+  let ambiguous = false;
+  for (let i = 2; i < tokens.length; i++) {
+    const token = tokens[i];
+    const value = token.value;
+    if (!value || value === "-") continue;
+    if (value.startsWith("--")) {
+      const eq = value.indexOf("=");
+      const name = eq === -1 ? value : value.slice(0, eq);
+      if (spec.longValue.has(name)) {
+        if (eq === -1) {
+          if (i + 1 >= tokens.length) ambiguous = true;
+          else i++;
+        }
+        continue;
+      }
+      if (spec.longBoolean.has(name)) {
+        flags.push({ value, bareHead: token.bareHead });
+        continue;
+      }
+      ambiguous = true;
+      continue;
+    }
+    if (value.startsWith("-") && value.length > 1) {
+      const cluster = value.slice(1);
+      for (let j = 0; j < cluster.length; j++) {
+        const name = cluster[j];
+        if (spec.shortValue.has(name)) {
+          if (j === cluster.length - 1) {
+            if (i + 1 >= tokens.length) ambiguous = true;
+            else i++;
+          }
+          break;
+        }
+        if (!spec.shortBoolean.has(name)) ambiguous = true;
+        flags.push({ value: `-${name}`, bareHead: token.bareHead });
+      }
+    }
+  }
+  return { ambiguous, flags, optionValues: options.all };
+}
+
+// Once a command-specific parser has proved that a token is this invocation's
+// dry-run flag, its VALUE decides whether the invocation performs nothing.
+// Only some values mean "perform nothing": kubectl's `--dry-run=none` spells
 // say "actually do it", and `--dry-run=false` / `--dry-run=0` read the same way.
 // Accepting any value after `=` turned the most explicit way to say "execute
 // this" into the exception that waved it through.
@@ -190,9 +332,9 @@ function dryRunPerformsNothing(tokens) {
   return seen;
 }
 
-// Asking a destructive command to describe itself performs nothing either.
-// Deliberately long-form only: `-h` is the HOST flag for psql and mysql, so
-// excusing it would wave through `psql -h db -c 'DROP TABLE users'`.
+// Asking a reviewed destructive invocation to describe itself performs nothing
+// either. Deliberately long-form only: `-h` is the HOST flag for psql and mysql,
+// so a future command-specific parser must not generalize it to every command.
 function helpOnly(tokens) {
   return tokens.includes("--help");
 }
@@ -206,7 +348,11 @@ function hasForceWithLease(tokens) {
   return tokens.some((t) => /^--force-with-lease(=.*)?$/.test(t));
 }
 function hasPlainForce(tokens) {
-  return tokens.some((t) => t === "--force" || t === "-f");
+  return tokens.some((t) => (
+    t === "--force"
+    || t === "-f"
+    || /^-[A-Za-z0-9]*f[A-Za-z0-9]*$/.test(t)
+  ));
 }
 
 // Directories whose contents are reproducible by a build or an install. Deleting
@@ -247,7 +393,7 @@ function boundCommandString(value) {
 }
 
 // Join argv into the same text `parts.join(" ")` would produce, but without
-// ever materializing more of it than the scan will use.
+// ever materializing or traversing more of it than the character scan will use.
 //
 // #1021 review (4): `parts.join(" ")` followed by boundCommandString() was
 // bounded on the WRONG side -- ARGV_MAX (above) caps element COUNT, not
@@ -264,8 +410,8 @@ function boundCommandString(value) {
 // request whether or not the scan ultimately threw.
 //
 // This builds the result incrementally and stops as soon as it has SCAN_MAX
-// characters, so no single element and no element count can make it walk
-// past that budget. It returns byte-for-byte the same string
+// characters, so no single element and no element count can make work exceed
+// that budget. It returns byte-for-byte the same string
 // `parts.join(" ").slice(0, max)` would for every input (verified by test:
 // the two are compared directly for a battery of small inputs), so this is
 // a performance fix, not a behavior change.
@@ -278,6 +424,9 @@ function joinArgvBounded(parts, max) {
     }
     const room = max - out.length;
     const part = parts[i];
+    if (typeof part !== "string") {
+      throw new TypeError("command argv contains a non-string element");
+    }
     out += part.length > room ? part.slice(0, room) : part;
   }
   return out.length > max ? out.slice(0, max) : out;
@@ -295,9 +444,9 @@ function joinArgvBounded(parts, max) {
 function commandTextFrom(value) {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) {
-    const parts = value.slice(0, ARGV_MAX);
-    if (!parts.every((part) => typeof part === "string")) return null;
-    return joinArgvBounded(parts, SCAN_MAX);
+    // Arrays are the supported argv shape, so every element reached inside the
+    // character budget must be a string -- including the first one.
+    return joinArgvBounded(value, SCAN_MAX);
   }
   return null;
 }
@@ -305,25 +454,58 @@ function commandTextFrom(value) {
 function buildReminderScanInput(rawInput) {
   if (!rawInput || typeof rawInput !== "object") return {};
   for (const key of COMMAND_KEYS) {
-    const text = commandTextFrom(rawInput[key]);
-    if (typeof text !== "string" || !text.trim()) continue;
+    const value = rawInput[key];
+    if (value === undefined) continue;
+    const text = commandTextFrom(value);
+    // A present but unsupported higher-priority field is not permission to scan
+    // a different field and pretend it described the accepted invocation.
+    if (typeof text !== "string") return {};
+    if (!text.trim()) continue;
     return { [key]: boundCommandString(text) };
   }
   return {};
 }
 
-// Split a matched segment into operands: drop the command word and any flags,
-// and unwrap a simply-quoted argument. Deliberately not a shell parser -- a
-// segment this cannot read plainly yields no operands, and no operands means no
-// exception.
-function operandsOf(segment) {
-  const parts = segment.trim().split(/\s+/).slice(1);
+const RM_SHORT_OPTIONS = new Set(["d", "f", "i", "I", "r", "R", "v"]);
+const RM_LONG_OPTIONS = new Set([
+  "--dir",
+  "--force",
+  "--help",
+  "--interactive",
+  "--no-preserve-root",
+  "--one-file-system",
+  "--preserve-root",
+  "--recursive",
+  "--verbose",
+  "--version",
+]);
+
+// Read rm operands from the same quote/redirection-aware token stream used by
+// the option exceptions. Unknown rm options fail closed because they may consume
+// an argument; after `--`, flag-looking words are targets and must be checked.
+function rmOperands(segment) {
+  const tokens = commandTokens(segment);
+  if (!tokens.length || tokens[0].value !== "rm") return null;
   const operands = [];
-  for (const part of parts) {
-    if (!part || part.startsWith("-")) continue;
-    const unquoted = /^(['"])(.*)\1$/.test(part) ? part.slice(1, -1) : part;
-    if (!unquoted) continue;
-    operands.push(unquoted);
+  let optionsActive = true;
+  for (let i = 1; i < tokens.length; i++) {
+    const value = tokens[i].value;
+    if (optionsActive && value === "--") {
+      optionsActive = false;
+      continue;
+    }
+    if (optionsActive && value.startsWith("--")) {
+      const eq = value.indexOf("=");
+      const name = eq === -1 ? value : value.slice(0, eq);
+      if (!RM_LONG_OPTIONS.has(name)) return null;
+      continue;
+    }
+    if (optionsActive && /^-[^-]/.test(value)) {
+      const names = value.slice(1);
+      if (![...names].every((name) => RM_SHORT_OPTIONS.has(name))) return null;
+      continue;
+    }
+    if (value) operands.push(value);
   }
   return operands;
 }
@@ -343,9 +525,54 @@ function isDisposablePath(rawOperand) {
 // Every operand must be disposable. `rm -rf dist src` is held, because one
 // unrecoverable target is enough.
 function deletesOnlyDisposablePaths(segment) {
-  const operands = operandsOf(segment);
-  if (operands.length === 0) return false;
+  const operands = rmOperands(segment);
+  if (!operands || operands.length === 0) return false;
   return operands.every(isDisposablePath);
+}
+
+function grantingFlags(invocation) {
+  if (!invocation || invocation.ambiguous) return [];
+  return invocation.flags.filter((flag) => flag.bareHead).map((flag) => flag.value);
+}
+
+function dryRunInvocation(match, segment) {
+  if (match.tag === "publish") {
+    const npmFamily = reviewedInvocation(
+      segment,
+      new Set(["npm", "pnpm", "yarn"]),
+      "publish",
+      OPTION_SPECS.npmPublish
+    );
+    if (npmFamily) return npmFamily;
+    return reviewedInvocation(segment, new Set(["cargo"]), "publish", OPTION_SPECS.cargoPublish);
+  }
+  if (match.tag === "infra-destroy") {
+    return reviewedInvocation(segment, new Set(["kubectl"]), "delete", OPTION_SPECS.kubectlDelete);
+  }
+  if (match.tag === "force-push") {
+    return reviewedInvocation(segment, new Set(["git"]), "push", OPTION_SPECS.gitPush);
+  }
+  return null;
+}
+
+function helpInvocation(match, segment) {
+  if (match.tag === "publish") {
+    return reviewedInvocation(
+      segment,
+      new Set(["npm", "pnpm", "yarn"]),
+      "publish",
+      OPTION_SPECS.npmPublish
+    );
+  }
+  if (match.tag === "infra-destroy") {
+    return reviewedInvocation(
+      segment,
+      new Set(["terraform"]),
+      "destroy",
+      OPTION_SPECS.terraformDestroy
+    );
+  }
+  return null;
 }
 
 /**
@@ -355,14 +582,21 @@ function deletesOnlyDisposablePaths(segment) {
 function documentedException(match) {
   const segment = match && typeof match.segment === "string" ? match.segment : "";
   if (!segment) return null;
-  const options = optionTokens(segment);
-  if (dryRunPerformsNothing(options.granting)) return "dry-run";
-  if (helpOnly(options.granting)) return "help";
-  if (
-    match.tag === "force-push"
-    && hasForceWithLease(options.granting)
-    && !hasPlainForce(options.all)      // cancels: read every word, quoted or not
-  ) return "force-with-lease";
+  const dryRun = dryRunInvocation(match, segment);
+  if (dryRunPerformsNothing(grantingFlags(dryRun))) return "dry-run";
+  const help = helpInvocation(match, segment);
+  if (helpOnly(grantingFlags(help))) return "help";
+  if (match.tag === "force-push") {
+    const gitPush = reviewedInvocation(segment, new Set(["git"]), "push", OPTION_SPECS.gitPush);
+    const granting = grantingFlags(gitPush);
+    const optionValues = gitPush ? gitPush.flags.map((flag) => flag.value) : [];
+    if (
+      gitPush
+      && !gitPush.ambiguous
+      && hasForceWithLease(granting)
+      && !hasPlainForce(optionValues)
+    ) return "force-with-lease";
+  }
   if (match.tag === "file-delete" && deletesOnlyDisposablePaths(segment)) {
     return "disposable-path";
   }

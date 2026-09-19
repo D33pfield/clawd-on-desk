@@ -3053,6 +3053,27 @@ describe("destructive-action reminder — the route stamps what it accepted", ()
     );
   });
 
+  it("fails closed on takeover regressions before an automatic allow can use the stamp", async () => {
+    const cases = [
+      ["psql -c --dry-run -c 'DROP TABLE users'", "db-destroy"],
+      [
+        `echo "$(git push --force-with-lease origin main && printf ')' && git reset --hard HEAD^)"`,
+        "history-rewrite",
+      ],
+      [`echo "it's $(rm -rf /etc)"`, "file-delete"],
+      ["git push --force-with-lease -fu origin main", "force-push"],
+      [[...new Array(300).fill("x"), "&&", "rm", "-rf", "/etc"], "file-delete"],
+      [["rm", "-rf", "/etc", 5], "scan-error"],
+    ];
+    for (const [command, tag] of cases) {
+      assert.deepStrictEqual(
+        await stampFor("claude-code", {}, command),
+        { hold: true, tag },
+        command
+      );
+    }
+  });
+
   it("carries a view on every accepted request", async () => {
     // The invariant that matters is totality at runtime, not a source-text count.
     // An earlier version of this lane compared call counts against the display-view
