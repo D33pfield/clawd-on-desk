@@ -29,6 +29,7 @@
 const {
   detectIrreversibleMatches,
   SCAN_MAX,
+  SCAN_TRUNCATED,
 } = require("./bubble-format");
 
 // Reason shown when the scan itself failed. Distinct from every pattern tag so
@@ -48,8 +49,8 @@ const NOT_INSPECTED_TAG = "not-inspected";
 // examined. Two shapes are supported: a command **string**, and an **array of
 // strings** (argv), which is joined with single spaces. Joining is a definition,
 // not a guess: it is the same text a shell would have received. A malformed
-// element inside an inspected argv is a scan error; a wholly unsupported
-// top-level shape yields no scan input and cannot fall through to a lower-
+// element inside an inspected argv is a scan error; a present unsupported
+// top-level shape is also a scan error and cannot fall through to a lower-
 // priority command field.
 const COMMAND_KEYS = ["command", "CommandLine", "Command", "cmd", "script"];
 
@@ -154,6 +155,7 @@ function shellTokens(segment) {
 
       let op = ch;
       if (ch === ">" && segment[i + 1] === ">") { op = ">>"; i++; }
+      else if (ch === ">" && segment[i + 1] === "|") { op = ">|"; i++; }
       else if (ch === ">" && segment[i + 1] === "&") { op = ">&"; i++; }
       else if (ch === "<" && segment[i + 1] === "<") {
         op = segment[i + 2] === "<" ? "<<<" : "<<";
@@ -178,7 +180,7 @@ function shellTokens(segment) {
 // `rm -rf ./d > "--dry-run"` writes to a file called --dry-run and deletes for
 // real. Reading tokens is what made this reachable -- the old regex could not
 // see the quoted spelling at all -- so the operand is dropped here.
-const REDIRECTION_OP = /^\d*(?:>>?|<<<|<<?|>&|<&|&>>?|<>)$/;
+const REDIRECTION_OP = /^\d*(?:>>?|>\||<<<|<<?|>&|<&|&>>?|<>)$/;
 
 // Two different things are being read here, and they read quoting OPPOSITELY.
 // A redirection operator is SYNTAX: quoting or escaping it removes it, so
@@ -193,7 +195,15 @@ function commandTokens(segment) {
   // removing it truncated the command at a filename and lost the real flag.
   const afterRedirection = [];
   for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i].redirection || (tokens[i].bare && REDIRECTION_OP.test(tokens[i].value))) { i++; continue; }
+    if (tokens[i].redirection || (tokens[i].bare && REDIRECTION_OP.test(tokens[i].value))) {
+      if (
+        i + 1 >= tokens.length
+        || tokens[i + 1].redirection
+        || (tokens[i + 1].bare && REDIRECTION_OP.test(tokens[i + 1].value))
+      ) return null;
+      i++;
+      continue;
+    }
     afterRedirection.push(tokens[i]);
   }
   return afterRedirection;
@@ -201,6 +211,7 @@ function commandTokens(segment) {
 
 function optionTokens(segment) {
   const afterRedirection = commandTokens(segment);
+  if (!afterRedirection) return null;
   const end = afterRedirection.findIndex((t) => t.value === "--");
   const scoped = end === -1 ? afterRedirection : afterRedirection.slice(0, end);
   // 🟥 The head test is applied in ONE direction only, and the direction is the
@@ -257,6 +268,7 @@ const OPTION_SPECS = Object.freeze({
 // same argv), but it never grants a safety exception itself.
 function reviewedInvocation(segment, commands, subcommand, spec) {
   const options = optionTokens(segment);
+  if (!options) return null;
   const tokens = options.tokens;
   if (tokens.length < 2 || !commands.has(tokens[0].value) || tokens[1].value !== subcommand) return null;
 
@@ -320,13 +332,16 @@ const DRY_RUN_TOKEN = /^--dry-?run(=(.*))?$/;
 // unnamed value failing closed costs a human glance rather than a deletion.
 const DRY_RUN_NONEXECUTING = new Set(["true", "client", "server"]);
 
-function dryRunPerformsNothing(tokens) {
+function dryRunPerformsNothing(tokens, allowBare) {
   let seen = false;
   for (const token of tokens) {
     const match = DRY_RUN_TOKEN.exec(token);
     if (!match) continue;
     seen = true;
-    if (match[1] === undefined) continue;
+    if (match[1] === undefined) {
+      if (allowBare === false) return false;
+      continue;
+    }
     if (!DRY_RUN_NONEXECUTING.has(String(match[2]).toLowerCase())) return false;
   }
   return seen;
@@ -415,21 +430,37 @@ function boundCommandString(value) {
 // `parts.join(" ").slice(0, max)` would for every input (verified by test:
 // the two are compared directly for a battery of small inputs), so this is
 // a performance fix, not a behavior change.
-function joinArgvBounded(parts, max) {
+function joinArgvBoundedResult(parts, max) {
   let out = "";
-  for (let i = 0; i < parts.length && out.length < max; i++) {
+  for (let i = 0; i < parts.length; i++) {
     if (i > 0) {
+      if (out.length >= max) return { text: out.slice(0, max), truncated: true };
       out += " ";
-      if (out.length >= max) break;
+      if (out.length >= max) {
+        const exactEmptyTail = i === parts.length - 1
+          && typeof parts[i] === "string"
+          && parts[i].length === 0;
+        return { text: out.slice(0, max), truncated: !exactEmptyTail };
+      }
     }
     const room = max - out.length;
     const part = parts[i];
     if (typeof part !== "string") {
       throw new TypeError("command argv contains a non-string element");
     }
-    out += part.length > room ? part.slice(0, room) : part;
+    if (part.length > room) {
+      return { text: out + part.slice(0, room), truncated: true };
+    }
+    out += part;
+    if (out.length >= max && i < parts.length - 1) {
+      return { text: out.slice(0, max), truncated: true };
+    }
   }
-  return out.length > max ? out.slice(0, max) : out;
+  return { text: out.length > max ? out.slice(0, max) : out, truncated: out.length > max };
+}
+
+function joinArgvBounded(parts, max) {
+  return joinArgvBoundedResult(parts, max).text;
 }
 
 /**
@@ -437,16 +468,19 @@ function joinArgvBounded(parts, max) {
  *
  * Returns an object carrying at most one command field, capped at SCAN_MAX
  * characters -- so the reminder's memory and time cost are fixed no matter how
- * large the accepted request was. Tools that carry no command field get `{}`,
- * which is still meaningful: the matcher recognizes explicit delete tools by
- * name alone.
+ * large the accepted request was. A non-enumerable marker records whether the
+ * chosen field was cut by that budget. Tools that carry no command field get
+ * `{}`, which is still meaningful: the matcher recognizes explicit delete tools
+ * by name alone. A present unreadable field throws so enforcement fails closed.
  */
 function commandTextFrom(value) {
-  if (typeof value === "string") return value;
+  if (typeof value === "string") {
+    return { text: boundCommandString(value), truncated: value.length > SCAN_MAX };
+  }
   if (Array.isArray(value)) {
     // Arrays are the supported argv shape, so every element reached inside the
     // character budget must be a string -- including the first one.
-    return joinArgvBounded(value, SCAN_MAX);
+    return joinArgvBoundedResult(value, SCAN_MAX);
   }
   return null;
 }
@@ -456,12 +490,16 @@ function buildReminderScanInput(rawInput) {
   for (const key of COMMAND_KEYS) {
     const value = rawInput[key];
     if (value === undefined) continue;
-    const text = commandTextFrom(value);
+    const result = commandTextFrom(value);
     // A present but unsupported higher-priority field is not permission to scan
     // a different field and pretend it described the accepted invocation.
-    if (typeof text !== "string") return {};
-    if (!text.trim()) continue;
-    return { [key]: boundCommandString(text) };
+    if (!result) throw new TypeError(`unsupported command field: ${key}`);
+    if (!result.text.trim()) continue;
+    const scanInput = { [key]: result.text };
+    if (result.truncated) {
+      Object.defineProperty(scanInput, SCAN_TRUNCATED, { value: true });
+    }
+    return scanInput;
   }
   return {};
 }
@@ -485,7 +523,7 @@ const RM_LONG_OPTIONS = new Set([
 // an argument; after `--`, flag-looking words are targets and must be checked.
 function rmOperands(segment) {
   const tokens = commandTokens(segment);
-  if (!tokens.length || tokens[0].value !== "rm") return null;
+  if (!tokens || !tokens.length || tokens[0].value !== "rm") return null;
   const operands = [];
   let optionsActive = true;
   for (let i = 1; i < tokens.length; i++) {
@@ -557,20 +595,32 @@ function dryRunInvocation(match, segment) {
 
 function helpInvocation(match, segment) {
   if (match.tag === "publish") {
-    return reviewedInvocation(
+    const npmFamily = reviewedInvocation(
       segment,
       new Set(["npm", "pnpm", "yarn"]),
       "publish",
       OPTION_SPECS.npmPublish
     );
+    if (npmFamily) return npmFamily;
+    return reviewedInvocation(segment, new Set(["cargo"]), "publish", OPTION_SPECS.cargoPublish);
   }
   if (match.tag === "infra-destroy") {
+    const kubectl = reviewedInvocation(
+      segment,
+      new Set(["kubectl"]),
+      "delete",
+      OPTION_SPECS.kubectlDelete
+    );
+    if (kubectl) return kubectl;
     return reviewedInvocation(
       segment,
       new Set(["terraform"]),
       "destroy",
       OPTION_SPECS.terraformDestroy
     );
+  }
+  if (match.tag === "force-push") {
+    return reviewedInvocation(segment, new Set(["git"]), "push", OPTION_SPECS.gitPush);
   }
   return null;
 }
@@ -583,7 +633,10 @@ function documentedException(match) {
   const segment = match && typeof match.segment === "string" ? match.segment : "";
   if (!segment) return null;
   const dryRun = dryRunInvocation(match, segment);
-  if (dryRunPerformsNothing(grantingFlags(dryRun))) return "dry-run";
+  // npm/cargo/git document a bare boolean dry-run. kubectl's flag has an
+  // explicit none/client/server value space, so only the known non-executing
+  // client/server spellings earn an exception.
+  if (dryRunPerformsNothing(grantingFlags(dryRun), match.tag !== "infra-destroy")) return "dry-run";
   const help = helpInvocation(match, segment);
   if (helpOnly(grantingFlags(help))) return "help";
   if (match.tag === "force-push") {

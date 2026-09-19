@@ -139,6 +139,9 @@ const EXCEPTION = [
   ["disposable dir contents", "rm -rf dist/*", "file-delete", "disposable-path"],
   ["disposable dir contents, dot-slash", "rm -rf ./node_modules/*", "file-delete", "disposable-path"],
   ["asking publish to describe itself", "npm publish --help", "publish", "help"],
+  ["asking cargo publish to describe itself", "cargo publish --help", "publish", "help"],
+  ["asking kubectl delete to describe itself", "kubectl delete pod api --help", "infra-destroy", "help"],
+  ["asking a force push to describe itself", "git push --force --help", "force-push", "help"],
   ["asking destroy to describe itself", "terraform destroy --help", "infra-destroy", "help"],
 ];
 
@@ -207,14 +210,18 @@ describe("destructive reminder — unmatched requests keep today's behavior", ()
     assert.equal(evaluatePermissionReminder("Bash", { command: ["echo", "git push --force"] }), null);
   });
 
-  it("a shape that is not a command line yields no scan input", () => {
+  it("a present command field with an unreadable shape fails closed", () => {
     for (const command of [42, { cmd: "rm -rf src" }, null]) {
-      assert.equal(evaluatePermissionReminder("Bash", { command }), null, String(command));
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command }),
+        { hold: true, tag: SCAN_ERROR_TAG },
+        String(command)
+      );
     }
-    assert.deepEqual(
-      buildReminderScanInput({ command: 42, script: "rm -rf /etc" }),
-      {},
-      "an unreadable higher-priority key must not fall through to another command field"
+    assert.throws(
+      () => buildReminderScanInput({ command: 42, script: "rm -rf /etc" }),
+      /unsupported command field/,
+      "an unreadable higher-priority key must fail closed instead of falling through"
     );
   });
 
@@ -365,6 +372,7 @@ const DRY_RUN_EXECUTES = [
   ["an unknown value is not assumed to be non-executing", "kubectl delete namespace prod --dry-run=bogus", "infra-destroy"],
   ["an empty value", "kubectl delete namespace prod --dry-run=", "infra-destroy"],
   ["a non-executing value does not cover an executing one beside it", "kubectl delete ns prod --dry-run=client --dry-run=none", "infra-destroy"],
+  ["kubectl's missing dry-run value is not positively allow-listed", "kubectl delete namespace prod --dry-run", "infra-destroy"],
 ];
 
 const DRY_RUN_PERFORMS_NOTHING = [
@@ -863,6 +871,36 @@ describe("destructive reminder — reads the request before display-preview trun
     assert.equal(evaluatePermissionReminder("Bash", { command }), null);
   });
 
+  it("a budget cut inside a quote remains a documented miss, not scan-error", () => {
+    for (const command of [
+      `git commit -m "${"x".repeat(SCAN_MAX + 100)}"`,
+      `curl -d '{"a":"${"x".repeat(SCAN_MAX + 100)}"}' http://x`,
+      `echo "${"x".repeat(SCAN_MAX + 100)}"`,
+    ]) {
+      assert.equal(evaluatePermissionReminder("Bash", { command }), null, command.slice(0, 40));
+    }
+    assert.equal(
+      evaluatePermissionReminder("Bash", { command: ["echo", `"${"x".repeat(SCAN_MAX + 100)}"`] }),
+      null,
+      "argv truncation must carry the same budget provenance as a command string"
+    );
+
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", {
+        command: `rm -rf /etc && echo "${"x".repeat(SCAN_MAX + 100)}"`,
+      }),
+      { hold: true, tag: "file-delete" },
+      "a known match inside the inspected prefix must survive a later budget cut"
+    );
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", {
+        command: ["rm", "-rf", "/etc", "&&", "echo", `"${"x".repeat(SCAN_MAX + 100)}"`],
+      }),
+      { hold: true, tag: "file-delete" },
+      "an argv match inside the inspected prefix must survive a later budget cut"
+    );
+  });
+
   it("a megabyte of input stays fast", () => {
     const command = `${"a".repeat(1024 * 1024)} && rm -rf src`;
     const started = process.hrtime.bigint();
@@ -994,6 +1032,9 @@ describe("destructive reminder — takeover fail-closed regressions", () => {
       ["git push --force --exec --dry-run origin main", "force-push"],
       ["git push --force -o --dry-run origin main", "force-push"],
       ["kubectl delete --raw --dry-run=client namespace prod", "infra-destroy"],
+      ["cargo publish --token --help", "publish"],
+      ["kubectl delete --raw --help namespace prod", "infra-destroy"],
+      ["git push --force --push-option --help origin main", "force-push"],
     ];
     for (const [command, tag] of cases) {
       assert.deepEqual(
@@ -1121,6 +1162,39 @@ describe("destructive reminder — takeover fail-closed regressions", () => {
       "rm -rf dist > /dev/null",
       "rm -rf dist > /dev/null 2>&1",
       "rm -rf node_modules >>cleanup.log",
+    ]) {
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command }),
+        { hold: false, tag: "file-delete", exception: "disposable-path" },
+        command
+      );
+    }
+  });
+
+  it("never excuses a disposable path when redirection parsing hides a later target", () => {
+    for (const command of [
+      "rm -rf dist <&0 /etc",
+      "rm -rf dist <&1 important",
+      "rm -rf dist 2<&0 /var/lib",
+      "rm -rf dist >| out /etc",
+      "rm -rf dist <&0 /etc /var",
+      "rm -rf dist >",
+      "rm -rf dist <",
+      "rm -rf dist 2>",
+    ]) {
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command }),
+        { hold: true, tag: "file-delete" },
+        command
+      );
+    }
+  });
+
+  it("keeps complete fd and noclobber redirections on disposable-only deletes excused", () => {
+    for (const command of [
+      "rm -rf dist <&0",
+      "rm -rf dist 2<&1",
+      "rm -rf dist >| cleanup.log",
     ]) {
       assert.deepEqual(
         evaluatePermissionReminder("Bash", { command }),
@@ -1510,6 +1584,8 @@ describe("destructive reminder — runtime behavior", () => {
     });
     assert.equal(off.permission.maybeStartRemoteApproval(off.entry), true);
     assert.doesNotMatch(requests[1].detail, /matched: force push/);
+    assert.doesNotMatch(requests[1].detail, /force-push/,
+      "the internal tag must stay absent when the reminder setting is off");
   });
 
   // Field-measured 2026-09-16 (real machine, Telegram, bubbles off): the card

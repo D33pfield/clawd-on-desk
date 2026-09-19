@@ -115,6 +115,18 @@ describe("bubble wiring — badge is display-only", () => {
     assert.doesNotMatch(bubbleRenderer, /cannot be undone/);
     assert.match(bubbleRenderer, /may not be recoverable/);
   });
+
+  it("keeps an already-proven destructive hint when later syntax is incomplete", () => {
+    for (const command of [
+      'rm -rf /etc && echo "abc',
+      "rm -rf /etc && echo $(x",
+      "echo $(rm -rf /etc) && echo `x",
+    ]) {
+      const result = detectIrreversible("Bash", { command });
+      assert.ok(result, command);
+      assert.strictEqual(result.tag, "file-delete", command);
+    }
+  });
 });
 
 describe("detectIrreversible — command-position anchoring (quoted/echoed text never flags)", () => {

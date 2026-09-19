@@ -143,8 +143,11 @@
   });
 
   function formatReminderReason(tag, lang) {
-    const dict = REMINDER_REASON_LABELS[lang] || REMINDER_REASON_LABELS.en;
-    return typeof tag === "string" && dict[tag] ? dict[tag] : dict.unknown;
+    const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+    const dict = typeof lang === "string" && hasOwn(REMINDER_REASON_LABELS, lang)
+      ? REMINDER_REASON_LABELS[lang]
+      : REMINDER_REASON_LABELS.en;
+    return typeof tag === "string" && hasOwn(dict, tag) ? dict[tag] : dict.unknown;
   }
 
   function formatAntigravityDetail(name, input, options) {
@@ -312,6 +315,11 @@
   // at most SEGMENT_MAX shell segments are ever examined.
   const SCAN_MAX = 4096;
   const SEGMENT_MAX = 50;
+  // The enforcement path bounds raw input before it reaches this shared
+  // matcher. Preserve that provenance without adding another enumerable input
+  // field, so a quote cut by the budget remains a documented miss rather than
+  // being mistaken for malformed syntax inside the inspected request.
+  const SCAN_TRUNCATED = Symbol.for("clawd.permission-reminder.scan-truncated");
   // Wrappers that prefix a command without changing what it runs.
   const WRAPPER = /^(sudo(\s+-[A-Za-z]+)*|env|nohup|time|command)\s+|^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/;
 
@@ -323,8 +331,9 @@
     // the rest as quoted = no split = the quiet direction (precision over recall).
     const segs = [];
     let cur = "", quote = null;
-    // True only when the character just appended was an UNQUOTED, UNESCAPED '>'.
-    // `cur` ending in '>' is a different question: in `echo \\>& rm -rf x` that '>'
+    // True only when the character just appended was an UNQUOTED, UNESCAPED
+    // redirection introducer (`<` or `>`). `cur` ending in one is a different
+    // question: in `echo \\>& rm -rf x` that '>'
     // is an argument to echo, so the '&' after it really does separate commands.
     let lastWasRedirect = false;
     // Whether the NEXT character starts a shell word. `#` opens a comment only
@@ -388,8 +397,11 @@
       // stayed ONE segment: only the publish matched, and a caller's exception
       // for it then covered a delete that was never examined. `&>` and `>&` are
       // redirections rather than separators and stay joined to their command.
+      // The same applies to `<&` and `>|`: splitting either pair can hide a
+      // later rm operand behind a disposable-path exception.
       const ampSeparates = ch === "&" && cmd[i + 1] !== ">" && !lastWasRedirect;
-      if (ch === "\n" || ch === ";" || ch === "|" || ampSeparates) {
+      const pipeSeparates = ch === "|" && !lastWasRedirect;
+      if (ch === "\n" || ch === ";" || pipeSeparates || ampSeparates) {
         if (ch === "&" && cmd[i + 1] === "&") i++;  // consume '&&' second amp
         if (cmd[i + 1] === "|" && ch === "|") i++;  // consume '||' second bar
         segs.push(cur); cur = "";
@@ -398,7 +410,7 @@
         continue;
       }
       cur += ch;
-      lastWasRedirect = ch === ">";
+      lastWasRedirect = ch === ">" || ch === "<";
       // Same IFS point: a carriage return does not start a new word, so it does
       // not put a following `#` at a word start. `echo safe\r#; rm -rf ./d`
       // runs the delete, and reading CR as whitespace hid it behind a comment.
@@ -419,8 +431,9 @@
   // match when an earlier match is excused. Keep its lexical state explicit:
   // parentheses and apostrophes inside quotes are data, while substitutions inside
   // double quotes still execute. `$((` is arithmetic, not a command position.
-  // A syntactically incomplete body throws; the enforcement caller converts that to
-  // a human hold while the display-only caller keeps its existing fail-quiet policy.
+  // A syntactically incomplete body is reported after any earlier complete
+  // segments are collected. The enforcement caller converts it to a human hold;
+  // the display-only caller may retain only an already-proven earlier hint.
   class ScanIncompleteError extends Error {
     constructor(message) {
       super(message);
@@ -495,10 +508,15 @@
   function substitutionBodies(cmd) {
     const out = [];
     let quote = null;
+    let quoteStart = -1;
+    let incomplete = false;
     for (let i = 0; i < cmd.length; i++) {
       const ch = cmd[i];
       if (quote === "'") {
-        if (ch === "'") quote = null;
+        if (ch === "'") {
+          quote = null;
+          quoteStart = -1;
+        }
         continue;
       }
       if (quote === '"') {
@@ -508,6 +526,7 @@
         }
         if (ch === '"') {
           quote = null;
+          quoteStart = -1;
           continue;
         }
       } else {
@@ -518,33 +537,58 @@
         }
         if (ch === "'") {
           quote = ch;
+          quoteStart = i;
           continue;
         }
         if (ch === '"') {
           quote = ch;
+          quoteStart = i;
           continue;
         }
       }
       if (ch === "$" && cmd[i + 1] === "(" && cmd[i + 2] !== "(") {
-        const j = dollarSubstitutionEnd(cmd, i);
+        let j;
+        try {
+          j = dollarSubstitutionEnd(cmd, i);
+        } catch (error) {
+          if (!(error instanceof ScanIncompleteError)) throw error;
+          incomplete = true;
+          break;
+        }
         const body = cmd.slice(i + 2, j);
-        if (body.trim()) out.push(body);
+        if (body.trim()) out.push({ body, start: i });
         i = j;
         continue;
       }
       if (ch === "`") {
-        const end = backtickEnd(cmd, i);
+        let end;
+        try {
+          end = backtickEnd(cmd, i);
+        } catch (error) {
+          if (!(error instanceof ScanIncompleteError)) throw error;
+          incomplete = true;
+          break;
+        }
         const body = cmd.slice(i + 1, end);
-        if (body.trim()) out.push(body);
+        if (body.trim()) out.push({ body, start: i });
         i = end;
       }
     }
-    if (quote) throw new ScanIncompleteError("unterminated shell quote");
-    return out;
+    if (quote) incomplete = true;
+    // A completed substitution inside a quote that never closes is part of the
+    // malformed construct itself, not an independently proven command. Keep
+    // bodies that completed before a later malformed quote/substitution, which
+    // lets the display retain an earlier useful hint without inventing one from
+    // the uncertain suffix.
+    const completed = quote
+      ? out.filter((entry) => entry.start < quoteStart)
+      : out;
+    return { bodies: completed.map((entry) => entry.body), incomplete };
   }
 
   function segmentCommands(cmd, depth) {
     const out = [];
+    let incomplete = false;
     const d = depth || 0;
     for (let seg of splitOutsideQuotes(cmd)) {
       seg = seg.trim();
@@ -569,22 +613,26 @@
     // Depth cap: a substitution inside a substitution is real but unbounded recursion
     // on attacker-shaped input is not worth it. 3 levels, and the segment cap applies.
     if (d < 3) {
-      for (const body of substitutionBodies(cmd)) {
+      const substitutions = substitutionBodies(cmd);
+      incomplete = substitutions.incomplete;
+      for (const body of substitutions.bodies) {
         if (out.length >= SEGMENT_MAX) break;
-        for (const s of segmentCommands(body, d + 1)) {
+        const nested = segmentCommands(body, d + 1);
+        incomplete = incomplete || nested.incomplete;
+        for (const s of nested.segments) {
           if (out.length >= SEGMENT_MAX) break;
           out.push(s);
         }
       }
     }
-    return out;
+    return { segments: out, incomplete };
   }
 
   // One pattern list, two error policies. detectIrreversibleStrict lets a
   // surprise throw so a caller can decide what a failed scan means; the display
-  // wrapper below swallows it, because a hint must never be able to break the
-  // bubble. Splitting the *policy* rather than the matcher is what keeps a
-  // second caller from drifting into a second pattern list.
+  // wrapper below never propagates it and retains only matches collected before
+  // an incomplete suffix. Splitting the *policy* rather than the matcher is what
+  // keeps a second caller from drifting into a second pattern list.
   // The matched `segment` is returned so a caller can apply its own carve-outs
   // (a documented `--dry-run` exception, say) without re-splitting the command.
   // Every destructive decision in the request, not just the first one.
@@ -612,18 +660,28 @@
       if (!cmd) return found;
       // Cap the scanned prefix: the command string is attacker-influenced (a
       // prompt-injected agent controls it). Hard cap = O(4KB) by construction.
-      if (cmd.length > SCAN_MAX) cmd = cmd.slice(0, SCAN_MAX);
-      for (const seg of segmentCommands(cmd)) {
+      let truncated = obj[SCAN_TRUNCATED] === true;
+      if (cmd.length > SCAN_MAX) {
+        cmd = cmd.slice(0, SCAN_MAX);
+        truncated = true;
+      }
+      const scan = segmentCommands(cmd);
+      for (const seg of scan.segments) {
         for (const p of IRREVERSIBLE_PATTERNS) {
           if (p.re.test(seg)) {
             found.push({ tag: p.tag, segment: seg });
-            if (found.length >= limit) return found;
+            if (found.length >= limit && (!scan.incomplete || truncated)) return found;
           }
         }
         if (DB_CLIENTS.test(seg) && DB_DESTROY.test(seg)) {
           found.push({ tag: "db-destroy", segment: seg });
-          if (found.length >= limit) return found;
+          if (found.length >= limit && (!scan.incomplete || truncated)) return found;
         }
+      }
+      if (scan.incomplete && !truncated) {
+        const error = new ScanIncompleteError("incomplete shell syntax");
+        error.partialMatches = found.slice(0, limit);
+        throw error;
       }
       return found;
     }
@@ -646,7 +704,12 @@
   function detectIrreversible(name, input) {
     try {
       return detectIrreversibleStrict(name, input);
-    } catch (_e) {
+    } catch (error) {
+      if (
+        error instanceof ScanIncompleteError
+        && Array.isArray(error.partialMatches)
+        && error.partialMatches.length
+      ) return error.partialMatches[0];
       // Display-only helper on the permission path — a hint must never be able to
       // break the bubble (which blocks tool execution). Any surprise → no hint.
       return null;
@@ -668,7 +731,7 @@
     return { server, tool, display };
   }
 
-  const api = { formatDetail, formatAntigravityDetail, formatReminderReason, truncate, firstStringValue, parseMcpToolName, detectIrreversible, detectIrreversibleStrict, detectIrreversibleMatches, SCAN_MAX, SEGMENT_MAX };
+  const api = { formatDetail, formatAntigravityDetail, formatReminderReason, truncate, firstStringValue, parseMcpToolName, detectIrreversible, detectIrreversibleStrict, detectIrreversibleMatches, SCAN_MAX, SEGMENT_MAX, SCAN_TRUNCATED };
 
   if (typeof module === "object" && module.exports) {
     module.exports = api;

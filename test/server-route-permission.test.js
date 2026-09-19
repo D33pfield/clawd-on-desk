@@ -3062,8 +3062,10 @@ describe("destructive-action reminder — the route stamps what it accepted", ()
       ],
       [`echo "it's $(rm -rf /etc)"`, "file-delete"],
       ["git push --force-with-lease -fu origin main", "force-push"],
+      ["rm -rf dist <&0 /etc", "file-delete"],
       [[...new Array(300).fill("x"), "&&", "rm", "-rf", "/etc"], "file-delete"],
       [["rm", "-rf", "/etc", 5], "scan-error"],
+      [null, "scan-error"],
     ];
     for (const [command, tag] of cases) {
       assert.deepStrictEqual(
@@ -3072,6 +3074,13 @@ describe("destructive-action reminder — the route stamps what it accepted", ()
         command
       );
     }
+  });
+
+  it("keeps an incomplete quote caused only by the scan budget as unmatched", async () => {
+    assert.strictEqual(
+      await stampFor("claude-code", {}, `echo "${"x".repeat(5000)}"`),
+      null
+    );
   });
 
   it("carries a view on every accepted request", async () => {

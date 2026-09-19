@@ -20,6 +20,13 @@ describe("bubble-format reminder reason labels", () => {
     assert.strictEqual(formatReminderReason("future-internal-tag", "zh"), "破坏性操作");
     assert.strictEqual(formatReminderReason("force-push", "unsupported"), "force push");
   });
+
+  it("treats inherited object names as unknown tags and languages", () => {
+    for (const tag of ["constructor", "__proto__", "toString"]) {
+      assert.strictEqual(formatReminderReason(tag, "en"), "destructive action");
+    }
+    assert.strictEqual(formatReminderReason("force-push", "constructor"), "force push");
+  });
 });
 
 describe("bubble-format truncate", () => {
