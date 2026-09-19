@@ -458,6 +458,8 @@
   function dollarSubstitutionEnd(cmd, start) {
     let depth = 1;
     let quote = null;
+    let atWordStart = true;
+    let lastWasRedirect = false;
     for (let i = start + 2; i < cmd.length; i++) {
       const ch = cmd[i];
       if (quote === "'") {
@@ -482,27 +484,61 @@
         }
         continue;
       }
+      if (ch === "\\" && cmd[i + 1] === "\n") {
+        i++;
+        continue;
+      }
       if (ch === "\\") {
         if (i + 1 >= cmd.length) break;
         i++;
+        atWordStart = false;
+        lastWasRedirect = false;
         continue;
       }
       if (ch === "'" || ch === '"') {
         quote = ch;
+        atWordStart = false;
+        lastWasRedirect = false;
+        continue;
+      }
+      if (ch === "#" && atWordStart) {
+        const nl = cmd.indexOf("\n", i);
+        if (nl === -1) break;
+        i = nl - 1;
+        atWordStart = true;
+        lastWasRedirect = false;
         continue;
       }
       if (ch === "`") {
         i = backtickEnd(cmd, i);
+        atWordStart = false;
+        lastWasRedirect = false;
         continue;
       }
       if (ch === "(") {
         depth++;
+        atWordStart = true;
+        lastWasRedirect = false;
         continue;
       }
       if (ch === ")") {
         depth--;
         if (depth === 0) return i;
+        atWordStart = true;
+        lastWasRedirect = false;
+        continue;
       }
+      const ampSeparates = ch === "&" && cmd[i + 1] !== ">" && !lastWasRedirect;
+      const pipeSeparates = ch === "|" && !lastWasRedirect;
+      if (ch === "\n" || ch === ";" || pipeSeparates || ampSeparates) {
+        if (ch === "&" && cmd[i + 1] === "&") i++;
+        if (ch === "|" && cmd[i + 1] === "|") i++;
+        atWordStart = true;
+        lastWasRedirect = false;
+        continue;
+      }
+      lastWasRedirect = ch === ">" || ch === "<";
+      atWordStart = ch === " " || ch === "\t" || ch === "\n";
     }
     throw new ScanIncompleteError("unterminated command substitution");
   }
@@ -512,6 +548,8 @@
     let quote = null;
     let quoteStart = -1;
     let incomplete = false;
+    let atWordStart = true;
+    let lastWasRedirect = false;
     for (let i = 0; i < cmd.length; i++) {
       const ch = cmd[i];
       if (quote === "'") {
@@ -532,21 +570,52 @@
           continue;
         }
       } else {
+        if (ch === "\\" && cmd[i + 1] === "\n") {
+          i++;
+          continue;
+        }
         if (ch === "\\") {
           if (i + 1 >= cmd.length) break;
           i++;
+          atWordStart = false;
+          lastWasRedirect = false;
           continue;
         }
         if (ch === "'") {
           quote = ch;
           quoteStart = i;
+          atWordStart = false;
+          lastWasRedirect = false;
           continue;
         }
         if (ch === '"') {
           quote = ch;
           quoteStart = i;
+          atWordStart = false;
+          lastWasRedirect = false;
           continue;
         }
+      }
+      // Use the same shell word-start rule as the direct segment pass. The
+      // contents of a trailing comment are not command text, so apostrophes
+      // and substitution markers inside it must not turn a valid command into
+      // a scan error or an invented destructive match.
+      if (ch === "#" && atWordStart) {
+        const nl = cmd.indexOf("\n", i);
+        if (nl === -1) break;
+        i = nl - 1;
+        atWordStart = true;
+        lastWasRedirect = false;
+        continue;
+      }
+      const ampSeparates = ch === "&" && cmd[i + 1] !== ">" && !lastWasRedirect;
+      const pipeSeparates = ch === "|" && !lastWasRedirect;
+      if (ch === "\n" || ch === ";" || pipeSeparates || ampSeparates) {
+        if (ch === "&" && cmd[i + 1] === "&") i++;
+        if (ch === "|" && cmd[i + 1] === "|") i++;
+        atWordStart = true;
+        lastWasRedirect = false;
+        continue;
       }
       if (ch === "$" && cmd[i + 1] === "(" && cmd[i + 2] !== "(") {
         let j;
@@ -560,6 +629,8 @@
         const body = cmd.slice(i + 2, j);
         if (body.trim()) out.push({ body, start: i });
         i = j;
+        atWordStart = false;
+        lastWasRedirect = false;
         continue;
       }
       if (ch === "`") {
@@ -574,7 +645,12 @@
         const body = cmd.slice(i + 1, end);
         if (body.trim()) out.push({ body, start: i });
         i = end;
+        atWordStart = false;
+        lastWasRedirect = false;
+        continue;
       }
+      lastWasRedirect = ch === ">" || ch === "<";
+      atWordStart = ch === " " || ch === "\t" || ch === "\n";
     }
     if (quote) incomplete = true;
     // A completed substitution inside a quote that never closes is part of the

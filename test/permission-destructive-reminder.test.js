@@ -720,13 +720,19 @@ describe("destructive reminder — shell context decides whether a word is a com
     );
   });
 
-  it("KNOWN MISS: a comment inside a command substitution is not modelled", () => {
-    // Bash comments the rm out; this scanner does not parse `$(` or backticks, so
-    // it reads the inner text as ordinary command positions and holds. The
-    // direction is a false HOLD, which costs a human glance rather than an
-    // unreviewed deletion, and it is pinned here so the boundary is visible.
+  it("models closing delimiters inside comments in dollar substitutions", () => {
+    // The direct segment pass still reads a command-looking body after `$(`# as
+    // command positions, a known false-hold direction. Keep it explicit while
+    // ensuring a `)` inside that comment cannot truncate a quoted substitution
+    // and hide the real command on the next line.
     assert.deepEqual(
       evaluatePermissionReminder("Bash", { command: "echo $(# harmless; rm -rf ./d\n echo ok)" }),
+      { hold: true, tag: "file-delete" }
+    );
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", {
+        command: `echo "$(echo ok # ) don't close\n rm -rf /etc)"`,
+      }),
       { hold: true, tag: "file-delete" }
     );
     // Control: the same text with no substitution really is a comment.
@@ -843,6 +849,23 @@ describe("destructive reminder — known misses at the inspection budget", () =>
       evaluatePermissionReminder("Bash", { command: inside }),
       { hold: true, tag: SCAN_ERROR_TAG },
       "the same malformed segment inside the budget must still fail closed"
+    );
+  });
+
+  it("KNOWN MISS: an excused match before the character cap can remain the whole verdict", () => {
+    const command = `git push --force-with-lease origin main && echo ${"x".repeat(SCAN_MAX)} && rm -rf /etc`;
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command }),
+      { hold: false, tag: "force-push", exception: "force-with-lease" },
+      "the remainder is outside the explicit character budget and was not inspected"
+    );
+  });
+
+  it("KNOWN FALSE HOLD: heredoc bodies are not parsed as data", () => {
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "cat <<EOF\nit's fine\nEOF" }),
+      { hold: true, tag: SCAN_ERROR_TAG },
+      "heredoc parsing remains outside this repair's shell-scanner scope"
     );
   });
 
@@ -1134,6 +1157,29 @@ describe("destructive reminder — takeover fail-closed regressions", () => {
         command
       );
     }
+  });
+
+  it("ignores substitutions and apostrophes inside real trailing comments", () => {
+    for (const command of [
+      "echo ok # don't",
+      "npm install # it's fine",
+      `git commit -m "ok" # don't push`,
+      "echo ok # $(rm -rf /etc)",
+      "echo $(echo ok # don't\n)",
+      `echo "$(echo ok # don't\n)"`,
+    ]) {
+      assert.equal(evaluatePermissionReminder("Bash", { command }), null, command);
+    }
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "rm -rf /etc # don't" }),
+      { hold: true, tag: "file-delete" },
+      "a real command before the comment must retain its reason rather than becoming scan-error"
+    );
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "echo word# don't" }),
+      { hold: true, tag: SCAN_ERROR_TAG },
+      "# inside a word is literal, so the unmatched apostrophe remains real syntax"
+    );
   });
 
   it("treats incomplete substitution syntax differently in the gate and display hint", () => {
