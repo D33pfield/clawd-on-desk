@@ -630,7 +630,7 @@ describe("Claude AppImage statusline", () => {
 
   it("migrates the exact released mount-scoped statusline into the persistent generation", () => {
     const { options, settingsPath } = makeOptions();
-    const legacyScript = "/tmp/.mount_ClawdABC/resources/app.asar.unpacked/hooks/claude-statusline.js";
+    const legacyScript = "/tmp/.mount_Clawd-ABC123/resources/app.asar.unpacked/hooks/claude-statusline.js";
     fs.writeFileSync(settingsPath, JSON.stringify({
       statusLine: { type: "command", command: `"${process.execPath}" "${legacyScript}"`, padding: 0 },
     }));
@@ -640,12 +640,12 @@ describe("Claude AppImage statusline", () => {
     assert.strictEqual(result.changed, true);
     const command = JSON.parse(fs.readFileSync(settingsPath, "utf8")).statusLine.command;
     assert.ok(command.includes("appimage-hooks"), command);
-    assert.ok(!command.includes(".mount_ClawdABC"), command);
+    assert.ok(!command.includes(".mount_Clawd-ABC123"), command);
   });
 
   it("can explicitly uninstall the exact released mount-scoped statusline without an owner record", () => {
     const { options, settingsPath } = makeOptions();
-    const legacyScript = "/tmp/.mount_ClawdABC/resources/app.asar.unpacked/hooks/claude-statusline.js";
+    const legacyScript = "/tmp/.mount_Clawd-ABC123/resources/app.asar.unpacked/hooks/claude-statusline.js";
     fs.writeFileSync(settingsPath, JSON.stringify({
       statusLine: { type: "command", command: `"${process.execPath}" "${legacyScript}"`, padding: 0 },
       model: "opus",
@@ -657,6 +657,51 @@ describe("Claude AppImage statusline", () => {
     const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
     assert.strictEqual(settings.statusLine, undefined);
     assert.strictEqual(settings.model, "opus");
+  });
+
+  it("does not claim another AppImage's same-basename Claude statusline", () => {
+    const { root } = makeOptions();
+    const ownershipPaths = {
+      localSidecar: path.join(root, "missing-local-chain.json"),
+      remoteSidecarPath: path.join(root, "missing-remote-chain.json"),
+      plainOwnerPath: path.join(root, "missing-plain-owner.json"),
+    };
+    for (const mount of ["VendorABC", "ClawdSABC123"]) {
+      const existing = {
+        type: "command",
+        command: `"${process.execPath}" "/tmp/.mount_${mount}/resources/app.asar.unpacked/hooks/claude-statusline.js"`,
+        padding: 0,
+      };
+      const ownership = install.__test.classifyManagedClaudeStatusline(existing, {
+        expectedScript: "/expected/claude-statusline.js",
+        platform: "linux",
+        ...ownershipPaths,
+      });
+      assert.strictEqual(ownership.classification, "ambiguous", mount);
+      assert.notStrictEqual(ownership.classification, "owned", mount);
+    }
+  });
+
+  it("keeps both released Clawd AppImage mount prefixes eligible for statusline migration", () => {
+    const { root } = makeOptions();
+    const ownershipPaths = {
+      localSidecar: path.join(root, "missing-local-chain.json"),
+      remoteSidecarPath: path.join(root, "missing-remote-chain.json"),
+      plainOwnerPath: path.join(root, "missing-plain-owner.json"),
+    };
+    for (const mount of ["Clawd-ABC123", "Clawd ABC123"]) {
+      const existing = {
+        type: "command",
+        command: `"${process.execPath}" "/tmp/.mount_${mount}/resources/app.asar.unpacked/hooks/claude-statusline.js"`,
+        padding: 0,
+      };
+      const ownership = install.__test.classifyManagedClaudeStatusline(existing, {
+        expectedScript: "/expected/claude-statusline.js",
+        platform: "linux",
+        ...ownershipPaths,
+      });
+      assert.strictEqual(ownership.classification, "owned", mount);
+    }
   });
 
   it("fails closed before any settings/sidecar mutation when materialization fails", () => {

@@ -310,6 +310,7 @@ function handleStatePost(req, res, options) {
       // but they must not create attacker-chosen state buckets. Permission
       // cleanup remains gated by the original verdict captured above.
       if (!hasExplicitPermissionLifecycleSession) session_id = undefined;
+      const usesBuiltInDefaultStateBucket = !session_id && agentIdentity.source !== "custom";
       // State sessions share one process-wide Map keyed only by session id.
       // Registered custom applications commonly send generic ids such as
       // "default" or "project-a", so namespace them at the trust boundary to
@@ -324,7 +325,17 @@ function handleStatePost(req, res, options) {
           ? rawCustomSessionId
           : `${customSessionPrefix}${rawCustomSessionId}`;
       }
+      // Missing/default built-in identities are deliberately ineligible for
+      // permission cleanup, but their lifecycle state still needs a bounded
+      // bucket. Namespace that fallback by agent so one agent cannot replace
+      // or end another agent's `default` state. Keep the public raw id below
+      // as `default` so Kiro's cwd-scoped aliases and existing UI contracts do
+      // not acquire the internal namespace.
+      if (!session_id) session_id = `${agentId}:default`;
       const sessionIdentity = resolveSessionIdentity(session_id, trustedProfileId, "default");
+      const rawStateSessionId = usesBuiltInDefaultStateBucket
+        ? "default"
+        : sessionIdentity.rawSessionId;
       session_id = sessionIdentity.sessionId;
       const host = remoteProfile && typeof remoteProfile.displayHost === "string"
         ? remoteProfile.displayHost
@@ -980,7 +991,7 @@ function handleStatePost(req, res, options) {
             ...(recapBoundary ? { recapBoundary } : {}),
             ...((recapIsSubagent || codexHookState.headless === true) ? { recapIsSubagent: true } : {}),
             profileId: sessionIdentity.profileId,
-            rawSessionId: sessionIdentity.rawSessionId,
+            rawSessionId: rawStateSessionId,
             host,
             wslDistro,
             headless: headless || codexHookState.headless === true,

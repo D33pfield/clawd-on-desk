@@ -75,7 +75,12 @@ function isLegacyAppImageHookPath(value, filename) {
   const escaped = String(filename || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (!escaped || /[\/\\]/.test(String(filename || ""))) return false;
   return new RegExp(
-    `^/tmp/\\.mount_[^/]+(?:/[^/]+)*/resources/app\\.asar\\.unpacked/hooks/${escaped}$`
+    // AppImage uses the first six basename characters plus six random
+    // alphanumerics. Released Clawd artifacts used `Clawd-on-Desk-*` (and the
+    // older electron-builder default `Clawd on Desk-*`), so their exact mount
+    // prefixes are `Clawd-` and `Clawd `. A broad `Clawd*` prefix would still
+    // claim an unrelated `ClawdSomething.AppImage` mount (`ClawdSXXXXXX`).
+    `^/tmp/\\.mount_Clawd(?:-| )[A-Za-z0-9]{6}(?:/[^/]+)*/resources/app\\.asar\\.unpacked/hooks/${escaped}$`
   ).test(normalized);
 }
 

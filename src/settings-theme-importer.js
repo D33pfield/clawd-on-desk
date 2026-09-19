@@ -71,6 +71,18 @@ function portableZipPathPart(part) {
   return String(part || "").replace(/[. ]+$/u, "").toLowerCase();
 }
 
+// Win32 resolves these names to DOS devices even when they carry an
+// extension (for example `LPT1.txt`). Reject them on every platform so a ZIP
+// accepted on macOS/Linux cannot later become unextractable on Windows.
+function isWindowsReservedPathPart(part) {
+  const portable = portableZipPathPart(part);
+  // Win32 also trims spaces/dots immediately before an extension while
+  // resolving a DOS device name (`CON .txt` aliases `CON`). Normalize the
+  // stem independently from the complete component so that form cannot pass.
+  const stem = portableZipPathPart(portable.split(".", 1)[0]);
+  return /^(?:con|prn|aux|nul|conin\$|conout\$|(?:com|lpt)[1-9¹²³])$/u.test(stem);
+}
+
 function portableZipPathKey(relativePath) {
   return normalizeZipEntryName(relativePath)
     .split("/")
@@ -100,6 +112,9 @@ function assertNoReservedOfficialMarker(entries, prefix) {
     if (parts.some((part) => /[<>:"|?*\x00-\x1f]/u.test(part))) {
       throw new Error(`unsafe theme zip entry path: ${entry.name}`);
     }
+    if (parts.some(isWindowsReservedPathPart)) {
+      throw new Error(`unsafe Windows device name in theme zip entry: ${entry.name}`);
+    }
   }
 }
 
@@ -108,6 +123,7 @@ function assertSafeRelativePath(pathModule, rootDir, relativePath) {
   const parts = normalized.split("/").filter(Boolean);
   if (!parts.length || parts.some((part) => (
     part === "." || part === ".." || /[<>:"|?*\x00-\x1f]/u.test(part)
+    || isWindowsReservedPathPart(part)
   ))) {
     throw new Error(`unsafe theme zip entry path: ${relativePath}`);
   }
@@ -164,6 +180,9 @@ function importUserThemeZip(zipPath, options = {}) {
   const fallbackName = path.basename(zipPath, path.extname(zipPath));
   const themeId = sanitizeThemeDirName(folderName || fallbackName);
   if (!themeId) throw new Error("could not derive a theme folder name from the package");
+  if (isWindowsReservedPathPart(themeId)) {
+    throw new Error(`theme id "${themeId}" is a reserved Windows device name`);
+  }
   if (RESERVED_THEME_IDS.has(themeId.toLowerCase())) {
     throw new Error(`theme id "${themeId}" is reserved`);
   }

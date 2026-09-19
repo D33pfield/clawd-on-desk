@@ -1118,6 +1118,64 @@ test("settings IPC rejects user theme zips carrying the reserved official owners
   }
 });
 
+test("settings IPC rejects Windows DOS device names in user theme zip paths", async () => {
+  for (const devicePath of [
+    "pixel-cat/CON",
+    "pixel-cat/assets/LPT1.txt",
+    "pixel-cat/assets/conout$.log",
+    "pixel-cat/assets/COM¹.svg",
+    "pixel-cat/assets/CON .txt",
+  ]) {
+    const root = makeTempDir();
+    try {
+      const userThemesDir = path.join(root, "user-themes");
+      const zipPath = path.join(root, "pixel-cat.zip");
+      const themeJson = {
+        schemaVersion: 1,
+        name: "Pixel Cat",
+        version: "1.0.0",
+        sleepSequence: { mode: "direct" },
+        viewBox: { x: 0, y: 0, width: 16, height: 16 },
+        states: {
+          idle: ["idle.svg"],
+          working: ["working.gif"],
+          thinking: ["thinking.png"],
+          sleeping: { fallbackTo: "idle" },
+        },
+      };
+      fs.writeFileSync(zipPath, makeZip([
+        { name: "pixel-cat/theme.json", data: JSON.stringify(themeJson), method: 8 },
+        { name: "pixel-cat/assets/idle.svg", data: "<svg></svg>", method: 8 },
+        { name: "pixel-cat/assets/working.gif", data: "gif", method: 8 },
+        { name: "pixel-cat/assets/thinking.png", data: "png", method: 8 },
+        { name: devicePath, data: "device", method: 8 },
+      ]));
+
+      const { ipcMain } = createHarness({
+        dialog: {
+          showOpenDialog: async () => ({ canceled: false, filePaths: [zipPath] }),
+          showMessageBox: async () => ({ response: 1 }),
+        },
+        themeLoader: {
+          getPreviewSoundUrl: () => null,
+          getSoundOverridesDir: () => null,
+          getSoundUrl: () => null,
+          listThemesWithMetadata: () => [],
+          getThemeMetadata: () => null,
+          ensureUserThemesDir: () => userThemesDir,
+        },
+      });
+
+      const result = await ipcMain.invoke("settings:import-user-theme-zip");
+      assert.strictEqual(result.status, "error");
+      assert.match(result.message, /Windows device name/i);
+      assert.deepStrictEqual(fs.existsSync(userThemesDir) ? fs.readdirSync(userThemesDir) : [], []);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test("settings IPC copies sound overrides, removes stale siblings, and invalidates renderer cache", async () => {
   const root = makeTempDir();
   try {

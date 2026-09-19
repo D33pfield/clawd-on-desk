@@ -239,7 +239,7 @@ describe("findPendingPermissionForStateEvent", () => {
 
 describe("/state permission cleanup", () => {
   it("keeps lifecycle state but skips every permission side effect without an explicit session identity", async () => {
-    const fallbackSessionId = localSessionKey("default");
+    const fallbackSessionId = localSessionKey("claude-code:default");
     for (const rawSessionId of [
       undefined,
       "",
@@ -277,13 +277,35 @@ describe("/state permission cleanup", () => {
 
         assert.strictEqual(res.statusCode, 200, JSON.stringify({ rawSessionId, event }));
         assert.deepStrictEqual(resolved, [], JSON.stringify({ rawSessionId, event }));
-        assert.strictEqual(updates.length, 1, "state update must retain the bounded local/default bucket");
+        assert.strictEqual(updates.length, 1, "state update must retain the bounded per-agent default bucket");
         assert.strictEqual(updates[0][0], fallbackSessionId);
+        assert.strictEqual(updates[0][3].rawSessionId, "default");
         assert.deepStrictEqual(debugLogs, [
           "state-permission-cleanup-skipped reason=missing-or-invalid-session-id",
         ]);
       }
     }
+  });
+
+  it("keeps missing/default lifecycle state isolated between built-in agents", async () => {
+    const updates = [];
+    const { handler } = startServer({ updateSession: (...args) => updates.push(args) });
+
+    for (const payload of [
+      { agent_id: "kimi-cli", session_id: "kimi-cli:default", state: "working", event: "PreToolUse" },
+      { agent_id: "kiro-cli", session_id: "default", state: "working", event: "PreToolUse" },
+      { agent_id: "kimi-cli", session_id: "kimi-cli:default", state: "attention", event: "SessionEnd" },
+    ]) {
+      const res = await callHandler(handler, makeReq("POST", "/state", JSON.stringify(payload)));
+      assert.strictEqual(res.statusCode, 200);
+    }
+
+    assert.deepStrictEqual(updates.map((args) => args[0]), [
+      localSessionKey("kimi-cli:default"),
+      localSessionKey("kiro-cli:default"),
+      localSessionKey("kimi-cli:default"),
+    ]);
+    assert.deepStrictEqual(updates.map((args) => args[3].rawSessionId), ["default", "default", "default"]);
   });
 
   it("retains explicit-session Stop compatibility within the exact source scope", async () => {

@@ -30,7 +30,12 @@ function createSessionHistoryRuntime({ getSessions, isAgentEnabled, launchClaude
     const activeRawSessionIds = activeIds();
     return loadResumableSessionHistory({ ...historyOptions, isAgentEnabled, activeRawSessionIds })
       .map((row) => {
-        const pending = launches.get(row.historyKey);
+        // Live state currently identifies local Claude sessions by raw id,
+        // not by CLAUDE_CONFIG_DIR. Treat every profile row with that raw id
+        // as one conservative launch unit so two Dashboard clicks cannot
+        // create processes that immediately collapse into the same live key.
+        const pending = launches.get(row.historyKey)
+          || [...launches.values()].find((entry) => entry.sessionId === row.sessionId);
         return { ...row, resumePending: !!pending, resumeRetryAt: pending?.retryAt || null };
       });
   }
@@ -44,6 +49,9 @@ function createSessionHistoryRuntime({ getSessions, isAgentEnabled, launchClaude
     if (activeIds().has(target.sessionId)) return { status: "already-running" };
     const pending = launches.get(historyKey);
     if (pending) return pending.promise;
+    const sameSessionPending = [...launches.values()]
+      .find((entry) => entry.sessionId === target.sessionId);
+    if (sameSessionPending) return sameSessionPending.promise;
     // Bound memory even if a compromised trusted renderer asks for many rows.
     if (launches.size >= 200) return { status: "error", reason: "busy" };
     const entry = {

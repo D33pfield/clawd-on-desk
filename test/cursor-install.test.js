@@ -10,6 +10,7 @@ const {
   CURSOR_HOOK_EVENTS,
   CURSOR_HOOK_SENTINEL,
   buildCursorHookCommand,
+  classifyCursorHookCommand,
 } = require("../hooks/cursor-install");
 const { commandMatchesMarker, formatNodeHookCommand } = require("../hooks/json-utils");
 
@@ -242,7 +243,7 @@ describe("Cursor hook installer", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cursor-appimage-legacy-"));
     tempDirs.push(root);
     const hooksPath = path.join(root, "hooks.json");
-    const legacyScript = "/tmp/.mount_ClawdABC/resources/app.asar.unpacked/hooks/cursor-hook.js";
+    const legacyScript = "/tmp/.mount_Clawd-ABC123/resources/app.asar.unpacked/hooks/cursor-hook.js";
     fs.writeFileSync(hooksPath, JSON.stringify({
       version: 1,
       hooks: { stop: [{ command: `"/usr/bin/node" "${legacyScript}"` }] },
@@ -264,6 +265,30 @@ describe("Cursor hook installer", () => {
     assert.ok(command.includes(path.join(root, "materialized")), command);
     assert.ok(command.includes(CURSOR_HOOK_SENTINEL), command);
     assert.ok(!command.includes(legacyScript), command);
+  });
+
+  it("does not claim another AppImage's same-basename Cursor hook", () => {
+    for (const mount of ["VendorABC", "ClawdSABC123"]) {
+      const command = `"/usr/bin/node" "/tmp/.mount_${mount}/resources/app.asar.unpacked/hooks/cursor-hook.js"`;
+      const classification = classifyCursorHookCommand(
+        command,
+        CURRENT_SCRIPT,
+        "linux"
+      );
+      assert.strictEqual(classification.classification, "ambiguous", mount);
+      assert.notStrictEqual(classification.classification, "owned", mount);
+    }
+  });
+
+  it("keeps both released Clawd AppImage mount prefixes eligible for migration", () => {
+    for (const mount of ["Clawd-ABC123", "Clawd ABC123"]) {
+      const command = `"/usr/bin/node" "/tmp/.mount_${mount}/resources/app.asar.unpacked/hooks/cursor-hook.js"`;
+      assert.strictEqual(
+        classifyCursorHookCommand(command, CURRENT_SCRIPT, "linux").classification,
+        "owned",
+        mount
+      );
+    }
   });
 
   it("does not materialize an AppImage generation when ownership is ambiguous", () => {

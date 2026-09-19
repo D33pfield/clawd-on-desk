@@ -118,7 +118,7 @@ describe("session history resume owner", () => {
     assert.equal(launches.length, 0);
   });
 
-  it("does not serialize identical raw session ids from different Claude profiles", async () => {
+  it("serializes identical raw session ids across Claude profiles because live identity cannot distinguish them", async () => {
     const customConfigDir = path.join(root, "custom-claude");
     const custom = recordSessionHistoryFromStateBody({
       agent_id: identity.agentId,
@@ -140,12 +140,10 @@ describe("session history resume owner", () => {
       runtime.resume(customPayload),
     ]);
 
+    assert.deepEqual(defaultResult, customResult);
     assert.equal(defaultResult.status, "submitted");
-    assert.equal(customResult.status, "submitted");
-    assert.equal(launches.length, 2);
-    assert.deepEqual(launches.map((args) => args[3]), [
-      { kind: "default", configDir: null },
-      { kind: "custom", configDir: customConfigDir },
-    ]);
+    assert.equal(launches.length, 1);
+    assert.deepEqual(launches[0][3], { kind: "default", configDir: null });
+    assert.deepEqual(runtime.getHistory().map((row) => row.resumePending), [true, true]);
   });
 });
