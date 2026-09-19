@@ -1767,9 +1767,20 @@ function scheduleClaudeTranscriptCompletionProbe(sessionId, transcriptPath) {
       return;
     }
 
+    // Claude transcript entries carry the raw `session_id` (UUID) that Claude
+    // emitted, not Clawd's canonical session key (#908). The probe map is keyed
+    // by the canonical id, so filter the transcript by the session's raw id.
+    // Stored sessions always carry a rawSessionId (it falls back to the session
+    // key at construction, and a missing wire identity is represented as
+    // "default"), so this is the real underlying id, not a canonical key.
+    // rejectToolUse makes the extractor a completion predicate: a text-plus-
+    // tool-use preamble must not synthesize a completion while the turn's
+    // PreToolUse may still be in flight. Entries with no `sessionId` are still
+    // accepted, keeping the #904 deletion-cleanup mechanism fallback intact.
     const assistantOutput = extractLastClaudeAssistantTextFromEntries(
       readClaudeTranscriptTailEntries(safePath),
-      sessionId
+      session.rawSessionId || sessionId,
+      { rejectToolUse: true }
     );
     if (assistantOutput && assistantOutput.text) {
       claudeTranscriptCompletionProbes.delete(sessionId);
