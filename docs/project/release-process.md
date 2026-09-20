@@ -339,12 +339,23 @@ module is a hard failure.
 
 ## WinGet Publishing
 
-Publishing the draft release fires `.github/workflows/winget.yml`. **It currently
-prepares only** — it generates the manifest komac would submit and uploads it as
-an artifact. It holds no long-lived PAT or repository secret; the ambient job
-`GITHUB_TOKEN` it uses has `contents: read` and cannot write to this repository or
-to winget-pkgs. Automatic submission is deliberately not enabled yet; see the
-staged plan below.
+Publishing the draft release fires `.github/workflows/winget.yml`. The `prepare`
+job generates a manifest with Komac, normalizes the locale metadata, validates
+the complete generated tree, and uploads the exact files that may be submitted.
+It receives only the ambient read-only `GITHUB_TOKEN`.
+
+An optional `submit` job can then open a one-version PR in
+`microsoft/winget-pkgs`. It is disabled unless the repository variable
+`WINGET_AUTO_SUBMIT` compares equal to `true` (GitHub expression comparisons are
+case-insensitive). Only the final step receives the classic PAT stored as the
+`winget-submit` environment secret `WINGET_TOKEN`. The workflow's ambient
+`GITHUB_TOKEN` remains read-only; the PAT separately carries every permission of
+its owner, so a dedicated account is the minimum-blast-radius configuration.
+The job re-downloads and revalidates the artifact, checks that the version is not
+already in the catalog or an open PR, and submits the four verified files without
+asking Komac to regenerate them. This opens the PR only: Microsoft validation,
+moderator approval, merge, catalog publication, and native Windows acceptance
+remain external gates.
 
 As of 2026-08-23, the upstream 0.14.0 manifest has been repaired and published by
 [`microsoft/winget-pkgs#416019`](https://github.com/microsoft/winget-pkgs/pull/416019),
@@ -362,9 +373,8 @@ winmatsch, so their publication does not validate this repository's komac output
 The first v0.15.0 prepare run
 [`31654717731`](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/31654717731)
 also predates the upstream repair and reproduced the old two-x64 shape. The
-workflow therefore stays prepare-only until its **generated output** is validated
-automatically; a correct upstream installer matrix alone is not sufficient reason
-to expose a submission token.
+generated-output validator exists because a correct upstream installer matrix
+alone is not sufficient reason to expose a submission token.
 
 **The workflow must already be on `main` before the tag is created.** For
 `release` events GitHub reads the workflow definition from the tagged ref, so a
@@ -410,7 +420,7 @@ installer supports (`build.nsis` sets `oneClick: false` and no `perMachine`).
 
 ### Staged plan
 
-1. **Prepare-only plumbing — complete; still the current execution mode.** Hosted
+1. **Prepare-only plumbing — complete.** Hosted
    run
    [`31549249655`](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/31549249655)
    successfully exercised the workflow, token, installer downloads and artifact
@@ -420,9 +430,8 @@ installer supports (`build.nsis` sets `oneClick: false` and no `perMachine`).
    to the four entries above, changed the license to `AGPL-3.0-only`, passed the
    full validation pipeline and was published on 2026-08-17. The competing
    Dumplings tracker has also been removed.
-3. **Validate komac's output — next.** Run prepare against the current four-entry
-   upstream shape to retain an unmodified sample. Then extend the gate to parse
-   the generated YAML and assert the package identifier/version; exact
+3. **Validate Komac's output — complete.** The generated-output gate parses the
+   YAML and asserts the package identifier/version; exact
    `{x64, arm64} x {user, machine}` set; each entry's URL, SHA256 and `Custom`
    switch; `InstallerType: nullsoft`; `UpgradeBehavior: install`; top-level
    `InstallerSwitches.Upgrade: --updated`; and ProductCode
@@ -431,15 +440,18 @@ installer supports (`build.nsis` sets `oneClick: false` and no `perMachine`).
    `License: AGPL-3.0-only` plus version-pinned `LicenseUrl` and `ReleaseNotesUrl`.
    Komac overwrites `License` from the repository's current `licenseInfo.spdxId`,
    which GitHub reports as `AGPL-3.0`, not the `AGPL-3.0-only` in `package.json`,
-   so the gate must rewrite and then assert these fields rather than accepting the
-   raw output. Until this gate lands, the per-release manual review must enforce
-   the same contract; the published v0.15.0 manifest is not evidence that komac's
-   generated output is safe.
-4. **Enable submission — optional and not started.** Split into `prepare` and
-   `submit` jobs so the PAT exists only in the final step, and pin every `uses:`
-   to a commit SHA at that point. Prefer a dedicated account for the token:
-   `public_repo` grants write access to every public repository its owner can
-   write to, this one included.
+   so the gate rewrites and then asserts these fields rather than accepting the
+   raw output. It writes normalization only after the complete tree passes, emits
+   a SHA256 evidence report, rejects unsupported root/nested keys, and is
+   byte-for-byte idempotent. The submission process recalculates all four hashes
+   against that report immediately before copying the files.
+4. **Enable submission — implemented, disabled pending configuration.** The
+   workflow is split into `prepare` and `submit`, every third-party `uses:` is
+   pinned to a commit SHA, and the PAT exists only in the final submission step.
+   Set up the account, secret and opt-in variable below as a separate repository
+   configuration change. Prefer a dedicated account for the token: `public_repo`
+   grants write access to every public repository its owner can write to, this
+   one included.
 
 ### Why the installer filename is a contract
 
@@ -457,9 +469,9 @@ a filename stops matching the workflow's `INSTALLERS_REGEX`, if the release
 carries a stray asset that regex would also select, if the release tag disagrees
 with `package.json`, or if both installers share a digest.
 
-**This gate checks komac's input, not its output.** It cannot detect the
-shape-preservation problem described above; validating the generated YAML is a
-separate step (stage 3).
+This first gate checks Komac's input, not its output. The separate
+`verify:winget-manifest` gate validates and normalizes the generated YAML before
+the artifact is uploaded or the submission job can start.
 
 This guard exists because the third-party bot that previously owned the manifest
 forwarded only the first matching `.exe`. That was harmless while we shipped one
@@ -481,36 +493,46 @@ itself from a release archive whose SHA-256 is pinned in `env`.
 Bumping `KOMAC_VERSION` requires bumping `KOMAC_SHA256` in the same edit; the
 checksum is asserted in `test/winget-arch-contract.test.js`.
 
-Note that `actions/checkout@v4` and friends are still mutable tags. That is
-acceptable while this workflow holds no secret, and matches the rest of the
-repository's workflows; it must be resolved to commit SHAs before stage 4 adds a
-token.
+All third-party Actions used by this workflow are pinned to full commit SHAs.
+When updating an Action, resolve and review the new tag target and change the SHA
+explicitly; do not replace it with a mutable major-version tag.
 
-### Setup, when stage 4 is reached
+### Optional automatic-submission setup
 
-1. A `rullerzhou-afk/winget-pkgs` fork now exists from the manual repair. Before
-   reusing it, decide whether a dedicated low-privilege account should own the
-   submission token instead.
-2. Create a **classic** PAT for that account with `public_repo` scope and store
-   it as the `WINGET_TOKEN` repository secret. Fine-grained tokens do not work
-   with komac's fork flow.
-3. The former `SpecterShell/Dumplings` tracker was removed in
+1. Choose the account that will submit. A dedicated low-privilege account is
+   preferred; a PAT owned by `rullerzhou-afk` can also write to this source
+   repository. The chosen account's `winget-pkgs` repository must be a fork of
+   `microsoft/winget-pkgs`, and the account must complete Microsoft's CLA when
+   prompted.
+2. Create the `winget-submit` GitHub environment. Add a required reviewer only
+   if opening each PR should require a human gate; keep any deployment-ref rule
+   compatible with release tags.
+3. Create a **classic** PAT for that account with `public_repo` scope and store
+   it as the `WINGET_TOKEN` secret in the `winget-submit` environment, not as a
+   repository-wide secret. Fine-grained tokens can write a fork but cannot open
+   the required PR against the upstream repository.
+4. Set the required repository variable `WINGET_FORK_OWNER` to the submitting
+   account's login. The workflow deliberately has no owner fallback.
+5. The former `SpecterShell/Dumplings` tracker was removed in
    [`a21ff13d`](https://github.com/SpecterShell/Dumplings/commit/a21ff13d2243afa0f58e9569a2f69e9903d726e2).
    Reconfirm it has not returned before enabling submission.
+6. Set the repository variable `WINGET_AUTO_SUBMIT` to `true` (comparison is
+   case-insensitive). Removing it or changing it to another value returns the
+   workflow to prepare-and-upload mode without deleting the secret.
 
 ### Per-release checks
 
-- Download the `winget-generated-manifest` artifact and confirm it carries
-  **four** installer entries — `x64` and `arm64`, each in `user` and `machine`
-  scope — with the right filename and `Custom` switch in each.
-- Confirm `License` reads `AGPL-3.0-only`, and that `LicenseUrl` and
-  `ReleaseNotesUrl` are pinned to the release being submitted. The live v0.14.0
-  manifest is corrected; versions v0.6.2 through v0.13.0 still carry the stale
-  `MIT` value from before `3b6277ff` relicensed the project on 2026-04-25.
-- Until stage 4 is enabled, open a one-version PR in `microsoft/winget-pkgs` from
-  the validated artifact, then track validation, merge and the publish-pipeline
-  result. A successful prepare run alone does **not** publish the release.
-- v0.15.0 is present upstream, but its locale still points `LicenseUrl` and
-  `ReleaseNotesUrl` at v0.14.0. Do not copy those stale values into v1.1.0.
+- Confirm `prepare` passed both `verify:winget-arch` and
+  `verify:winget-manifest`. The uploaded `winget-generated-manifest` artifact is
+  the normalized, validated four-file tree plus its evidence report.
+- If automatic submission is disabled, open a one-version PR from that exact
+  artifact. If it is enabled, confirm the `submit` job reports either the new PR
+  URL or an intentional `already-published` / `open-pull-request` skip.
+- Track Microsoft's validation, moderator review, merge, and catalog-publish
+  result. A successful Clawd workflow or an opened PR alone does **not** publish
+  the release.
+- Historical v0.15.0 locale links pointed at v0.14.0. The output gate rewrites
+  both links to the current release tag; never copy metadata from a prior
+  version by hand.
 - After the catalog refreshes, run an independent Windows `winget install` or
   `winget upgrade` smoke test before documenting the command in the READMEs.
