@@ -10,6 +10,8 @@ const { __test } = require("../hooks/codex-remote-monitor");
 
 const ROLLOUT_NAME =
   "rollout-2026-03-25T15-10-51-019d23d4-f1a9-7633-b9c7-758327137228.jsonl";
+const DESKTOP_TURN_ROLLOUT_NAME =
+  "rollout-2026-09-12T22-22-36-019f894f-34b8-7d81-96c9-b9a0fc87eb24_01a095ff-ad3a-7e41-a97f-a70c6dcb7b3c.jsonl";
 
 function uniqueRolloutName(index) {
   return `rollout-2026-03-25T15-10-51-${String(index).padStart(8, "0")}-f1a9-7633-b9c7-758327137228.jsonl`;
@@ -437,6 +439,21 @@ describe("Codex remote monitor — stale-cleanup re-read dedup", () => {
       postState: (sessionId, state, event) => posted.push({ sessionId, state, event }),
     };
   }
+
+  it("groups a Codex Desktop turn-suffixed rollout under its parent thread", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-remote-desktop-"));
+    tmpDirs.push(dir);
+    const filePath = path.join(dir, DESKTOP_TURN_ROLLOUT_NAME);
+    fs.writeFileSync(filePath, `${JSON.stringify(META)}\n`);
+
+    const result = __test.pollFile(filePath, DESKTOP_TURN_ROLLOUT_NAME, { postState: () => {} });
+
+    assert.strictEqual(result.kind, "progress");
+    assert.strictEqual(
+      __test.tracked.get(filePath).sessionId,
+      "codex:019f894f-34b8-7d81-96c9-b9a0fc87eb24"
+    );
+  });
 
   it("does not re-emit historical task_complete after a stale window + resume", () => {
     const filePath = track([META, STARTED, COMPLETE]);

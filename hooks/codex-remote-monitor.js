@@ -203,9 +203,19 @@ function getSessionDirs() {
 }
 
 function extractSessionId(fileName) {
-  // rollout-2026-03-25T15-10-51-019d23d4-f1a9-7633-b9c7-758327137228.jsonl
-  const base = fileName.replace(".jsonl", "");
-  const parts = base.split("-");
+  // Codex Desktop can append the turn UUID to a rollout filename:
+  // rollout-<timestamp>-<thread UUID>_<turn UUID>.jsonl. Keep the parent
+  // thread as the session identity instead of creating one remote card per
+  // turn, matching the local monitor and official hook paths.
+  const base = String(fileName || "").replace(/\.jsonl$/i, "");
+  const uuid = "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})";
+  const match = base.match(new RegExp(`${uuid}(?:_${uuid})?$`, "i"));
+  if (match) return match[1];
+
+  // Preserve the historical permissive fallback for older/custom rollouts,
+  // but never let a UUID-shaped turn suffix become part of the session id.
+  const withoutTurnSuffix = base.replace(new RegExp(`_${uuid}$`, "i"), "");
+  const parts = withoutTurnSuffix.split("-");
   if (parts.length < 10) return null;
   return parts.slice(-5).join("-");
 }
