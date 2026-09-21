@@ -1927,7 +1927,9 @@ function mergeSessionProcessMetadata(existing, incoming = {}, options = {}) {
 // first prompt line. The first title that reaches the server wins — a title
 // whose POST fails is not permanently claimed, and follow-up prompts never
 // overwrite the first one (matching Trae's constant session title).
-const FIRST_WINS_TITLE_AGENT_IDS = new Set(["traecode"]);
+// MiniMax Code carries no session title in its hook payload either, so its
+// prompt-derived titles follow the same first-wins rule.
+const FIRST_WINS_TITLE_AGENT_IDS = new Set(["traecode", "minimax"]);
 
 function resolveIncomingSessionTitle(existing, agentId, incomingTitle) {
   const normalized = normalizeTitle(incomingTitle);

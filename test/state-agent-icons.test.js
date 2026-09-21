@@ -240,7 +240,28 @@ describe("state agent icons", () => {
         .filter(([, record]) => record.fallback)
         .map(([agentId]) => agentId)
         .sort(),
-      ["codewhale", "grok-build", "kimi-cli", "omp", "qoderwork", "qwenwork", "reasonix", "traecode", "zcode"]
+      ["codewhale", "grok-build", "kimi-cli", "minimax", "omp", "qoderwork", "qwenwork", "reasonix", "traecode", "zcode"]
+    );
+  });
+
+  it("keeps the generated MiniMax fallback, its license, and the assets LICENSE aligned", () => {
+    const manifest = readSourceManifest();
+    const record = manifest.sources["minimax"];
+    assert.strictEqual(record.license, "CC0-1.0");
+    assert.match(record.provenance, /tools\/generate-minimax-fallback-icon\.js/);
+    assert.strictEqual(record.sourceFilename, "minimax.png");
+    assert.strictEqual(record.exportMode, "passthrough");
+
+    const generatorPath = path.join(__dirname, "..", "tools", "generate-minimax-fallback-icon.js");
+    assert.ok(fs.existsSync(generatorPath), "fallback generator must be tracked under tools/");
+
+    const sourcePath = getSourcePath("minimax");
+    const runtimePath = path.join(AGENT_ICON_DIR, "minimax.png");
+    assert.strictEqual(hashFileSource(sourcePath), record.sha256);
+    assert.strictEqual(hashFileSource(runtimePath), record.sha256);
+    assert.strictEqual(
+      manifest.outputs["minimax"].generatedFromSourceSha256,
+      record.sha256
     );
   });
 

@@ -39,6 +39,7 @@ describe("doctor agent descriptors", () => {
         "traecode",
         "qwenwork",
         "deepseek-harness",
+        "minimax",
       ]
     );
   });
@@ -177,6 +178,17 @@ describe("doctor agent descriptors", () => {
       dsh.resolveDshProfileDir(dsh.resolveDshHome())
     );
     assert.strictEqual(getAgentDescriptor("deepseek-harness").configMode, "dsh-plugin");
+
+    const minimax = require("../hooks/minimax-install");
+    assert.strictEqual(getAgentDescriptor("minimax").parentDir, minimax.DEFAULT_DATA_DIR);
+    assert.strictEqual(getAgentDescriptor("minimax").configPath, minimax.DEFAULT_PLUGIN_ROOT);
+    assert.strictEqual(getAgentDescriptor("minimax").marker, minimax.MARKER);
+    assert.deepStrictEqual(getAgentDescriptor("minimax").hookEvents, minimax.MINIMAX_HOOK_EVENTS);
+    assert.strictEqual(getAgentDescriptor("minimax").configMode, "minimax-plugin");
+    assert.deepStrictEqual(getAgentDescriptor("minimax").managedFiles, [
+      ".claude-plugin/plugin.json",
+      "hooks/hooks.json",
+    ]);
   });
 
   it("returns copies from public accessors", () => {

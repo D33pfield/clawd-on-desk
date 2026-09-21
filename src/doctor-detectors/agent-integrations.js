@@ -261,6 +261,20 @@ function withTraeCodeEnableNotice(detail, descriptor) {
   };
 }
 
+// MiniMax Code keeps plugin enable state inside the app (or `mcode plugin
+// enable clawd-state@local`); the on-disk plugin directory alone proves
+// nothing about whether hooks fire. Same contract as the TraeCode notice:
+// informational, and only when the managed files otherwise look healthy.
+function withMinimaxEnableNotice(detail, descriptor) {
+  if (descriptor.agentId !== "minimax" || !detail) return detail;
+  if (detail.status !== "ok") return detail;
+  const base = typeof detail.detail === "string" && detail.detail ? detail.detail : "MiniMax Code plugin installed";
+  return {
+    ...detail,
+    detail: `${base}. Hooks only fire after enabling the plugin in MiniMax Code: run "mcode plugin enable clawd-state@local" or enable it in the app's plugin panel.`,
+  };
+}
+
 function withAgentFixAction(detail, descriptor) {
   if (
     descriptor.agentId === "kimi-cli"
@@ -2159,6 +2173,46 @@ function checkPluginDirMode(descriptor, options) {
   });
 }
 
+// MiniMax Code: like checkPluginDirMode but without the enable-file gate —
+// plugin enable state lives inside the app (or `mcode plugin enable`) and is
+// not readable from disk, so presence of every managed file is the strongest
+// disk-level signal. The manual enable step is surfaced separately by
+// withMinimaxEnableNotice.
+function checkMinimaxPluginMode(descriptor, options) {
+  const pluginDir = descriptor.configPath;
+  if (!dirExists(options.fs, pluginDir)) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: false,
+      configPath: pluginDir,
+      detail: `${pluginDir} missing`,
+      missingPluginFiles: descriptor.managedFiles || [],
+    });
+  }
+
+  const managedFiles = Array.isArray(descriptor.managedFiles) ? descriptor.managedFiles : [];
+  const missingPluginFiles = managedFiles.filter((file) => !fileExists(options.fs, path.join(pluginDir, file)));
+  if (missingPluginFiles.length > 0) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: pluginDir,
+      detail: `${pluginDir} missing managed file(s): ${missingPluginFiles.join(", ")}`,
+      missingPluginFiles,
+    });
+  }
+
+  return makeDetail(descriptor, "ok", {
+    level: null,
+    parentDirExists: true,
+    configFileExists: true,
+    configPath: pluginDir,
+    detail: `${pluginDir} Clawd plugin files present`,
+  });
+}
+
 function checkAntigravityHooksMode(descriptor, options) {
   if (!fileExists(options.fs, descriptor.configPath)) {
     return makeDetail(descriptor, "not-connected", {
@@ -2733,6 +2787,8 @@ function checkAgent(descriptor, options) {
     detail = checkOpenClawPluginMode(descriptor, options);
   } else if (descriptor.configMode === "plugin-dir") {
     detail = checkPluginDirMode(descriptor, options);
+  } else if (descriptor.configMode === "minimax-plugin") {
+    detail = checkMinimaxPluginMode(descriptor, options);
   } else if (descriptor.configMode === "antigravity-hooks") {
     detail = checkAntigravityHooksMode(descriptor, options);
   } else {
@@ -2750,6 +2806,7 @@ function checkAgent(descriptor, options) {
   }
   detail = withClaudeHookGuardNotice(detail, descriptor, options);
   detail = withTraeCodeEnableNotice(detail, descriptor);
+  detail = withMinimaxEnableNotice(detail, descriptor);
   return withAgentFixAction(withAgentBubbleNote(detail, prefs, descriptor.agentId), descriptor);
 }
 

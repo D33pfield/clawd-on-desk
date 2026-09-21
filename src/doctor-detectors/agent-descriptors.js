@@ -29,6 +29,7 @@ const qwenwork = require("../../hooks/qwenwork-install");
 const workbuddy = require("../../hooks/workbuddy-install");
 const grok = require("../../hooks/grok-install");
 const traecode = require("../../hooks/traecode-install");
+const minimax = require("../../hooks/minimax-install");
 const dsh = require("../../hooks/dsh-install");
 
 function agentName(agentId) {
@@ -430,6 +431,23 @@ const AGENT_DESCRIPTORS = Object.freeze([
     configMode: "dsh-plugin",
     autoInstall: true,
     detection: "dsh",
+  }),
+  Object.freeze({
+    // MiniMax Code carries hooks inside a local plugin directory that Clawd
+    // owns end to end. Enable state lives inside the app (or `mcode plugin
+    // enable clawd-state@local`) and is not readable from disk — the
+    // dedicated "minimax-plugin" config mode only verifies our managed files
+    // and lets withMinimaxEnableNotice surface the manual enable step.
+    agentId: "minimax",
+    agentName: agentName("minimax"),
+    eventSource: agentEventSource("minimax"),
+    parentDir: minimax.DEFAULT_DATA_DIR,
+    configPath: minimax.DEFAULT_PLUGIN_ROOT,
+    configMode: "minimax-plugin",
+    autoInstall: true,
+    marker: minimax.MARKER,
+    managedFiles: [".claude-plugin/plugin.json", "hooks/hooks.json"],
+    hookEvents: minimax.MINIMAX_HOOK_EVENTS,
   }),
 ]);
 

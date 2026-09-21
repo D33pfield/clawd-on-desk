@@ -32,6 +32,7 @@ const { unregisterQwenWorkHooks } = require("./qwenwork-install");
 const { unregisterWorkBuddyHooks } = require("./workbuddy-install");
 const { unregisterGrokHooks, resolveGrokConfigPath, resolveGrokHome } = require("./grok-install");
 const { unregisterTraeCodeHooks } = require("./traecode-install");
+const { unregisterMinimaxPlugin } = require("./minimax-install");
 const { unregisterDeepSeekHarness } = require("./dsh-install");
 
 const CODEX_MARKERS = ["codex-hook.js", "codex-debug-hook.js"];
@@ -63,6 +64,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "workbuddy",
   "grok-build",
   "traecode",
+  "minimax",
 ]);
 
 const AGENT_DISPLAY_NAMES = Object.freeze({
@@ -92,6 +94,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   qoderwork: "QoderWork",
   traecode: "TraeCode",
   qwenwork: "QwenWork",
+  minimax: "MiniMax Code",
 });
 
 function normalizeHomeDir(value) {
@@ -326,6 +329,10 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
         ...common,
         hooksPath: path.join(homeDir, ".trae-cn", "hooks.json"),
       },
+      minimax: {
+        ...common,
+        pluginRoot: path.join(homeDir, ".minimax", "plugins", "clawd-state"),
+      },
     },
   };
 }
@@ -391,6 +398,7 @@ const AGENT_CLEANERS = Object.freeze({
   workbuddy: unregisterWorkBuddyHooks,
   "grok-build": unregisterGrokHooks,
   traecode: unregisterTraeCodeHooks,
+  minimax: unregisterMinimaxPlugin,
 });
 
 function removedCountFromResult(result) {
