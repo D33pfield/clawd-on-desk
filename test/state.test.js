@@ -5657,15 +5657,52 @@ describe("Stop completion gate (#406)", () => {
     assert.ok(!soundsPlayed.includes("complete"));
   });
 
-  it("Claude transcript fallback documents raw transcript sessionId mismatch", () => {
+  it("Claude transcript fallback promotes on raw transcript sessionId (#908)", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-claude-stop-fallback-"));
     const transcript = path.join(dir, "transcript.jsonl");
     const rawSessionId = "claude-probe-raw-mismatch";
     const sessionId = resolveSessionIdentity(rawSessionId, "local").sessionId;
+    assert.notStrictEqual(sessionId, rawSessionId, "canonical key must differ from raw id for this guard");
     fs.writeFileSync(transcript, [
       JSON.stringify({ type: "assistant", sessionId: rawSessionId, message: { content: [{ type: "tool_use", name: "AskUserQuestion" }] } }),
       JSON.stringify({ type: "user", sessionId: rawSessionId, message: { content: [{ type: "tool_result", content: "Allow" }] } }),
       JSON.stringify({ type: "assistant", sessionId: rawSessionId, message: { content: "Final answer from raw transcript." } }),
+    ].join("\n") + "\n");
+
+    update(api, {
+      id: sessionId,
+      state: "working",
+      event: "PostToolUse",
+      rawSessionId,
+      toolName: "AskUserQuestion",
+      transcriptPath: transcript,
+    });
+    mock.timers.tick(10000);
+
+    const session = api.sessions.get(sessionId);
+    assert.strictEqual(session.state, "idle");
+    assert.strictEqual(session.assistantLastOutput, "Final answer from raw transcript.");
+    assert.strictEqual(api.getCurrentState(), "attention");
+    assert.ok(soundsPlayed.includes("complete"));
+    assert.strictEqual(api.deriveSessionBadge(session), "done");
+  });
+
+  it("Claude transcript probe does not complete on a text-plus-tool-use preamble (#908 review)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-claude-stop-fallback-"));
+    const transcript = path.join(dir, "transcript.jsonl");
+    const rawSessionId = "claude-probe-tool-preamble";
+    const sessionId = resolveSessionIdentity(rawSessionId, "local").sessionId;
+    // Newest assistant entry narrates *and* calls a tool: the turn is still
+    // running and its PreToolUse has not reached state.js yet. The preamble
+    // text must not be mistaken for a finished turn — the probe must keep
+    // working, not synthesize a completion (and fire sound/notification/recap).
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: "assistant", sessionId: rawSessionId, message: { content: [{ type: "tool_use", name: "AskUserQuestion" }] } }),
+      JSON.stringify({ type: "user", sessionId: rawSessionId, message: { content: [{ type: "tool_result", content: "Allow" }] } }),
+      JSON.stringify({ type: "assistant", sessionId: rawSessionId, message: { content: [
+        { type: "text", text: "Let me apply that edit." },
+        { type: "tool_use", name: "Edit" },
+      ] } }),
     ].join("\n") + "\n");
 
     update(api, {
