@@ -262,16 +262,17 @@ function withTraeCodeEnableNotice(detail, descriptor) {
 }
 
 // MiniMax Code keeps plugin enable state inside the app (or `mcode plugin
-// enable clawd-state@local`); the on-disk plugin directory alone proves
-// nothing about whether hooks fire. Same contract as the TraeCode notice:
-// informational, and only when the managed files otherwise look healthy.
+// enable`); the on-disk plugin directory alone proves nothing about whether
+// hooks fire. Verified on macOS the app auto-discovers the directory, so this
+// is a fallback hint rather than a required step — same annotation contract as
+// the TraeCode notice: informational, and only on an "ok" status.
 function withMinimaxEnableNotice(detail, descriptor) {
   if (descriptor.agentId !== "minimax" || !detail) return detail;
   if (detail.status !== "ok") return detail;
   const base = typeof detail.detail === "string" && detail.detail ? detail.detail : "MiniMax Code plugin installed";
   return {
     ...detail,
-    detail: `${base}. Hooks only fire after enabling the plugin in MiniMax Code: run "mcode plugin enable clawd-state@local" or enable it in the app's plugin panel.`,
+    detail: `${base}. If hooks do not fire, enable the plugin inside MiniMax Code: run "mcode plugin enable clawd-state@local" or enable it in the app's plugin panel.`,
   };
 }
 

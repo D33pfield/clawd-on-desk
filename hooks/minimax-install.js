@@ -159,15 +159,30 @@ function installMinimaxPlugin(options = {}) {
         }
       })()
     : undefined;
+  const existingManifest = exists
+    ? (() => {
+        try {
+          return readJsonFile(manifestPath);
+        } catch {
+          return undefined;
+        }
+      })()
+    : undefined;
 
   fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
-  writeJsonAtomic(manifestPath, desired.manifest);
+  // Only rewrite files whose content actually changed: startup sync runs on
+  // every launch for installed+enabled users, and unconditional writes would
+  // churn mtimes even on a fully up-to-date install.
+  if (JSON.stringify(existingManifest) !== JSON.stringify(desired.manifest)) {
+    writeJsonAtomic(manifestPath, desired.manifest);
+  }
 
   let result;
+  const hooksUnchanged = exists && JSON.stringify(existingHooks) === JSON.stringify(desired.hooks);
   if (!exists) {
     writeJsonAtomic(hooksPath, desired.hooks);
     result = { added: MINIMAX_HOOK_EVENTS.length, skipped: 0, updated: 0 };
-  } else if (JSON.stringify(existingHooks) === JSON.stringify(desired.hooks)) {
+  } else if (hooksUnchanged) {
     result = { added: 0, skipped: MINIMAX_HOOK_EVENTS.length, updated: 0 };
   } else {
     writeJsonAtomic(hooksPath, desired.hooks);
