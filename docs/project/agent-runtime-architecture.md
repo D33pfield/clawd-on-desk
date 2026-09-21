@@ -181,6 +181,23 @@ TraeCode（Trae CN）状态同步（hook-only / state-only，hooks.json）：
   无 SessionEnd：关闭的会话由 traecode-desktop-idle-timeout 桌面空闲清理退役。
   首版只覆盖 Trae CN（~/.trae-cn、进程名 Trae CN.exe）；国际版 Trae（~/.trae/hooks.json）不在范围内。
 
+MiniMax Code 状态同步（hook-only / state-only，本地插件目录）：
+  MiniMax Code（mcode CLI 与桌面 App 同源 plugin-hooks 引擎）触发 SessionStart / SessionEnd /
+    UserPromptSubmit / PreToolUse / PostToolUse / Stop / SubagentStart / SubagentStop / PreCompact / PostCompact
+    → hooks/minimax-hook.js（hook 事件 → agents/minimax.js 映射 → HTTP POST）
+    → 同上状态机（agent_id: minimax，session_id 规范化为 minimax:<raw>；缺 session_id 的事件直接应答 stdout，不进 /state）
+  hooks 由本地插件承载：<MINIMAX_DATA_DIR 或 ~/.minimax>/plugins/clawd-state/，manifest 用
+    .claude-plugin/plugin.json（name clawd-state，hooks: ["hooks/hooks.json"]），hooks 文档按 CLAUDE sourceFormat 解析。
+    不用 .minimax-plugin/（那走 MINIMAX 格式：matcher 必须非空、不支持 exec-form args）。
+  handler 固定 exec-form（command=node 路径、args=[minimax-hook.js]、timeout=2 秒）：spawn 直执行、无 shell、跨平台免引号；
+    MiniMax 把 timeout 钳在 1–10 秒（SessionEnd 事件总预算 3s），阻塞式人工审批物理不可行。
+  PermissionRequest 完全不注册，也无 Notification 事件；stdout 恒为 `{}`（permissionDecision 缺省 abstain），
+    不注册 /permission、不进 permission automation eligibility，Allow / Deny 全部留在 MiniMax 原生权限流程。
+  插件目录整体 Clawd 独占：install 对已存在但非 Clawd 内容的目录 fail closed（任何 manifest kind），uninstall
+    校验 manifest name + marker 后才删目录；启用状态在 App 内（mcode plugin enable clawd-state@local / 插件面板），
+    磁盘不可读，Doctor（configMode "minimax-plugin"）与 Settings 只做提示。
+  无原生会话标题字段：从首次 prompt 首行派生并保持首个标题（server 端 first-wins，同 traecode）。
+
 Kimi Code CLI（Kimi-CLI）状态同步（hook-only，config.toml）：
   Kimi Code CLI（Kimi-CLI）触发事件
     → hooks/kimi-hook.js（hook 事件 → agents/kimi-cli.js 映射 → HTTP POST）

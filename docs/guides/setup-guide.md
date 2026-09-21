@@ -141,6 +141,13 @@ Clawd can display the chat name from Cursor's standard desktop profile when Node
 - **State-only:** the hook's stdout is always `{}` on every path — Clawd registers no `/permission` endpoint and produces no Allow / Deny; every approval stays in Trae's own permission flow. There is no `SessionEnd` event.
 - **Session title:** Trae stores the session title server-side, so Clawd derives it from the first prompt line and keeps the **first** title per session (server-side first-wins). Closed conversations retire via the desktop idle-timeout cleanup (traecode-desktop-idle-timeout).
 
+**MiniMax Code** — experimental, state-only. Clawd ships a local plugin to `~/.minimax/plugins/clawd-state/` (honor `MINIMAX_DATA_DIR`). Install it from **Settings → Agents**, or run `npm run install:minimax-hooks` / `npm run uninstall:minimax-hooks`. Covers both the `mcode` CLI and the MiniMax Code desktop app (same plugin-hook engine).
+
+- **Manual enable required:** MiniMax Code decides on its own whether a plugin's hooks fire — a plugin directory on disk alone is not enough. Run `mcode plugin enable clawd-state@local`, or enable the plugin in the desktop app's plugin panel. Clawd cannot read the enable state from disk, so Doctor and the Settings card only remind you of this step.
+- **10 state events, no PermissionRequest:** MiniMax's plugin-hook runner caps every handler at 1–10 seconds (SessionEnd events share a 3-second budget), so a blocking human-approval round trip is impossible. Clawd registers only state events — including `SessionEnd` — and `PermissionRequest` stays entirely in MiniMax's native flow; the hook's stdout is always `{}`.
+- **Ownership:** the whole `clawd-state/` plugin directory belongs to Clawd. Install refuses to touch an existing directory that is not a Clawd plugin, and uninstall removes the directory only after verifying its manifest and marker.
+- **Session title:** MiniMax's hook payload carries no session title, so Clawd derives it from the first prompt line and keeps the **first** title per session (server-side first-wins, same as TraeCode).
+
 ## Permission handling automation
 
 Use the pet or tray **Permission handling** submenu to choose how Clawd handles supported permission requests:
