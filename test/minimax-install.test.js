@@ -91,7 +91,36 @@ describe("MiniMax plugin installer", () => {
     assert.strictEqual(hooks.hooks.Stop[0].hooks[0].command, "/usr/local/bin/node");
   });
 
-  it("repairs a corrupt hooks document in an owned plugin directory", () => {
+  it("fails closed when an owned manifest names our plugin but the hooks document lost the marker", () => {
+    // Ownership requires BOTH the manifest name and the hook marker. Without
+    // this, any directory claiming our name could be silently overwritten or
+    // recursively deleted.
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    fs.mkdirSync(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
+    fs.mkdirSync(path.join(pluginRoot, "hooks"), { recursive: true });
+    fs.writeFileSync(
+      path.join(pluginRoot, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: PLUGIN_DIR_NAME }),
+      "utf8"
+    );
+    // Parseable hooks document but no minimax-hook.js reference anywhere.
+    fs.writeFileSync(
+      path.join(pluginRoot, "hooks", "hooks.json"),
+      JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "echo hi" }] }] } }),
+      "utf8"
+    );
+
+    assert.throws(
+      () => installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true }),
+      /not a Clawd plugin/
+    );
+    const uninstalled = unregisterMinimaxPlugin({ dataDir, silent: true });
+    assert.strictEqual(uninstalled.removed, 0, "uninstall must refuse without the marker");
+    assert.ok(fs.existsSync(path.join(pluginRoot, "hooks", "hooks.json")), "directory must be untouched");
+  });
+
+  it("fails closed when the hooks document is corrupt in an owned-manifest directory", () => {
     const dataDir = makeTempDataDir();
     const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
     fs.mkdirSync(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
@@ -103,11 +132,11 @@ describe("MiniMax plugin installer", () => {
     );
     fs.writeFileSync(path.join(pluginRoot, "hooks", "hooks.json"), "{corrupt", "utf8");
 
-    const result = installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
-
-    assert.strictEqual(result.updated, MINIMAX_HOOK_EVENTS.length);
-    const hooks = readJson(path.join(pluginRoot, "hooks", "hooks.json"));
-    assert.strictEqual(Object.keys(hooks.hooks).length, MINIMAX_HOOK_EVENTS.length);
+    assert.throws(
+      () => installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true }),
+      /not a Clawd plugin/
+    );
+    assert.strictEqual(fs.readFileSync(path.join(pluginRoot, "hooks", "hooks.json"), "utf8"), "{corrupt");
   });
 
   it("fails closed on an existing foreign directory and leaves its content untouched", () => {
@@ -195,6 +224,83 @@ describe("MiniMax plugin installer", () => {
       if (previous === undefined) delete process.env.MINIMAX_DATA_DIR;
       else process.env.MINIMAX_DATA_DIR = previous;
     }
+  });
+
+  it("falls back to MAVIS_DATA_DIR when MINIMAX_DATA_DIR is unset (upstream v0.5.1 precedence)", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-minimax-home3-"));
+    const mavisDataDir = path.join(homeDir, "mavis-data");
+    fs.mkdirSync(mavisDataDir, { recursive: true });
+    tempDirs.push(homeDir);
+
+    const previousMinimax = process.env.MINIMAX_DATA_DIR;
+    const previousMavis = process.env.MAVIS_DATA_DIR;
+    delete process.env.MINIMAX_DATA_DIR;
+    process.env.MAVIS_DATA_DIR = mavisDataDir;
+    try {
+      assert.strictEqual(resolveMinimaxDataDir(homeDir), mavisDataDir);
+      const result = installMinimaxPlugin({ nodeBin: "/usr/local/bin/node", silent: true });
+      assert.strictEqual(result.added, MINIMAX_HOOK_EVENTS.length);
+      assert.ok(fs.existsSync(path.join(mavisDataDir, "plugins", PLUGIN_DIR_NAME, "hooks", "hooks.json")));
+    } finally {
+      if (previousMinimax === undefined) delete process.env.MINIMAX_DATA_DIR;
+      else process.env.MINIMAX_DATA_DIR = previousMinimax;
+      if (previousMavis === undefined) delete process.env.MAVIS_DATA_DIR;
+      else process.env.MAVIS_DATA_DIR = previousMavis;
+    }
+  });
+
+  it("round-trips a custom data dir through install → unregister using the SAME resolution", () => {
+    // Regression for the review finding: install honored MINIMAX_DATA_DIR but
+    // the cleanup path hardcoded ~/.minimax, leaving the plugin behind. The
+    // uninstaller must resolve through the identical helper.
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-minimax-home4-"));
+    const envDataDir = path.join(homeDir, "envdata");
+    fs.mkdirSync(envDataDir, { recursive: true });
+    tempDirs.push(homeDir);
+
+    const pluginRoot = path.join(envDataDir, "plugins", PLUGIN_DIR_NAME);
+    let result = installMinimaxPlugin({
+      homeDir,
+      env: { MINIMAX_DATA_DIR: envDataDir },
+      nodeBin: "/usr/local/bin/node",
+      silent: true,
+    });
+    assert.strictEqual(result.added, MINIMAX_HOOK_EVENTS.length);
+    assert.ok(fs.existsSync(pluginRoot));
+
+    result = unregisterMinimaxPlugin({
+      homeDir,
+      env: { MINIMAX_DATA_DIR: envDataDir },
+      silent: true,
+    });
+    assert.strictEqual(result.removed, MINIMAX_HOOK_EVENTS.length);
+    assert.strictEqual(fs.existsSync(pluginRoot), false);
+  });
+
+  it("never overwrites or deletes a same-name foreign plugin (manifest claims clawd-state but no marker)", () => {
+    const dataDir = makeTempDataDir();
+    const foreignRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    fs.mkdirSync(path.join(foreignRoot, ".claude-plugin"), { recursive: true });
+    fs.mkdirSync(path.join(foreignRoot, "hooks"), { recursive: true });
+    fs.writeFileSync(
+      path.join(foreignRoot, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: PLUGIN_DIR_NAME, description: "someone else's plugin" }),
+      "utf8"
+    );
+    fs.writeFileSync(
+      path.join(foreignRoot, "hooks", "hooks.json"),
+      JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "echo third-party" }] }] } }),
+      "utf8"
+    );
+    const before = fs.readFileSync(path.join(foreignRoot, "hooks", "hooks.json"), "utf8");
+
+    assert.throws(
+      () => installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true }),
+      /not a Clawd plugin/
+    );
+    const removed = unregisterMinimaxPlugin({ dataDir, silent: true });
+    assert.strictEqual(removed.removed, 0);
+    assert.strictEqual(fs.readFileSync(path.join(foreignRoot, "hooks", "hooks.json"), "utf8"), before);
   });
 
   it("unregister removes the owned plugin directory", () => {

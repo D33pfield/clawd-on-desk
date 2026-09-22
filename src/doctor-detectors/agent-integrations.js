@@ -40,6 +40,8 @@ const { validateOpenClawEntry } = require("./openclaw-entry-validator");
 const { inspectGrokHookFile } = require("../../hooks/grok-install");
 const { hasIncludeDirective } = require("../../hooks/openclaw-install");
 const { inspectDeepSeekHarnessDiskSync } = require("../../hooks/dsh-install");
+const minimaxInstall = require("../../hooks/minimax-install");
+const { resolveNodeBin } = require("../../hooks/server-config");
 
 const REPAIRABLE_AGENT_STATUSES = new Set([
   "not-connected",
@@ -298,6 +300,17 @@ function withAgentFixAction(detail, descriptor) {
   ) {
     // Re-running the installer on a foreign or unparseable file fails closed,
     // so a Fix button would be an ineffective loop.
+    return detail;
+  }
+  if (
+    descriptor.agentId === "minimax"
+    && detail.supplementary
+    && detail.supplementary.key === "minimax_plugin"
+    && detail.supplementary.value === "foreign"
+  ) {
+    // Install fails closed on a directory whose ownership cannot be proven
+    // (manifest name + hook marker), so a Fix button would be an ineffective
+    // loop. Surface the finding without a Fix.
     return detail;
   }
   if (
@@ -2174,11 +2187,14 @@ function checkPluginDirMode(descriptor, options) {
   });
 }
 
-// MiniMax Code: like checkPluginDirMode but without the enable-file gate —
-// plugin enable state lives inside the app (or `mcode plugin enable`) and is
-// not readable from disk, so presence of every managed file is the strongest
-// disk-level signal. The manual enable step is surfaced separately by
-// withMinimaxEnableNotice.
+// MiniMax Code: verifies the plugin directory against the SAME shared helpers
+// the installer uses (hooks/minimax-install.js) instead of just checking that
+// two files exist. A directory that fails the ownership proof (manifest name +
+// hook marker) is reported as foreign and never offered a Fix — re-running the
+// installer fails closed there, so the button would be an ineffective loop.
+// An owned directory whose files drifted from the current canonical document
+// (node path, script path, event set, timeout) is broken-path with a working
+// Repair: reinstall rewrites the owned directory in full.
 function checkMinimaxPluginMode(descriptor, options) {
   const pluginDir = descriptor.configPath;
   if (!dirExists(options.fs, pluginDir)) {
@@ -2192,16 +2208,62 @@ function checkMinimaxPluginMode(descriptor, options) {
     });
   }
 
-  const managedFiles = Array.isArray(descriptor.managedFiles) ? descriptor.managedFiles : [];
-  const missingPluginFiles = managedFiles.filter((file) => !fileExists(options.fs, path.join(pluginDir, file)));
-  if (missingPluginFiles.length > 0) {
-    return makeDetail(descriptor, "not-connected", {
+  const ownership = minimaxInstall.readOwnership(pluginDir, options.fs);
+  if (!ownership.owned) {
+    return makeDetail(descriptor, "broken-path", {
       level: "warning",
       parentDirExists: true,
       configFileExists: true,
       configPath: pluginDir,
-      detail: `${pluginDir} missing managed file(s): ${missingPluginFiles.join(", ")}`,
-      missingPluginFiles,
+      supplementary: { key: "minimax_plugin", value: "foreign" },
+      detail: `${pluginDir} exists but is not a verifiably Clawd-managed plugin (${ownership.reason}); Clawd will not modify or delete it`,
+    });
+  }
+
+  const hookScript = minimaxInstall.resolveHookScriptPath();
+  const nodeBin = resolveNodeBin() || "node";
+  const desiredManifest = minimaxInstall.desiredManifest();
+  const desiredHooks = minimaxInstall.buildDesiredHooksDocument(hookScript, nodeBin);
+
+  let manifest;
+  let hooks;
+  try {
+    manifest = readJson(options.fs, path.join(pluginDir, ".claude-plugin", "plugin.json"));
+    hooks = readJson(options.fs, path.join(pluginDir, "hooks", "hooks.json"));
+  } catch (err) {
+    return makeDetail(descriptor, "broken-path", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: pluginDir,
+      detail: err && err.message ? err.message : "Clawd plugin files are unreadable",
+    });
+  }
+
+  const manifestMatches = JSON.stringify(manifest) === JSON.stringify(desiredManifest);
+  const hooksMatch = JSON.stringify(hooks) === JSON.stringify(desiredHooks);
+  if (!manifestMatches || !hooksMatch) {
+    // Spell out which side drifted so the user knows what Repair rewrites.
+    const staleNode = !hooksMatch
+      && hooks
+      && Array.isArray(hooks.hooks)
+      && Object.values(hooks.hooks).some((groups) => Array.isArray(groups) && groups.some(
+        (group) => Array.isArray(group && group.hooks) && group.hooks.some(
+          (handler) => handler && typeof handler.command === "string"
+            && handler.command !== nodeBin
+            && !fileExists(options.fs, handler.command)
+        )
+      ));
+    const drifted = [];
+    if (!manifestMatches) drifted.push("manifest");
+    if (!hooksMatch) drifted.push(staleNode ? "hooks (node path no longer exists)" : "hooks");
+    return makeDetail(descriptor, "broken-path", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: pluginDir,
+      supplementary: { key: "minimax_plugin", value: "outdated" },
+      detail: `${pluginDir} Clawd plugin files are outdated or were modified (${drifted.join(", ")}); repair rewrites them`,
     });
   }
 
@@ -2210,7 +2272,7 @@ function checkMinimaxPluginMode(descriptor, options) {
     parentDirExists: true,
     configFileExists: true,
     configPath: pluginDir,
-    detail: `${pluginDir} Clawd plugin files present`,
+    detail: `${pluginDir} Clawd plugin verified (manifest, marker, events, node and script paths)`,
   });
 }
 

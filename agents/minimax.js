@@ -1,6 +1,6 @@
 // MiniMax Code agent configuration (MiniMax mcode CLI / MiniMax Code desktop app)
 // Hook-based integration via a local plugin directory:
-//   ~/.minimax/plugins/clawd-state/.minimax-plugin/plugin.json
+//   ~/.minimax/plugins/clawd-state/.claude-plugin/plugin.json
 //   ~/.minimax/plugins/clawd-state/hooks/hooks.json
 // (or $MINIMAX_DATA_DIR/plugins/clawd-state/...). MiniMax Code carries hooks
 // inside plugins: the manifest declares "hooks": ["hooks/hooks.json"] and the

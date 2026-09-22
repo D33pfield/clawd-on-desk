@@ -186,7 +186,7 @@ MiniMax Code 状态同步（hook-only / state-only，本地插件目录）：
     UserPromptSubmit / PreToolUse / PostToolUse / Stop / SubagentStart / SubagentStop / PreCompact / PostCompact
     → hooks/minimax-hook.js（hook 事件 → agents/minimax.js 映射 → HTTP POST）
     → 同上状态机（agent_id: minimax，session_id 规范化为 minimax:<raw>；缺 session_id 的事件直接应答 stdout，不进 /state）
-  hooks 由本地插件承载：<MINIMAX_DATA_DIR 或 ~/.minimax>/plugins/clawd-state/，manifest 用
+  hooks 由本地插件承载：<MINIMAX_DATA_DIR 或 MAVIS_DATA_DIR 或 ~/.minimax>/plugins/clawd-state/，manifest 用
     .claude-plugin/plugin.json（name clawd-state，hooks: ["hooks/hooks.json"]），hooks 文档按 CLAUDE sourceFormat 解析。
     不用 .minimax-plugin/（那走 MINIMAX 格式：matcher 必须非空、不支持 exec-form args）。
   handler 固定 exec-form（command=node 路径、args=[minimax-hook.js]、timeout=2 秒）：spawn 直执行、无 shell、跨平台免引号；

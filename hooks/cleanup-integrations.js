@@ -32,7 +32,11 @@ const { unregisterQwenWorkHooks } = require("./qwenwork-install");
 const { unregisterWorkBuddyHooks } = require("./workbuddy-install");
 const { unregisterGrokHooks, resolveGrokConfigPath, resolveGrokHome } = require("./grok-install");
 const { unregisterTraeCodeHooks } = require("./traecode-install");
-const { unregisterMinimaxPlugin } = require("./minimax-install");
+const {
+  PLUGIN_DIR_NAME,
+  resolveMinimaxDataDir,
+  unregisterMinimaxPlugin,
+} = require("./minimax-install");
 const { unregisterDeepSeekHarness } = require("./dsh-install");
 
 const CODEX_MARKERS = ["codex-hook.js", "codex-debug-hook.js"];
@@ -331,7 +335,15 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       },
       minimax: {
         ...common,
-        pluginRoot: path.join(homeDir, ".minimax", "plugins", "clawd-state"),
+        // Same resolution the installer used — MINIMAX_DATA_DIR →
+        // MAVIS_DATA_DIR → ~/.minimax — so uninstalling from Settings or
+        // About cleanup always finds the directory install wrote, even when
+        // a custom data dir is configured.
+        pluginRoot: path.join(
+          resolveMinimaxDataDir(homeDir, env),
+          "plugins",
+          PLUGIN_DIR_NAME,
+        ),
       },
     },
   };

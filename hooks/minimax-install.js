@@ -47,31 +47,46 @@ const MINIMAX_HOOK_EVENTS = [
 // ample headroom under the 3s SessionEnd event budget.
 const HOOK_TIMEOUT_SECONDS = 2;
 
-// `<dataDir>` resolution mirrors MiniMax's own precedence: a trimmed non-empty
-// MINIMAX_DATA_DIR wins, otherwise `~/.minimax`.
-function resolveMinimaxDataDir(homeDir) {
-  const env = process.env.MINIMAX_DATA_DIR;
-  if (typeof env === "string" && env.trim()) return env.trim();
+// `<dataDir>` resolution mirrors MiniMax's own precedence (v0.5.1):
+// MINIMAX_DATA_DIR → MAVIS_DATA_DIR → `~/.minimax`. Installer, uninstaller,
+// cleanup, installation detection, and Doctor all resolve through this single
+// helper so a custom data dir can never strand the plugin in a place another
+// code path does not look at.
+function resolveMinimaxDataDir(homeDir, env) {
+  const source = env || process.env;
+  for (const key of ["MINIMAX_DATA_DIR", "MAVIS_DATA_DIR"]) {
+    const value = typeof source[key] === "string" ? source[key].trim() : "";
+    if (value) return value;
+  }
   return path.join(homeDir || os.homedir(), ".minimax");
 }
 
 function resolvePluginRoot(options = {}) {
-  const homeDir = options.homeDir || os.homedir();
   if (options.pluginRoot) return options.pluginRoot;
-  const dataDir = options.dataDir || resolveMinimaxDataDir(homeDir);
+  const dataDir = options.dataDir
+    || resolveMinimaxDataDir(options.homeDir || os.homedir(), options.env);
   return path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
 }
 
-function readOwnership(pluginRoot) {
-  // Returns { owned: true } or { owned: false, reason }. "owned" requires a
-  // parsable compatible manifest naming our plugin; the hook document may be
-  // missing or corrupt (install repairs it), but a manifest we cannot read
-  // means the directory is not demonstrably ours.
+// Read a JSON file through an injectable fs (Doctor passes the harness fs).
+function readJsonWith(fsImpl, filePath) {
+  return JSON.parse(fsImpl.readFileSync(filePath, "utf8"));
+}
+
+function readOwnership(pluginRoot, fsImpl) {
+  // Returns { owned: true } or { owned: false, reason }. "owned" requires BOTH
+  // halves of the ownership proof:
+  //   1. a parsable compatible manifest naming our plugin, AND
+  //   2. a parsable hooks document referencing the minimax-hook.js marker.
+  // A directory that only claims our name in the manifest — or only carries
+  // the marker — is not demonstrably ours, so install refuses to overwrite it
+  // and uninstall refuses to delete it.
+  const f = fsImpl || fs;
   let manifest;
   try {
-    manifest = readJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"));
+    manifest = readJsonWith(f, path.join(pluginRoot, ".claude-plugin", "plugin.json"));
   } catch (err) {
-    if (err.code === "ENOENT") return { owned: false, reason: "no-manifest" };
+    if (err && err.code === "ENOENT") return { owned: false, reason: "no-manifest" };
     return { owned: false, reason: "unreadable-manifest" };
   }
   if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)) {
@@ -80,7 +95,21 @@ function readOwnership(pluginRoot) {
   if (manifest.name !== PLUGIN_DIR_NAME) {
     return { owned: false, reason: "foreign-manifest" };
   }
+  let hooks;
+  try {
+    hooks = readJsonWith(f, path.join(pluginRoot, "hooks", "hooks.json"));
+  } catch (err) {
+    if (err && err.code === "ENOENT") return { owned: false, reason: "no-hooks-document" };
+    return { owned: false, reason: "unreadable-hooks" };
+  }
+  if (hooks === null || typeof hooks !== "object" || !JSON.stringify(hooks).includes(MARKER)) {
+    return { owned: false, reason: "missing-marker" };
+  }
   return { owned: true };
+}
+
+function resolveHookScriptPath() {
+  return asarUnpackedPath(path.resolve(__dirname, "minimax-hook.js").replace(/\\/g, "/"));
 }
 
 function desiredManifest() {
@@ -133,13 +162,16 @@ function installMinimaxPlugin(options = {}) {
 
   // Skip when MiniMax Code has no data directory (not installed on this
   // machine) — do not create `~/.minimax` on behalf of an absent app.
-  const dataDir = options.dataDir || resolveMinimaxDataDir(options.homeDir || os.homedir());
+  const dataDir = options.dataDir
+    || resolveMinimaxDataDir(options.homeDir || os.homedir(), options.env);
   if (!options.pluginRoot && !fs.existsSync(dataDir)) {
-    if (!options.silent) console.log("Clawd: ~/.minimax/ not found — skipping MiniMax Code plugin install");
+    if (!options.silent) {
+      console.log(`Clawd: ${dataDir} not found — skipping MiniMax Code plugin install`);
+    }
     return { added: 0, skipped: 0, updated: 0, pluginRoot };
   }
 
-  const hookScript = asarUnpackedPath(path.resolve(__dirname, "minimax-hook.js").replace(/\\/g, "/"));
+  const hookScript = resolveHookScriptPath();
   const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
   const nodeBin = resolved || "node";
 
@@ -230,8 +262,13 @@ module.exports = {
   MARKER,
   MINIMAX_HOOK_EVENTS,
   PLUGIN_DIR_NAME,
+  buildDesiredHooksDocument: desiredHooksDocument,
+  desiredManifest,
   installMinimaxPlugin,
+  readOwnership,
+  resolveHookScriptPath,
   resolveMinimaxDataDir,
+  resolvePluginRoot,
   unregisterMinimaxPlugin,
 };
 

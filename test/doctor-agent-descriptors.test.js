@@ -180,8 +180,8 @@ describe("doctor agent descriptors", () => {
     assert.strictEqual(getAgentDescriptor("deepseek-harness").configMode, "dsh-plugin");
 
     const minimax = require("../hooks/minimax-install");
-    assert.strictEqual(getAgentDescriptor("minimax").parentDir, minimax.DEFAULT_DATA_DIR);
-    assert.strictEqual(getAgentDescriptor("minimax").configPath, minimax.DEFAULT_PLUGIN_ROOT);
+    assert.strictEqual(getAgentDescriptor("minimax").parentDir, minimax.resolveMinimaxDataDir());
+    assert.strictEqual(getAgentDescriptor("minimax").configPath, minimax.resolvePluginRoot());
     assert.strictEqual(getAgentDescriptor("minimax").marker, minimax.MARKER);
     assert.deepStrictEqual(getAgentDescriptor("minimax").hookEvents, minimax.MINIMAX_HOOK_EVENTS);
     assert.strictEqual(getAgentDescriptor("minimax").configMode, "minimax-plugin");

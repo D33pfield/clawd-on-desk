@@ -438,11 +438,14 @@ const AGENT_DESCRIPTORS = Object.freeze([
     // enable clawd-state@local`) and is not readable from disk — the
     // dedicated "minimax-plugin" config mode only verifies our managed files
     // and lets withMinimaxEnableNotice surface the manual enable step.
+    // parentDir/configPath resolve through the installer's shared helper
+    // (MINIMAX_DATA_DIR → MAVIS_DATA_DIR → ~/.minimax) so Doctor inspects the
+    // same directory install/uninstall use.
     agentId: "minimax",
     agentName: agentName("minimax"),
     eventSource: agentEventSource("minimax"),
-    parentDir: minimax.DEFAULT_DATA_DIR,
-    configPath: minimax.DEFAULT_PLUGIN_ROOT,
+    parentDir: minimax.resolveMinimaxDataDir(),
+    configPath: minimax.resolvePluginRoot(),
     configMode: "minimax-plugin",
     autoInstall: true,
     marker: minimax.MARKER,
