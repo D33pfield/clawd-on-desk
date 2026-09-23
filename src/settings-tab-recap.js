@@ -679,6 +679,17 @@
     return text;
   }
 
+  function cellStatusLabel(cell) {
+    const keys = {
+      covered: "recapStatusCovered", partial: "recapStatusPartial",
+      uncovered: "recapStatusUncovered", future: "recapStatusFuture",
+      "not-started": "recapStatusNotStarted", gap: "recapStatusGap",
+    };
+    return cell.state === "activity"
+      ? replace(t("recapTooltipTotal"), { count: formatNumber(cell.total) })
+      : t(keys[cell.state]);
+  }
+
   function buildTimeline(data, summary, interaction) {
     const model = buildTimelineModel(data, view.period);
     const rowByKey = new Map(summary.rows.map((row) => [row.key, row]));
@@ -742,6 +753,10 @@
       if (cell.state === "activity") element.classList.add(`recap-depth-${depthOf(cell.total)}`);
       if (cell.kind === "fold") element.classList.add("recap-cell-fold");
       if (cell.dayNumber && view.period === "month") {
+        if (cell.localDate === data.anchorDate) {
+          element.classList.add("recap-cell-current");
+          element.setAttribute("aria-current", "date");
+        }
         const dayNumber = document.createElement("span");
         dayNumber.className = "recap-day-number";
         dayNumber.textContent = formatNumber(cell.dayNumber);
@@ -774,6 +789,15 @@
       }
       grid.appendChild(labels);
     } else if (view.period === "week") {
+      const hours = document.createElement("div");
+      hours.className = "recap-week-hours";
+      hours.setAttribute("aria-hidden", "true");
+      for (let hour = 0; hour < 24; hour += 1) {
+        const label = document.createElement("span");
+        label.textContent = hour % 6 === 0 ? formatNumber(hour, { minimumIntegerDigits: 2, useGrouping: false }) : "";
+        hours.appendChild(label);
+      }
+      grid.appendChild(hours);
       for (let dayIndex = 0; dayIndex < 7; dayIndex += 1) {
         const row = document.createElement("div");
         row.className = "recap-week-row";
@@ -823,7 +847,7 @@
         row.setAttribute("role", "row");
         const label = document.createElement("span");
         label.className = "recap-row-label";
-        label.textContent = formatDate(`${data.anchorDate.slice(0, 4)}-${String(monthIndex + 1).padStart(2, "0")}-01`, { month: "narrow" });
+        label.textContent = formatDate(`${data.anchorDate.slice(0, 4)}-${String(monthIndex + 1).padStart(2, "0")}-01`, { month: "short" });
         label.setAttribute("aria-hidden", "true");
         row.appendChild(label);
         const band = document.createElement("div");
@@ -1035,11 +1059,13 @@
           popover.className = "recap-cell-popover";
           popover.setAttribute("aria-hidden", "true");
           const popTitle = document.createElement("strong");
-          popTitle.textContent = cell.state === "activity"
-            ? `${cellWhen(cell)} · ${replace(t("recapTooltipTotal"), { count: formatNumber(cell.total) })}`
-            : cellAriaLabel(cell, rowByKey);
+          popTitle.textContent = cellWhen(cell);
           popover.appendChild(popTitle);
-          if (cell.kind === "fold" && cell.state === "activity") {
+          const status = document.createElement("p");
+          status.className = "recap-cell-popover-note";
+          status.textContent = cellStatusLabel(cell);
+          popover.appendChild(status);
+          if (cell.kind === "fold") {
             const foldNote = document.createElement("p");
             foldNote.className = "recap-cell-popover-note";
             foldNote.textContent = t("recapCellFold");

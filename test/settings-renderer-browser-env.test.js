@@ -2656,7 +2656,18 @@ describe("settings renderer browser environment", () => {
       await new Promise((resolve) => setTimeout(resolve, 110));
       const popover = harness.content.querySelector(".recap-cell-popover");
       assert.ok(popover, `${period} empty cells use the rounded popover`);
-      assert.equal(popover.querySelector("strong").textContent, empty.getAttribute("aria-label"));
+      assert.equal(`${popover.querySelector("strong").textContent}: ${popover.querySelector(".recap-cell-popover-note").textContent}`,
+        empty.getAttribute("aria-label"), "date and status occupy separate lines without losing meaning");
+      if (period === "month") {
+        const today = grid.querySelectorAll(".recap-cell-current");
+        assert.equal(today.length, 1);
+        assert.match(today[0].dataset.cellKey, /2026-08-29/);
+        assert.equal(today[0].getAttribute("aria-current"), "date");
+      }
+      if (period === "week") {
+        assert.deepEqual(grid.querySelector(".recap-week-hours").children.map((node) => node.textContent).filter(Boolean),
+          ["00", "06", "12", "18"]);
+      }
       empty.dispatchEvent({ type: "mouseleave" });
       assert.equal(harness.content.querySelector(".recap-cell-popover"), null);
       grid.dispatchEvent({ type: "keydown", key: "ArrowLeft", preventDefault() {} });
