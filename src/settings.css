@@ -260,6 +260,20 @@ html, body {
   gap: 0 16px;
   margin-bottom: 20px;
 }
+.recap-data-region { position: relative; }
+.recap-loading-status {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+  pointer-events: none;
+}
 .recap-page-header h1,
 .recap-page-header .subtitle { grid-column: 1; }
 .recap-page-header .subtitle { margin-bottom: 0; }
@@ -293,8 +307,7 @@ html, body {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 .recap-period-button:focus-visible,
-.recap-agent-row:focus-visible,
-.recap-grid:focus-visible {
+.recap-agent-row:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
   outline-offset: 2px;
 }
@@ -463,6 +476,7 @@ html, body {
 .recap-grid {
   min-width: 0;
   border-radius: 6px;
+  outline: none;
 }
 .recap-band {
   display: flex;
@@ -593,10 +607,15 @@ html, body {
 .recap-grid-dim .recap-cell-hit,
 .recap-grid-dim .recap-cell-peek { opacity: 1; }
 .recap-grid-dim .recap-cell-hit { border: 0; }
-.recap-grid:focus .recap-cell-keyboard {
-  outline: 2px solid var(--text-primary);
-  outline-offset: 2px;
+.recap-grid.recap-keyboard-mode:focus-visible .recap-cell-keyboard {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  box-shadow: 0 0 0 3px var(--panel-bg);
+  opacity: 1;
   z-index: 4;
+}
+@media (forced-colors: active) {
+  .recap-grid.recap-keyboard-mode:focus-visible .recap-cell-keyboard { outline-color: Highlight; }
 }
 .recap-hour-labels {
   display: flex;
@@ -632,6 +651,7 @@ html, body {
 .recap-month-weekdays {
   margin-bottom: 5px;
   text-align: center;
+  font-size: 10px;
 }
 .recap-month-row { margin-bottom: 4px; }
 .recap-month-row:last-child { margin-bottom: 0; }
@@ -641,10 +661,12 @@ html, body {
   top: 8%;
   right: 9%;
   z-index: 2;
-  color: var(--text-tertiary);
-  font-size: 8px;
-  line-height: 1;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
 }
+.recap-cell-activity .recap-day-number { color: var(--text-primary); }
 .recap-year-row { gap: 2px; }
 .recap-year-row .recap-row-label {
   width: 24px;
