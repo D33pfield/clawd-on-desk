@@ -655,10 +655,10 @@ function refusedUninstallResult(pluginRoot, reason) {
 }
 
 // After the verified directory has left plugins/, another Clawd instance could
-// have seen the root as missing and published a fresh plugin there before this
-// uninstall returns. Re-read the location so such a reinstall is never reported
-// as removed. An install that lands after this check is a later operation and
-// is accounted for by that operation's own result.
+// have seen the root as missing and published a fresh plugin there. Re-read the
+// location once, so a reinstall already present at this check is reported
+// instead of being claimed removed. This is a snapshot: an install that lands
+// after it (even before Settings persists the result) is not covered.
 function recheckReinstalledAtRoot(pluginRoot, result) {
   const state = lstatState(fs, pluginRoot);
   if (state.kind === "missing") return result;

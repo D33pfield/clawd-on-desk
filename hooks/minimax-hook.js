@@ -223,7 +223,7 @@ function isMinimaxAgentCommandLine(cmd) {
 const AGENT_CMDLINE_NAMES = ["node", "node.exe", "mainthread", "node-mainthread"];
 
 const config = getPlatformConfig({});
-const resolve = createPidResolver({
+const RESOLVER_OPTIONS = {
   agentNames: {
     win: new Set(AGENT_NAMES.win),
     mac: new Set(AGENT_NAMES.mac),
@@ -232,7 +232,8 @@ const resolve = createPidResolver({
   agentCmdlineCheck: isMinimaxAgentCommandLine,
   agentCmdlineNames: new Set(AGENT_CMDLINE_NAMES),
   platformConfig: config,
-});
+};
+const resolve = createPidResolver(RESOLVER_OPTIONS);
 
 // This integration is state-only and does not own permission decisions, so
 // every event emits {} — for MiniMax's wire contract an empty output means
@@ -366,6 +367,7 @@ module.exports = {
   __test: {
     AGENT_NAMES,
     AGENT_CMDLINE_NAMES,
+    RESOLVER_OPTIONS,
     isMinimaxAgentCommandLine,
     splitCommandLine,
     resolveSessionTitle,
