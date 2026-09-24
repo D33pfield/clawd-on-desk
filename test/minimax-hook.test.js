@@ -196,6 +196,9 @@ describe("minimax hook agent process detection", () => {
     }
     assert.ok(AGENT_NAMES.mac.includes("minimax code"), "the desktop app must be recognizable on macOS");
     assert.ok(AGENT_NAMES.win.includes("minimax code.exe"), "the desktop app must be recognizable on Windows");
+    // The CLI sets process.title = "minimax-code" at startup (mcode 0.5.4).
+    assert.ok(AGENT_NAMES.mac.includes("minimax-code"), "the retitled CLI must be recognizable on macOS");
+    assert.ok(AGENT_NAMES.linux.includes("minimax-code"), "the retitled CLI must be recognizable on Linux");
   });
 
   it("recognizes the mcode CLI command lines and nothing merely similar", () => {
@@ -205,8 +208,10 @@ describe("minimax hook agent process detection", () => {
       "node /Users/me/.minimax-code/releases/0.5.4/cli.js",
       String.raw`"C:\Program Files\nodejs\node.exe" "C:\Users\me\AppData\Roaming\npm\node_modules\@minimax-ai\code\cli.js"`,
       String.raw`C:\Users\me\AppData\Roaming\npm\mcode.cmd`,
+      "minimax-code",
     ];
     const misses = [
+      "node /tmp/minimax-code-clipboard-1234/paste.js",
       "node /usr/local/bin/mcode-tools convert",
       "node /Users/me/mcode-project/server.js",
       "node /Users/me/src/mcode.json.js",
@@ -218,21 +223,20 @@ describe("minimax hook agent process detection", () => {
     for (const cmd of misses) assert.strictEqual(isMinimaxAgentCommandLine(cmd), false, String(cmd));
   });
 
-  it("reports the mcode CLI process as the agent pid", { skip: process.platform === "win32" }, () => {
-    // The CLI is a node process (`node …/bin/mcode`), so only the command-line
-    // check can identify it. Without an agent pid Clawd cannot retire the
-    // session when the CLI exits — MiniMax sends no SessionEnd on exit.
+  // Stands in for the real CLI and spawns the hook the way MiniMax's plugin
+  // runner does (exec-form, no shell), then returns the hook's POST body.
+  // execArgv forwards the harness's HTTP recorder; that recorder is also
+  // preloaded in the launcher and dumps its own empty recording on exit, so
+  // the launcher hands the hook's recording back to it last.
+  function postedBodyUnderLauncher({ retitle }) {
     const fs = require("node:fs");
     const os = require("node:os");
     const path = require("node:path");
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-minimax-launcher-"));
     const launcher = path.join(dir, "bin", "mcode");
     fs.mkdirSync(path.dirname(launcher), { recursive: true });
-    // Stands in for the real CLI and spawns the hook the way MiniMax's plugin
-    // runner does (exec-form, no shell). execArgv forwards the harness's HTTP
-    // recorder; that recorder is also preloaded here and dumps its own empty
-    // recording on exit, so hand the hook's recording back to it last.
     fs.writeFileSync(launcher, [
+      retitle ? `process.title = ${JSON.stringify(retitle)};` : "",
       "const fs = require(\"node:fs\");",
       "const { spawnSync } = require(\"node:child_process\");",
       "const out = process.env.CLAWD_POST_OUT;",
@@ -247,17 +251,36 @@ describe("minimax hook agent process detection", () => {
     ].join("\n"), "utf8");
     try {
       const result = runMinimaxHook({
-        session_id: "sess-agent-pid",
+        session_id: `sess-agent-pid-${retitle || "cmdline"}`,
         cwd: "/tmp/project",
         hook_event_name: "UserPromptSubmit",
         prompt: "hi",
       }, { script: launcher });
       assert.strictEqual(result.status, 0, result.stderr);
-      const body = postedBody(result);
-      assert.ok(Number.isInteger(body.agent_pid) && body.agent_pid > 1, `agent_pid missing: ${JSON.stringify(body)}`);
+      return postedBody(result);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  }
+
+  // Without an agent pid Clawd cannot retire the session when the CLI exits —
+  // MiniMax sends no SessionEnd on exit.
+  it("reports the real, retitled mcode CLI (minimax-code) as the agent pid", {
+    skip: process.platform === "win32",
+  }, () => {
+    // mcode 0.5.4 sets process.title = "minimax-code" at startup; on macOS and
+    // Linux that is the process name ps reports, so the name list must match.
+    const body = postedBodyUnderLauncher({ retitle: "minimax-code" });
+    assert.ok(Number.isInteger(body.agent_pid) && body.agent_pid > 1, `agent_pid missing: ${JSON.stringify(body)}`);
+  });
+
+  it("reports a node-named mcode process as the agent pid by its command line", {
+    skip: process.platform === "win32",
+  }, () => {
+    // A node process whose command line is `node …/bin/mcode` (the shape the
+    // CLI keeps on Windows) is only identifiable through the command line.
+    const body = postedBodyUnderLauncher({ retitle: null });
+    assert.ok(Number.isInteger(body.agent_pid) && body.agent_pid > 1, `agent_pid missing: ${JSON.stringify(body)}`);
   });
 });
 

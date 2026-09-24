@@ -196,7 +196,7 @@ MiniMax Code 状态同步（hook-only / state-only，本地插件目录）：
   插件目录整体 Clawd 独占，所有权只认结构化凭据 .clawd-managed.json（最先写入，半装可修复）：install 对无凭据的已存在目录
     fail closed（任何 manifest kind、符号链接根目录），uninstall 同样只凭凭据删目录；缺凭据的首版目录只有逐项等于
     首版生成结构时才被接管并补写凭据。node 探测失败时保留已记录的绝对路径；PostCompact 上报 thinking（手动压缩 idle）；
-    CLI 是 node 进程，靠命令行识别 agent pid，CLI 退出（无 SessionEnd）后会话按 agent-exit 清理；启用状态在 App 内（mcode plugin enable clawd-state@local / 插件面板），
+    CLI 把进程标题改成 minimax-code（macOS/Linux 按名字、Windows 按命令行识别 agent pid），CLI 退出（无 SessionEnd）后会话按 agent-exit 清理；启用状态在 App 内（mcode plugin enable clawd-state@local / 插件面板），
     磁盘不可读，Doctor（configMode "minimax-plugin"）与 Settings 只做提示。
   无原生会话标题字段：从首次 prompt 首行派生并保持首个标题（server 端 first-wins，同 traecode）。
 

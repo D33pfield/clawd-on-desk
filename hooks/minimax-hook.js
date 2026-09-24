@@ -101,25 +101,28 @@ function resolveSessionTitle(payload, event) {
 
 // The resolver compares lowercased process basenames (normalizePosixProcessName
 // and the Windows snapshot both lowercase), so every entry must be lowercase —
-// a mixed-case name can never match.
+// a mixed-case name can never match. The mcode CLI retitles itself at startup
+// (`process.title = "minimax-code"`), which on macOS and Linux is the process
+// name `ps -o comm=` reports, so that is the name to match there.
 const AGENT_NAMES = {
   win: ["minimax code.exe", "minimax code helper.exe", "mcode.exe"],
-  mac: ["minimax code", "minimax code helper", "mcode"],
-  linux: ["mcode", "minimax code"],
+  mac: ["minimax code", "minimax code helper", "minimax-code", "mcode"],
+  linux: ["minimax-code", "mcode", "minimax code"],
 };
 
-// The mcode CLI is a Node script (`#!/usr/bin/env node`), so its process is
-// named node / node.exe; recognize it by command line instead: the npm package
-// (`@minimax-ai/code`), the official installer's `.minimax-code` directory, or
-// a `mcode` launcher path. Without an agent pid Clawd cannot tell when the CLI
-// exits — MiniMax sends no SessionEnd on exit — and the session row would
-// outlive it for as long as the terminal stays open.
+// Where the CLI still runs under a node / node.exe image name (Windows, where
+// process.title only changes the console title), recognize it by command line:
+// the npm package (`@minimax-ai/code`), the official installer's
+// `.minimax-code` directory, a `mcode` launcher, or the retitled argv. Without
+// an agent pid Clawd cannot tell when the CLI exits — MiniMax sends no
+// SessionEnd on exit — and the session row would outlive it for as long as
+// the terminal stays open.
 function isMinimaxAgentCommandLine(cmd) {
   if (typeof cmd !== "string") return false;
   const normalized = cmd.toLowerCase().replace(/\\/g, "/");
   return normalized.includes("@minimax-ai/code")
     || normalized.includes("/.minimax-code/")
-    || /(^|[\s"'/])mcode(\.js|\.cmd|\.ps1)?($|[\s"'])/.test(normalized);
+    || /(^|[\s"'/])(mcode|minimax-code)(\.js|\.cmd|\.ps1)?($|[\s"'])/.test(normalized);
 }
 
 const config = getPlatformConfig({});
