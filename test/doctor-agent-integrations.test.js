@@ -3309,4 +3309,98 @@ describe("kimi legacy permission-mode supplement", () => {
     const clean = runOne(descriptor);
     assert.strictEqual(clean.status, "ok");
   });
+
+  describe("minimax-plugin config mode", () => {
+    const minimaxInstall = require("../hooks/minimax-install");
+    const { resolveNodeBin } = require("../hooks/server-config");
+    const PLUGIN_DIR_NAME = minimaxInstall.PLUGIN_DIR_NAME;
+
+    function minimaxDescriptor(root) {
+      const pluginRoot = path.join(root, "plugins", PLUGIN_DIR_NAME);
+      return {
+        agentId: "minimax",
+        agentName: "MiniMax Code",
+        eventSource: "hook",
+        parentDir: root,
+        configPath: pluginRoot,
+        configMode: "minimax-plugin",
+        autoInstall: true,
+        marker: minimaxInstall.MARKER,
+        managedFiles: [".claude-plugin/plugin.json", "hooks/hooks.json"],
+        hookEvents: minimaxInstall.MINIMAX_HOOK_EVENTS,
+      };
+    }
+
+    function writeOwnedPlugin(descriptor, overrides = {}) {
+      // The Doctor compares against the node path IT resolves, so the
+      // "current" fixture must be built from the same source.
+      const nodeBin = overrides.nodeBin || resolveNodeBin() || "node";
+      const manifest = overrides.manifest || minimaxInstall.desiredManifest();
+      const hooks = overrides.hooks || minimaxInstall.buildDesiredHooksDocument(
+        minimaxInstall.resolveHookScriptPath(),
+        nodeBin,
+      );
+      fs.mkdirSync(path.join(descriptor.configPath, ".claude-plugin"), { recursive: true });
+      fs.mkdirSync(path.join(descriptor.configPath, "hooks"), { recursive: true });
+      writeJson(path.join(descriptor.configPath, ".claude-plugin", "plugin.json"), manifest);
+      writeJson(path.join(descriptor.configPath, "hooks", "hooks.json"), hooks);
+    }
+
+    it("reports a fully foreign directory as broken-path without a Fix button", () => {
+      const root = makeTempDir();
+      const descriptor = minimaxDescriptor(root);
+      writeOwnedPlugin(descriptor, {
+        manifest: { name: PLUGIN_DIR_NAME, description: "someone else's plugin" },
+        hooks: { hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "echo third-party" }] }] } },
+      });
+
+      const detail = checkAgentIntegrations({ fs, prefs: {}, descriptors: [descriptor] }).details[0];
+      assert.strictEqual(detail.status, "broken-path");
+      assert.match(detail.detail, /not a verifiably Clawd-managed plugin/);
+      assert.strictEqual(detail.fixAction, undefined, "foreign directories must not offer a Fix");
+    });
+
+    it("reports a manifest-name-only directory (no marker) as broken-path without a Fix", () => {
+      const root = makeTempDir();
+      const descriptor = minimaxDescriptor(root);
+      writeOwnedPlugin(descriptor, {
+        manifest: { name: PLUGIN_DIR_NAME },
+        hooks: { hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "echo hi" }] }] } },
+      });
+
+      const detail = checkAgentIntegrations({ fs, prefs: {}, descriptors: [descriptor] }).details[0];
+      assert.strictEqual(detail.status, "broken-path");
+      assert.match(detail.detail, /missing-marker/);
+      assert.strictEqual(detail.fixAction, undefined);
+    });
+
+    it("reports an owned directory drifted from the canonical document as broken-path with a Fix", () => {
+      const root = makeTempDir();
+      const descriptor = minimaxDescriptor(root);
+      const staleHooks = minimaxInstall.buildDesiredHooksDocument(
+        minimaxInstall.resolveHookScriptPath(),
+        "/usr/local/bin/node",
+      );
+      // Drop one event and point the command at a node path that no longer
+      // exists — the drift the canonical comparison must surface.
+      delete staleHooks.hooks.PostCompact;
+      staleHooks.hooks.SessionStart[0].hooks[0].command = "/removed/node/path/node";
+      writeOwnedPlugin(descriptor, { hooks: staleHooks });
+
+      const detail = checkAgentIntegrations({ fs, prefs: {}, descriptors: [descriptor] }).details[0];
+      assert.strictEqual(detail.status, "broken-path");
+      assert.match(detail.detail, /outdated or were modified/);
+      assert.ok(detail.fixAction, "outdated owned plugin must offer Repair");
+    });
+
+    it("reports a current owned plugin as ok", () => {
+      const root = makeTempDir();
+      const descriptor = minimaxDescriptor(root);
+      writeOwnedPlugin(descriptor);
+
+      const detail = checkAgentIntegrations({ fs, prefs: {}, descriptors: [descriptor] }).details[0];
+      assert.strictEqual(detail.status, "ok");
+      assert.match(detail.detail, /Clawd plugin verified/);
+    });
+  });
 });

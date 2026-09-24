@@ -1099,6 +1099,14 @@
           hint.textContent = t("traecodeEnableHint");
           text.appendChild(hint);
         }
+        // MiniMax Code has the same manual-enable gap: the plugin directory
+        // is on disk but the app decides whether hooks fire.
+        if (!agent.custom && agent.id === "minimax" && readers.readAgentIntegrationInstalled(agent.id)) {
+          const hint = document.createElement("div");
+          hint.className = "row-desc agent-minimax-hint";
+          hint.textContent = t("minimaxEnableHint");
+          text.appendChild(hint);
+        }
       },
       buildExtraControls: (ctrl) => {
         if (agent.custom) {
