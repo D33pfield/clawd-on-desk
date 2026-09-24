@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { isDeepStrictEqual } = require("util");
 
 const {
   isAgentEnabled,
@@ -41,7 +42,6 @@ const { inspectGrokHookFile } = require("../../hooks/grok-install");
 const { hasIncludeDirective } = require("../../hooks/openclaw-install");
 const { inspectDeepSeekHarnessDiskSync } = require("../../hooks/dsh-install");
 const minimaxInstall = require("../../hooks/minimax-install");
-const { resolveNodeBin } = require("../../hooks/server-config");
 
 const REPAIRABLE_AGENT_STATUSES = new Set([
   "not-connected",
@@ -2187,14 +2187,32 @@ function checkPluginDirMode(descriptor, options) {
   });
 }
 
+// True when a handler names an absolute node binary that no longer exists
+// (a removed nvm version, an uninstalled Homebrew node).
+function minimaxHooksNameMissingNode(hooks, nodeBin, fsImpl) {
+  const eventGroups = hooks && typeof hooks.hooks === "object" && hooks.hooks !== null && !Array.isArray(hooks.hooks)
+    ? Object.values(hooks.hooks)
+    : [];
+  return eventGroups.some((groups) => Array.isArray(groups) && groups.some(
+    (group) => Array.isArray(group && group.hooks) && group.hooks.some(
+      (handler) => handler
+        && typeof handler.command === "string"
+        && handler.command !== nodeBin
+        && (path.posix.isAbsolute(handler.command) || path.win32.isAbsolute(handler.command))
+        && !fileExists(fsImpl, handler.command)
+    )
+  ));
+}
+
 // MiniMax Code: verifies the plugin directory against the SAME shared helpers
 // the installer uses (hooks/minimax-install.js) instead of just checking that
-// two files exist. A directory that fails the ownership proof (manifest name +
-// hook marker) is reported as foreign and never offered a Fix — re-running the
-// installer fails closed there, so the button would be an ineffective loop.
-// An owned directory whose files drifted from the current canonical document
-// (node path, script path, event set, timeout) is broken-path with a working
-// Repair: reinstall rewrites the owned directory in full.
+// files exist. A directory without Clawd's ownership marker — or, for a
+// pre-marker install, without the exact document that build generated — is
+// reported as foreign and never offered a Fix: re-running the installer fails
+// closed there, so the button would be an ineffective loop. An owned directory
+// that is incomplete, still lacks the marker, or drifted from the current
+// canonical document (node path, script path, event set, timeout) is
+// broken-path with a working Repair: reinstall rewrites the owned directory.
 function checkMinimaxPluginMode(descriptor, options) {
   const pluginDir = descriptor.configPath;
   if (!dirExists(options.fs, pluginDir)) {
@@ -2220,43 +2238,36 @@ function checkMinimaxPluginMode(descriptor, options) {
     });
   }
 
-  const hookScript = minimaxInstall.resolveHookScriptPath();
-  const nodeBin = resolveNodeBin() || "node";
+  // Ownership is proven at this point, so a missing or corrupt file is simply
+  // part of what Repair rewrites (e.g. an install interrupted between writes).
+  const readOwnedFile = (relativePath) => {
+    try {
+      return { value: readJson(options.fs, path.join(pluginDir, relativePath)), problem: null };
+    } catch (err) {
+      return { value: undefined, problem: err && err.code === "ENOENT" ? "missing" : "unreadable" };
+    }
+  };
+  const manifest = readOwnedFile(path.join(".claude-plugin", "plugin.json"));
+  const hooks = readOwnedFile(path.join("hooks", "hooks.json"));
+  // Same node-path decision as the installer (including keeping a recorded
+  // absolute path when detection fails), so Doctor never flags drift that a
+  // Repair would immediately write back.
+  const nodeBin = minimaxInstall.resolveDesiredNodeBin({ existingHooks: hooks.value, fs: options.fs });
   const desiredManifest = minimaxInstall.desiredManifest();
-  const desiredHooks = minimaxInstall.buildDesiredHooksDocument(hookScript, nodeBin);
+  const desiredHooks = minimaxInstall.buildDesiredHooksDocument(minimaxInstall.resolveHookScriptPath(), nodeBin);
 
-  let manifest;
-  let hooks;
-  try {
-    manifest = readJson(options.fs, path.join(pluginDir, ".claude-plugin", "plugin.json"));
-    hooks = readJson(options.fs, path.join(pluginDir, "hooks", "hooks.json"));
-  } catch (err) {
-    return makeDetail(descriptor, "broken-path", {
-      level: "warning",
-      parentDirExists: true,
-      configFileExists: true,
-      configPath: pluginDir,
-      detail: err && err.message ? err.message : "Clawd plugin files are unreadable",
-    });
+  // Spell out what drifted so the user knows what Repair rewrites.
+  const drifted = [];
+  if (ownership.via === "legacy") drifted.push("ownership marker missing");
+  if (manifest.problem) drifted.push(`manifest ${manifest.problem}`);
+  else if (!isDeepStrictEqual(manifest.value, desiredManifest)) drifted.push("manifest");
+  if (hooks.problem) drifted.push(`hooks ${hooks.problem}`);
+  else if (!isDeepStrictEqual(hooks.value, desiredHooks)) {
+    drifted.push(minimaxHooksNameMissingNode(hooks.value, nodeBin, options.fs)
+      ? "hooks (node path no longer exists)"
+      : "hooks");
   }
-
-  const manifestMatches = JSON.stringify(manifest) === JSON.stringify(desiredManifest);
-  const hooksMatch = JSON.stringify(hooks) === JSON.stringify(desiredHooks);
-  if (!manifestMatches || !hooksMatch) {
-    // Spell out which side drifted so the user knows what Repair rewrites.
-    const staleNode = !hooksMatch
-      && hooks
-      && Array.isArray(hooks.hooks)
-      && Object.values(hooks.hooks).some((groups) => Array.isArray(groups) && groups.some(
-        (group) => Array.isArray(group && group.hooks) && group.hooks.some(
-          (handler) => handler && typeof handler.command === "string"
-            && handler.command !== nodeBin
-            && !fileExists(options.fs, handler.command)
-        )
-      ));
-    const drifted = [];
-    if (!manifestMatches) drifted.push("manifest");
-    if (!hooksMatch) drifted.push(staleNode ? "hooks (node path no longer exists)" : "hooks");
+  if (drifted.length > 0) {
     return makeDetail(descriptor, "broken-path", {
       level: "warning",
       parentDirExists: true,
@@ -2272,7 +2283,7 @@ function checkMinimaxPluginMode(descriptor, options) {
     parentDirExists: true,
     configFileExists: true,
     configPath: pluginDir,
-    detail: `${pluginDir} Clawd plugin verified (manifest, marker, events, node and script paths)`,
+    detail: `${pluginDir} Clawd plugin verified (ownership marker, manifest, events, node and script paths)`,
   });
 }
 

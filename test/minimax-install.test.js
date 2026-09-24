@@ -6,10 +6,17 @@ const os = require("os");
 const {
   installMinimaxPlugin,
   unregisterMinimaxPlugin,
+  readOwnership,
   resolveMinimaxDataDir,
+  desiredManifest,
+  buildDesiredHooksDocument,
+  buildOwnerMarker,
+  resolveHookScriptPath,
   MINIMAX_HOOK_EVENTS,
+  OWNER_MARKER_FILE,
   PLUGIN_DIR_NAME,
 } = require("../hooks/minimax-install");
+const { writeJsonAtomic } = require("../hooks/json-utils");
 
 const MARKER = "minimax-hook.js";
 const tempDirs = [];
@@ -22,6 +29,20 @@ function makeTempDataDir() {
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function writeJsonFile(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify(value, null, 2), "utf8");
+}
+
+// What the first (pre-marker) MiniMax build wrote: manifest + hooks, no marker.
+function writePreMarkerInstall(pluginRoot, hooks) {
+  writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), desiredManifest());
+  writeJsonFile(
+    path.join(pluginRoot, "hooks", "hooks.json"),
+    hooks || buildDesiredHooksDocument(resolveHookScriptPath(), "/usr/local/bin/node")
+  );
 }
 
 afterEach(() => {
@@ -38,6 +59,14 @@ describe("MiniMax plugin installer", () => {
     assert.strictEqual(result.added, MINIMAX_HOOK_EVENTS.length);
 
     const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    // Ownership is a structured marker (the Pi extension's convention), never
+    // a directory name, manifest name or basename.
+    assert.deepStrictEqual(readJson(path.join(pluginRoot, OWNER_MARKER_FILE)), {
+      app: "clawd-on-desk",
+      integration: "minimax",
+      managed: true,
+      version: 1,
+    });
     const manifest = readJson(path.join(pluginRoot, ".claude-plugin", "plugin.json"));
     assert.strictEqual(manifest.name, PLUGIN_DIR_NAME);
     assert.deepStrictEqual(manifest.hooks, ["hooks/hooks.json"]);
@@ -91,10 +120,10 @@ describe("MiniMax plugin installer", () => {
     assert.strictEqual(hooks.hooks.Stop[0].hooks[0].command, "/usr/local/bin/node");
   });
 
-  it("fails closed when an owned manifest names our plugin but the hooks document lost the marker", () => {
-    // Ownership requires BOTH the manifest name and the hook marker. Without
-    // this, any directory claiming our name could be silently overwritten or
-    // recursively deleted.
+  it("fails closed when a directory claims our manifest name but carries no ownership marker", () => {
+    // A manifest name is not ownership. Without the structured marker (or the
+    // exact pre-marker document), any directory claiming our name could be
+    // silently overwritten or recursively deleted.
     const dataDir = makeTempDataDir();
     const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
     fs.mkdirSync(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
@@ -333,6 +362,196 @@ describe("MiniMax plugin installer", () => {
     const result = unregisterMinimaxPlugin({ dataDir, silent: true });
     assert.strictEqual(result.removed, 0);
     assert.strictEqual(result.changed, false);
+  });
+
+  it("never adopts a same-name plugin that only mentions minimax-hook.js in an unrelated field", () => {
+    // #1038 follow-up: the basename anywhere in the hooks JSON used to count
+    // as ownership, which let Uninstall recursively delete a foreign plugin.
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), {
+      name: PLUGIN_DIR_NAME,
+      description: "unrelated plugin",
+    });
+    writeJsonFile(path.join(pluginRoot, "hooks", "hooks.json"), {
+      note: "minimax-hook.js is an example filename",
+      hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "echo third-party" }] }] },
+    });
+    const before = fs.readFileSync(path.join(pluginRoot, "hooks", "hooks.json"), "utf8");
+
+    assert.deepStrictEqual(readOwnership(pluginRoot), { owned: false, reason: "missing-marker" });
+    assert.throws(
+      () => installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true }),
+      /not a Clawd plugin/
+    );
+    const removed = unregisterMinimaxPlugin({ dataDir, silent: true });
+    assert.strictEqual(removed.removed, 0);
+    assert.strictEqual(fs.readFileSync(path.join(pluginRoot, "hooks", "hooks.json"), "utf8"), before);
+  });
+
+  it("writes the ownership marker first, so an install interrupted between writes is repaired, not stranded", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    const hooksPath = path.join(pluginRoot, "hooks", "hooks.json");
+    const failHooksWrite = (filePath, data) => {
+      if (filePath === hooksPath) {
+        const err = new Error("ENOSPC: no space left on device");
+        err.code = "ENOSPC";
+        throw err;
+      }
+      return writeJsonAtomic(filePath, data);
+    };
+
+    assert.throws(
+      () => installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true, writeJsonAtomic: failHooksWrite }),
+      /ENOSPC/
+    );
+    assert.ok(fs.existsSync(path.join(pluginRoot, OWNER_MARKER_FILE)), "the marker must land before the other files");
+    assert.strictEqual(fs.existsSync(hooksPath), false);
+    assert.deepStrictEqual(readOwnership(pluginRoot), { owned: true, via: "marker" });
+
+    // The next sync / Settings Install repairs the half-written directory...
+    const repaired = installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+    assert.strictEqual(repaired.updated, MINIMAX_HOOK_EVENTS.length);
+    assert.strictEqual(readJson(hooksPath).hooks.Stop[0].hooks[0].command, "/usr/local/bin/node");
+    // ...and Uninstall can always remove what Clawd itself created.
+    assert.strictEqual(unregisterMinimaxPlugin({ dataDir, silent: true }).removed, MINIMAX_HOOK_EVENTS.length);
+    assert.strictEqual(fs.existsSync(pluginRoot), false);
+  });
+
+  it("uninstall removes a half-written directory that holds only the ownership marker", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, OWNER_MARKER_FILE), buildOwnerMarker());
+
+    const result = unregisterMinimaxPlugin({ dataDir, silent: true });
+
+    assert.strictEqual(result.changed, true);
+    assert.strictEqual(fs.existsSync(pluginRoot), false);
+  });
+
+  it("adopts a pre-marker install only when it is exactly the generated document, then adds the marker", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writePreMarkerInstall(pluginRoot);
+    assert.deepStrictEqual(readOwnership(pluginRoot), { owned: true, via: "legacy" });
+
+    const result = installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+
+    assert.strictEqual(result.ownerMarkerAdded, true);
+    assert.strictEqual(result.skipped, MINIMAX_HOOK_EVENTS.length, "hooks were already current");
+    assert.deepStrictEqual(readJson(path.join(pluginRoot, OWNER_MARKER_FILE)), buildOwnerMarker());
+    assert.deepStrictEqual(readOwnership(pluginRoot), { owned: true, via: "marker" });
+  });
+
+  it("refuses a pre-marker lookalike whose hooks document differs from the generated one in any way", () => {
+    const script = resolveHookScriptPath();
+    const variants = {
+      "an extra foreign handler": (doc) => {
+        doc.hooks.PreToolUse[0].hooks.push({ type: "command", command: "echo audit" });
+      },
+      "a matcher on a group": (doc) => {
+        doc.hooks.PreToolUse[0].matcher = "Bash";
+      },
+      "a foreign script path": (doc) => {
+        doc.hooks.Stop[0].hooks[0].args = ["/opt/other/hook.js"];
+      },
+      "a different timeout": (doc) => {
+        doc.hooks.Stop[0].hooks[0].timeout = 5;
+      },
+      "a missing event": (doc) => {
+        delete doc.hooks.PostCompact;
+      },
+      "an extra top-level key": (doc) => {
+        doc.description = "mine";
+      },
+      "an extra field on a handler": (doc) => {
+        doc.hooks.Stop[0].hooks[0] = { ...doc.hooks.Stop[0].hooks[0], env: { AUDIT: "1" } };
+      },
+      "a different command on one handler": (doc) => {
+        doc.hooks.Stop[0].hooks[0] = { ...doc.hooks.Stop[0].hooks[0], command: "/opt/other/node" };
+      },
+    };
+    for (const [label, mutate] of Object.entries(variants)) {
+      const dataDir = makeTempDataDir();
+      const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+      const doc = buildDesiredHooksDocument(script, "/usr/local/bin/node");
+      mutate(doc);
+      writePreMarkerInstall(pluginRoot, doc);
+
+      assert.strictEqual(readOwnership(pluginRoot).owned, false, label);
+      assert.throws(
+        () => installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true }),
+        /not a Clawd plugin/,
+        label
+      );
+      assert.strictEqual(unregisterMinimaxPlugin({ dataDir, silent: true }).removed, 0, label);
+      assert.deepStrictEqual(readJson(path.join(pluginRoot, "hooks", "hooks.json")), doc, label);
+    }
+  });
+
+  it("refuses an ownership marker that belongs to another integration", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writePreMarkerInstall(pluginRoot);
+    writeJsonFile(path.join(pluginRoot, OWNER_MARKER_FILE), { app: "clawd-on-desk", integration: "pi", managed: true });
+
+    assert.deepStrictEqual(readOwnership(pluginRoot), { owned: false, reason: "foreign-owner-marker" });
+    assert.throws(
+      () => installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true }),
+      /foreign-owner-marker/
+    );
+    assert.strictEqual(unregisterMinimaxPlugin({ dataDir, silent: true }).removed, 0);
+    assert.ok(fs.existsSync(path.join(pluginRoot, "hooks", "hooks.json")));
+  });
+
+  it("treats a symlinked plugin root as foreign and never writes or deletes through it", {
+    skip: process.platform === "win32",
+  }, () => {
+    const dataDir = makeTempDataDir();
+    const target = path.join(dataDir, "elsewhere", PLUGIN_DIR_NAME);
+    installMinimaxPlugin({ pluginRoot: target, nodeBin: "/usr/local/bin/node", silent: true });
+    const before = fs.readFileSync(path.join(target, "hooks", "hooks.json"), "utf8");
+    const link = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    fs.symlinkSync(target, link, "dir");
+
+    assert.deepStrictEqual(readOwnership(link), { owned: false, reason: "symlink-root" });
+    assert.throws(
+      () => installMinimaxPlugin({ dataDir, nodeBin: "/other/node", silent: true }),
+      /symlink-root/
+    );
+    assert.strictEqual(unregisterMinimaxPlugin({ dataDir, silent: true }).removed, 0);
+    assert.ok(fs.lstatSync(link).isSymbolicLink(), "the link itself must survive");
+    assert.strictEqual(fs.readFileSync(path.join(target, "hooks", "hooks.json"), "utf8"), before);
+  });
+
+  it("keeps the recorded absolute node path when node detection fails", () => {
+    const dataDir = makeTempDataDir();
+    const recordedNode = path.join(dataDir, "node-bin", "node");
+    fs.mkdirSync(path.dirname(recordedNode), { recursive: true });
+    fs.writeFileSync(recordedNode, "", "utf8");
+    installMinimaxPlugin({ dataDir, nodeBin: recordedNode, silent: true });
+    const hooksPath = path.join(dataDir, "plugins", PLUGIN_DIR_NAME, "hooks", "hooks.json");
+
+    // nodeBin: null is what resolveNodeBin() returns when detection fails.
+    const result = installMinimaxPlugin({ dataDir, nodeBin: null, silent: true });
+
+    assert.strictEqual(result.skipped, MINIMAX_HOOK_EVENTS.length, "nothing to rewrite");
+    for (const event of MINIMAX_HOOK_EVENTS) {
+      assert.strictEqual(readJson(hooksPath).hooks[event][0].hooks[0].command, recordedNode, event);
+    }
+  });
+
+  it("falls back to bare node only when the recorded node path no longer exists", () => {
+    const dataDir = makeTempDataDir();
+    installMinimaxPlugin({ dataDir, nodeBin: path.join(dataDir, "removed", "node"), silent: true });
+
+    const result = installMinimaxPlugin({ dataDir, nodeBin: null, silent: true });
+
+    assert.strictEqual(result.updated, MINIMAX_HOOK_EVENTS.length);
+    const hooks = readJson(path.join(dataDir, "plugins", PLUGIN_DIR_NAME, "hooks", "hooks.json"));
+    assert.strictEqual(hooks.hooks.Stop[0].hooks[0].command, "node");
   });
 
   it("registers exactly the 10 state events and never PermissionRequest", () => {

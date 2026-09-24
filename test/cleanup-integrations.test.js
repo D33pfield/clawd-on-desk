@@ -14,6 +14,11 @@ const {
 const { resolvePluginDir } = require("../hooks/opencode-install");
 const { resolveManagedRoot: resolveDshManagedRoot } = require("../hooks/dsh-install");
 const { registerQwenWorkHooks } = require("../hooks/qwenwork-install");
+const {
+  installMinimaxPlugin,
+  MINIMAX_HOOK_EVENTS,
+  PLUGIN_DIR_NAME: MINIMAX_PLUGIN_DIR_NAME,
+} = require("../hooks/minimax-install");
 const { registerCodexHooks, CODEX_OFFICIAL_HOOK_EVENTS } = require("../hooks/codex-install");
 const { stableCodexHookPaths } = require("../hooks/codex-install-utils");
 const agentCommands = require("../src/settings-actions-agents");
@@ -446,6 +451,53 @@ describe("cleanupIntegrations", () => {
 // kept every Clawd hook. These tests run the real fallback — an injected fake
 // uninstall impl would have passed against the broken build.
 // ═════════════════════════════════════════════════════════════════════════════
+
+describe("MiniMax Code plugin cleanup follows the configured data dir (#1038)", () => {
+  it("integration-sync's real uninstall removes the plugin from MINIMAX_DATA_DIR, not ~/.minimax", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-uninstall-minimax-"));
+    const homeDir = path.join(root, "home");
+    const customDataDir = path.join(root, "custom-minimax-data");
+    const defaultPlugins = path.join(homeDir, ".minimax", "plugins");
+    fs.mkdirSync(defaultPlugins, { recursive: true });
+    fs.mkdirSync(customDataDir, { recursive: true });
+    const pluginRoot = path.join(customDataDir, "plugins", MINIMAX_PLUGIN_DIR_NAME);
+
+    try {
+      installMinimaxPlugin({ dataDir: customDataDir, nodeBin: "/usr/local/bin/node", silent: true });
+      assert.ok(fs.existsSync(pluginRoot));
+
+      // No uninstallIntegrationImpls: this is the AGENT_CLEANERS +
+      // buildCleanupOptionsForHome path that Settings Uninstall and About
+      // cleanup take in production.
+      const runtime = createIntegrationSyncRuntime({
+        ctx: {
+          cleanupHomeDir: homeDir,
+          cleanupOptions: { env: { MINIMAX_DATA_DIR: customDataDir }, hermesCommand: false },
+        },
+      });
+      const result = runtime.uninstallIntegrationForAgent("minimax");
+
+      assert.strictEqual(result.removed, MINIMAX_HOOK_EVENTS.length);
+      assert.strictEqual(result.changed, true);
+      assert.strictEqual(fs.existsSync(pluginRoot), false, "the plugin must not survive in the custom data dir");
+      assert.deepStrictEqual(fs.readdirSync(defaultPlugins), []);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves MAVIS_DATA_DIR when MINIMAX_DATA_DIR is unset", () => {
+    const homeDir = path.join(os.tmpdir(), "clawd-minimax-plan-home");
+    const plan = buildCleanupOptionsForHome(homeDir, {
+      env: { MAVIS_DATA_DIR: "/data/mavis" },
+      hermesCommand: false,
+    });
+    assert.strictEqual(
+      plan.byAgent.minimax.pluginRoot,
+      path.join("/data/mavis", "plugins", MINIMAX_PLUGIN_DIR_NAME)
+    );
+  });
+});
 
 describe("QwenWork integration cleanup (#843)", () => {
   const CLAWD_HOOK = (event) => `node "C:/clawd/hooks/qwenwork-hook.js" "${event}"`;

@@ -44,7 +44,9 @@ module.exports = {
     SubagentStart: "juggling",
     SubagentStop: "working",
     PreCompact: "sweeping",
-    PostCompact: "attention",
+    // Compaction finishing is not turn completion (#406): the hook reports
+    // thinking for an automatic compaction and idle for a manual one.
+    PostCompact: "thinking",
   },
   capabilities: {
     httpHook: false,

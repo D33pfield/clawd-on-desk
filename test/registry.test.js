@@ -603,7 +603,7 @@ describe("Agent Registry", () => {
     assert.strictEqual(minimax.eventMap.SubagentStart, "juggling");
     assert.strictEqual(minimax.eventMap.SubagentStop, "working");
     assert.strictEqual(minimax.eventMap.PreCompact, "sweeping");
-    assert.strictEqual(minimax.eventMap.PostCompact, "attention");
+    assert.strictEqual(minimax.eventMap.PostCompact, "thinking");
     // Phase 1 is state-only: PermissionRequest is not registered at all
     // (MiniMax's plugin-hook timeout budget makes blocking approval
     // impossible) and there is no Notification event.

@@ -30,7 +30,10 @@ const HOOK_MAP = {
   SubagentStart:    { state: "juggling",  event: "SubagentStart" },
   SubagentStop:     { state: "working",   event: "SubagentStop" },
   PreCompact:       { state: "sweeping",  event: "PreCompact" },
-  PostCompact:      { state: "attention", event: "PostCompact" },
+  // PostCompact is "compaction finished", not turn completion (#406, same rule
+  // as the Claude Code adapter): an automatic compaction resumes the task, so
+  // stay busy; main() settles a manual compaction (trigger "manual") to idle.
+  PostCompact:      { state: "thinking",  event: "PostCompact" },
 };
 
 // Lifecycle for the shared resolver's cross-process pid cache. Stop is
@@ -96,13 +99,37 @@ function resolveSessionTitle(payload, event) {
   return null;
 }
 
+// The resolver compares lowercased process basenames (normalizePosixProcessName
+// and the Windows snapshot both lowercase), so every entry must be lowercase —
+// a mixed-case name can never match.
+const AGENT_NAMES = {
+  win: ["minimax code.exe", "minimax code helper.exe", "mcode.exe"],
+  mac: ["minimax code", "minimax code helper", "mcode"],
+  linux: ["mcode", "minimax code"],
+};
+
+// The mcode CLI is a Node script (`#!/usr/bin/env node`), so its process is
+// named node / node.exe; recognize it by command line instead: the npm package
+// (`@minimax-ai/code`), the official installer's `.minimax-code` directory, or
+// a `mcode` launcher path. Without an agent pid Clawd cannot tell when the CLI
+// exits — MiniMax sends no SessionEnd on exit — and the session row would
+// outlive it for as long as the terminal stays open.
+function isMinimaxAgentCommandLine(cmd) {
+  if (typeof cmd !== "string") return false;
+  const normalized = cmd.toLowerCase().replace(/\\/g, "/");
+  return normalized.includes("@minimax-ai/code")
+    || normalized.includes("/.minimax-code/")
+    || /(^|[\s"'/])mcode(\.js|\.cmd|\.ps1)?($|[\s"'])/.test(normalized);
+}
+
 const config = getPlatformConfig({});
 const resolve = createPidResolver({
   agentNames: {
-    win: new Set(["MiniMax Code.exe", "MiniMax Code Helper.exe", "mcode.exe"]),
-    mac: new Set(["MiniMax Code", "MiniMax Code Helper", "mcode"]),
-    linux: new Set(["mcode", "MiniMax Code"]),
+    win: new Set(AGENT_NAMES.win),
+    mac: new Set(AGENT_NAMES.mac),
+    linux: new Set(AGENT_NAMES.linux),
   },
+  agentCmdlineCheck: isMinimaxAgentCommandLine,
   platformConfig: config,
 });
 
@@ -195,7 +222,10 @@ function main(deps = {}) {
       });
       const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = pidMetadata;
 
-      const body = { state, session_id: sessionId, event };
+      const resolvedState = hookName === "PostCompact" && payload && payload.trigger === "manual"
+        ? "idle"
+        : state;
+      const body = { state: resolvedState, session_id: sessionId, event };
       body.agent_id = "minimax";
       if (cwd) body.cwd = cwd;
       const resolvedTitle = resolveSessionTitle(payload, event);
@@ -233,6 +263,8 @@ if (require.main === module) {
 
 module.exports = {
   __test: {
+    AGENT_NAMES,
+    isMinimaxAgentCommandLine,
     resolveSessionTitle,
     extractPromptTitle,
     normalizeTitle,

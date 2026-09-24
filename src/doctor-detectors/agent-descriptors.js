@@ -449,7 +449,7 @@ const AGENT_DESCRIPTORS = Object.freeze([
     configMode: "minimax-plugin",
     autoInstall: true,
     marker: minimax.MARKER,
-    managedFiles: [".claude-plugin/plugin.json", "hooks/hooks.json"],
+    managedFiles: [minimax.OWNER_MARKER_FILE, ".claude-plugin/plugin.json", "hooks/hooks.json"],
     hookEvents: minimax.MINIMAX_HOOK_EVENTS,
   }),
 ]);

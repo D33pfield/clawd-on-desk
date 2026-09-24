@@ -3335,21 +3335,25 @@ describe("kimi legacy permission-mode supplement", () => {
       // The Doctor compares against the node path IT resolves, so the
       // "current" fixture must be built from the same source.
       const nodeBin = overrides.nodeBin || resolveNodeBin() || "node";
-      const manifest = overrides.manifest || minimaxInstall.desiredManifest();
-      const hooks = overrides.hooks || minimaxInstall.buildDesiredHooksDocument(
-        minimaxInstall.resolveHookScriptPath(),
-        nodeBin,
-      );
+      // null means "leave this file out" (an interrupted install).
+      const manifest = "manifest" in overrides ? overrides.manifest : minimaxInstall.desiredManifest();
+      const hooks = "hooks" in overrides
+        ? overrides.hooks
+        : minimaxInstall.buildDesiredHooksDocument(minimaxInstall.resolveHookScriptPath(), nodeBin);
       fs.mkdirSync(path.join(descriptor.configPath, ".claude-plugin"), { recursive: true });
       fs.mkdirSync(path.join(descriptor.configPath, "hooks"), { recursive: true });
-      writeJson(path.join(descriptor.configPath, ".claude-plugin", "plugin.json"), manifest);
-      writeJson(path.join(descriptor.configPath, "hooks", "hooks.json"), hooks);
+      if (overrides.withOwnerMarker !== false) {
+        writeJson(path.join(descriptor.configPath, minimaxInstall.OWNER_MARKER_FILE), minimaxInstall.buildOwnerMarker());
+      }
+      if (manifest !== null) writeJson(path.join(descriptor.configPath, ".claude-plugin", "plugin.json"), manifest);
+      if (hooks !== null) writeJson(path.join(descriptor.configPath, "hooks", "hooks.json"), hooks);
     }
 
     it("reports a fully foreign directory as broken-path without a Fix button", () => {
       const root = makeTempDir();
       const descriptor = minimaxDescriptor(root);
       writeOwnedPlugin(descriptor, {
+        withOwnerMarker: false,
         manifest: { name: PLUGIN_DIR_NAME, description: "someone else's plugin" },
         hooks: { hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "echo third-party" }] }] } },
       });
@@ -3364,6 +3368,7 @@ describe("kimi legacy permission-mode supplement", () => {
       const root = makeTempDir();
       const descriptor = minimaxDescriptor(root);
       writeOwnedPlugin(descriptor, {
+        withOwnerMarker: false,
         manifest: { name: PLUGIN_DIR_NAME },
         hooks: { hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "echo hi" }] }] } },
       });
@@ -3390,7 +3395,48 @@ describe("kimi legacy permission-mode supplement", () => {
       const detail = checkAgentIntegrations({ fs, prefs: {}, descriptors: [descriptor] }).details[0];
       assert.strictEqual(detail.status, "broken-path");
       assert.match(detail.detail, /outdated or were modified/);
+      assert.match(detail.detail, /node path no longer exists/, "a vanished node binary must be named");
       assert.ok(detail.fixAction, "outdated owned plugin must offer Repair");
+    });
+
+    it("offers Repair for a pre-marker install that is exactly the generated document", () => {
+      const root = makeTempDir();
+      const descriptor = minimaxDescriptor(root);
+      writeOwnedPlugin(descriptor, { withOwnerMarker: false });
+
+      const detail = checkAgentIntegrations({ fs, prefs: {}, descriptors: [descriptor] }).details[0];
+      assert.strictEqual(detail.status, "broken-path");
+      assert.match(detail.detail, /ownership marker missing/);
+      assert.ok(detail.fixAction, "Repair adds the marker");
+    });
+
+    it("offers Repair for an owned install interrupted before the hooks document was written", () => {
+      const root = makeTempDir();
+      const descriptor = minimaxDescriptor(root);
+      writeOwnedPlugin(descriptor, { hooks: null });
+
+      const detail = checkAgentIntegrations({ fs, prefs: {}, descriptors: [descriptor] }).details[0];
+      assert.strictEqual(detail.status, "broken-path");
+      assert.match(detail.detail, /hooks missing/);
+      assert.ok(detail.fixAction, "the marker proves ownership, so Repair must be offered");
+    });
+
+    it("never offers a Fix for a same-name plugin that only mentions the hook script in an unrelated field", () => {
+      const root = makeTempDir();
+      const descriptor = minimaxDescriptor(root);
+      writeOwnedPlugin(descriptor, {
+        withOwnerMarker: false,
+        manifest: { name: PLUGIN_DIR_NAME, description: "unrelated plugin" },
+        hooks: {
+          note: "minimax-hook.js is an example filename",
+          hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "echo third-party" }] }] },
+        },
+      });
+
+      const detail = checkAgentIntegrations({ fs, prefs: {}, descriptors: [descriptor] }).details[0];
+      assert.strictEqual(detail.status, "broken-path");
+      assert.match(detail.detail, /not a verifiably Clawd-managed plugin/);
+      assert.strictEqual(detail.fixAction, undefined);
     });
 
     it("reports a current owned plugin as ok", () => {
