@@ -186,7 +186,19 @@ describe("minimax hook lifecycle", () => {
 });
 
 describe("minimax hook agent process detection", () => {
-  const { AGENT_NAMES, isMinimaxAgentCommandLine } = __test;
+  const { AGENT_NAMES, AGENT_CMDLINE_NAMES, isMinimaxAgentCommandLine } = __test;
+
+  it("checks the command line of node processes under every name ps reports for them", () => {
+    // On Linux, Node ≥ 23.8 names its main thread "MainThread", which is what
+    // `ps -o comm=` reports for a node process that never set process.title.
+    // Without it the command-line check never runs there (seen on Linux CI).
+    for (const name of ["node", "node.exe", "mainthread"]) {
+      assert.ok(AGENT_CMDLINE_NAMES.includes(name), name);
+    }
+    for (const name of AGENT_CMDLINE_NAMES) {
+      assert.strictEqual(name, name.toLowerCase(), `${name} can never match a lowercased basename`);
+    }
+  });
 
   it("lists only lowercase process names (the resolver compares lowercased basenames)", () => {
     for (const [platform, names] of Object.entries(AGENT_NAMES)) {

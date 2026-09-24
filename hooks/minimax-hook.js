@@ -215,6 +215,12 @@ function isMinimaxAgentCommandLine(cmd) {
     || normalizedScript.includes("/.minimax-code/");
 }
 
+// Process names whose command line is checked with isMinimaxAgentCommandLine.
+// Node ≥ 23.8 names its main thread "MainThread" (nodejs/node#56416), and on
+// Linux `ps -o comm=` reports the main thread's name, so a node process that
+// never set process.title appears as "mainthread" there rather than "node".
+const AGENT_CMDLINE_NAMES = ["node", "node.exe", "mainthread"];
+
 const config = getPlatformConfig({});
 const resolve = createPidResolver({
   agentNames: {
@@ -223,6 +229,7 @@ const resolve = createPidResolver({
     linux: new Set(AGENT_NAMES.linux),
   },
   agentCmdlineCheck: isMinimaxAgentCommandLine,
+  agentCmdlineNames: new Set(AGENT_CMDLINE_NAMES),
   platformConfig: config,
 });
 
@@ -357,6 +364,7 @@ if (require.main === module) {
 module.exports = {
   __test: {
     AGENT_NAMES,
+    AGENT_CMDLINE_NAMES,
     isMinimaxAgentCommandLine,
     splitCommandLine,
     resolveSessionTitle,
