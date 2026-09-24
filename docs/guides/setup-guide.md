@@ -145,7 +145,7 @@ Clawd can display the chat name from Cursor's standard desktop profile when Node
 
 - **Manual enable (fallback):** the MiniMax Code app auto-discovers the plugin in `~/.minimax/plugins/` — Install in Clawd is enough (real-machine verified on macOS and Windows with the desktop app and the `mcode` CLI). If hooks do not fire, run `mcode plugin enable clawd-state@local` or enable the plugin in the app's plugin panel — Clawd cannot read the enable state from disk, so Doctor and the Settings card only remind you of this step.
 - **10 state events, no PermissionRequest:** MiniMax's plugin-hook runner caps every handler at 1–10 seconds (SessionEnd events share a 3-second budget), so a blocking human-approval round trip is impossible. Clawd registers only state events — including `SessionEnd` — and `PermissionRequest` stays entirely in MiniMax's native flow; the hook's stdout is always `{}`.
-- **Ownership:** the whole `clawd-state/` plugin directory belongs to Clawd. Install refuses to touch an existing directory that is not a Clawd plugin, and uninstall removes the directory only after verifying its manifest and marker.
+- **Ownership:** the whole `clawd-state/` plugin directory belongs to Clawd. Clawd proves that with an ownership marker file (`.clawd-managed.json`) it writes first: install refuses to touch an existing directory without it, uninstall removes the directory only when the marker is present, and a directory name or a script name inside a file never counts as ownership.
 - **Session title:** MiniMax's hook payload carries no session title, so Clawd derives it from the first prompt line and keeps the **first** title per session (server-side first-wins, same as TraeCode).
 
 ## Permission handling automation
