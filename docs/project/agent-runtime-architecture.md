@@ -200,8 +200,8 @@ MiniMax Code 状态同步（hook-only / state-only，本地插件目录）：
     install 在 staging 写全三份文件后一次 rename 发布，只覆盖空目标，非空目录 / 文件 / 链接一律拒绝；
     uninstall 先 rename 出 plugins/、复验后再删（复验失败先尝试移回，移回也失败时两个位置都报、registrationRemoved:null，
     不宣称卸载）。移走失败报 error 并保留原路径与安装意图；移走成功但删除失败时插件已离开 plugins/，按已移除提交并在
-    warnings 里给出残留 .clawd-minimax-removing-* 路径。删除后返回前复查原位置：另一个实例在本次卸载期间重新发布插件时
-    报仍有注册、不宣称卸载（返回之后才发生的安装由那次操作自己负责）。进程中途崩溃可能留下 .clawd-minimax-staging-* /
+    warnings 里给出残留 .clawd-minimax-removing-* 路径。删除后返回前复查一次原位置：此时已有另一实例重新发布的插件就报仍有注册、
+    不宣称卸载；复查是快照，复查之后、Settings 提交之前的安装不在本次结果里（多实例强一致需跨进程锁，未做）。进程中途崩溃可能留下 .clawd-minimax-staging-* /
     .clawd-minimax-removing-*，MiniMax 不会加载，只能手动删除；plugins/ 与数据目录跨文件系统（EXDEV）时安装和卸载都会
     明确失败，不支持这种布局。判断外来目录是否仍跑 Clawd hook 时按 manifest 声明的 hooks 文档 + MiniMax 默认规则检查
     （含裸文档外壳、按 [\\/] 拆分的反斜杠路径、不带 args 时经 shell 执行的 command 以及 commandWindows）；
@@ -215,7 +215,8 @@ MiniMax Code 状态同步（hook-only / state-only，本地插件目录）：
     不在防护范围内（后续处理）；原地 Repair 与另一个实例的卸载交错时，Repair 可能在原位置重建出缺凭据的半成品目录，
     需要手动删除（与上一条同一窗口）。CLI 进程识别是启发式——脚本位于名为 @minimax-ai/code 或 .minimax-code 的目录、
     或可执行文件名为 mcode 时就当作 MiniMax CLI；Windows 桌面 helper 与主程序同名时仍可能先选中 helper，见
-    known-limitations。
+    known-limitations。Settings 界面不显示成功结果里的 warnings / residualPaths（Agents 页只弹“已卸载”，About
+    清理只显示计数），删除失败留下的残留路径在界面上看不到。
   无原生会话标题字段：从首次 prompt 首行派生并保持首个标题（server 端 first-wins，同 traecode）。
 
 Kimi Code CLI（Kimi-CLI）状态同步（hook-only，config.toml）：

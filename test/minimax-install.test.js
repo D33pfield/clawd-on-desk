@@ -1215,6 +1215,80 @@ describe("MiniMax plugin installer", () => {
     assert.deepStrictEqual(readOwnership(pluginRoot), { owned: false, reason: "empty-directory" });
   });
 
+  it("reports a reinstall and the undeletable leftover together when both happen", (t) => {
+    // The delete of the moved directory fails AND another instance publishes a
+    // fresh plugin before the final re-check: the new plugin keeps the
+    // registration, and the leftover is still reported.
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+    const realRename = fs.renameSync.bind(fs);
+    const realRm = fs.rmSync.bind(fs);
+    let removalPath = null;
+    t.mock.method(fs, "renameSync", (from, to) => {
+      realRename(from, to);
+      if (!removalPath && path.basename(to).startsWith(REMOVAL_PREFIX)) {
+        removalPath = to;
+        installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+      }
+    });
+    t.mock.method(fs, "rmSync", (target, rmOptions) => {
+      if (path.basename(String(target)).startsWith(REMOVAL_PREFIX)) {
+        throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+      }
+      return realRm(target, rmOptions);
+    });
+
+    const result = unregisterMinimaxPlugin({ dataDir, silent: true });
+    t.mock.restoreAll();
+
+    assert.strictEqual(result.registrationRemoved, false);
+    assert.strictEqual(result.activeEntryRemaining, true);
+    assert.ok(result.residualPaths.includes(pluginRoot), JSON.stringify(result.residualPaths));
+    assert.ok(result.residualPaths.includes(removalPath), JSON.stringify(result.residualPaths));
+    assert.ok(result.warnings.some((warning) => warning.includes(removalPath)), JSON.stringify(result.warnings));
+    assert.deepStrictEqual(readOwnership(pluginRoot), { owned: true });
+  });
+
+  it("reports an uninstall as unconfirmed when the final re-check cannot inspect the root", (t) => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+    const realLstat = fs.lstatSync.bind(fs);
+    const realRm = fs.rmSync.bind(fs);
+    let removed = false;
+    t.mock.method(fs, "rmSync", (target, rmOptions) => {
+      const out = realRm(target, rmOptions);
+      if (path.basename(String(target)).startsWith(REMOVAL_PREFIX)) removed = true;
+      return out;
+    });
+    // Only after the old directory is gone: the re-check of the original
+    // location hits a permission error instead of a clean "missing".
+    t.mock.method(fs, "lstatSync", (target, ...rest) => {
+      if (removed && target === pluginRoot) {
+        throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      }
+      return realLstat(target, ...rest);
+    });
+
+    const result = unregisterMinimaxPlugin({ dataDir, silent: true });
+    t.mock.restoreAll();
+
+    assert.ok(removed, "the old directory was deleted before the re-check");
+    assert.strictEqual(result.registrationRemoved, null);
+    assert.ok(result.residualPaths.includes(pluginRoot), JSON.stringify(result.residualPaths));
+  });
+
+  it("matches Clawd's hook script name regardless of case", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { name: PLUGIN_DIR_NAME });
+    writeJsonFile(path.join(pluginRoot, "hooks", "hooks.json"), {
+      hooks: { Stop: [{ hooks: [{ type: "command", command: "node /Opt/Clawd/Hooks/MiniMax-Hook.JS" }] }] },
+    });
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), true);
+  });
+
   it("registers exactly the 10 state events and never PermissionRequest", () => {
     assert.deepStrictEqual([...MINIMAX_HOOK_EVENTS].sort(), [
       "PostCompact",

@@ -827,7 +827,7 @@ function unregisterMinimaxPlugin(options = {}) {
       residualPaths: [removing],
       warnings: [
         `Moved the MiniMax plugin out of ${path.dirname(pluginRoot)}, but could not delete ${removing} (${detail}). `
-          + "MiniMax no longer loads it; delete that folder manually.",
+          + "MiniMax does not scan that folder; delete it manually.",
       ],
     };
   }
