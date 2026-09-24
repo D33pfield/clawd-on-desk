@@ -6,15 +6,13 @@
 // and `MAVIS_DATA_DIR`). The whole plugin directory is Clawd-owned: install
 // writes it in full, unregister removes it after an ownership check. A
 // directory that exists but is not provably ours is never mutated — install
-// fails closed, uninstall leaves it.
+// fails closed, uninstall leaves it and reports it.
 //
-// Ownership is proven by a structured marker file (`.clawd-managed.json`, the
-// same convention as the Pi extension) — never by a directory name, a manifest
-// name, or a basename appearing somewhere in a document. MiniMax ignores files
+// Ownership is proven only by a structured marker file (`.clawd-managed.json`,
+// the Pi extension's convention) — never by a directory name, a manifest name,
+// or a basename appearing somewhere in a document — and only when neither the
+// marker nor any other managed path is a symbolic link. MiniMax ignores files
 // its manifest does not reference, so the marker never reaches its loader.
-// Directories written by the first MiniMax build (before the marker existed)
-// are adopted only when their manifest and hooks document match, field for
-// field, the exact shape that build generated; the next install adds the marker.
 //
 // Layout (Claude-compatible plugin manifest → hooks parse as CLAUDE source
 // format, which supports the exec-form `args` we use to avoid every shell
@@ -33,6 +31,20 @@ const { readJsonFile, writeJsonAtomic, asarUnpackedPath } = require("./json-util
 const PLUGIN_DIR_NAME = "clawd-state";
 const MARKER = "minimax-hook.js";
 const OWNER_MARKER_FILE = ".clawd-managed.json";
+const OWNER_MARKER_VERSION = 1;
+// Every path Clawd reads ownership from or writes through.
+const MANAGED_PATHS = [
+  OWNER_MARKER_FILE,
+  ".claude-plugin",
+  path.join(".claude-plugin", "plugin.json"),
+  "hooks",
+  path.join("hooks", "hooks.json"),
+];
+// Staging / removal directories live beside `plugins/` (in the data directory
+// itself), so MiniMax's plugin scan never sees a half-built or half-removed
+// plugin, while a same-filesystem rename still publishes or retires it at once.
+const STAGING_PREFIX = ".clawd-minimax-staging-";
+const REMOVAL_PREFIX = ".clawd-minimax-removing-";
 const DEFAULT_DATA_DIR = path.join(os.homedir(), ".minimax");
 const DEFAULT_PLUGIN_ROOT = path.join(DEFAULT_DATA_DIR, "plugins", PLUGIN_DIR_NAME);
 
@@ -74,11 +86,19 @@ function resolveMinimaxDataDir(homeDir, env) {
   return path.join(homeDir || os.homedir(), ".minimax");
 }
 
+function resolveDataDir(options = {}) {
+  return options.dataDir || resolveMinimaxDataDir(options.homeDir || os.homedir(), options.env);
+}
+
 function resolvePluginRoot(options = {}) {
   if (options.pluginRoot) return options.pluginRoot;
-  const dataDir = options.dataDir
-    || resolveMinimaxDataDir(options.homeDir || os.homedir(), options.env);
-  return path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+  return path.join(resolveDataDir(options), "plugins", PLUGIN_DIR_NAME);
+}
+
+// Where staging and removal directories go: the data directory (outside
+// `plugins/`), or the plugin root's parent when a test pins the root directly.
+function resolveWorkParent(options = {}) {
+  return options.pluginRoot ? path.dirname(options.pluginRoot) : resolveDataDir(options);
 }
 
 // Read a JSON file through an injectable fs (Doctor passes the harness fs).
@@ -90,8 +110,8 @@ function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-// lstat (so a symlinked root is seen as a link, not as its target). Falls back
-// to stat for injected fs shims that do not implement lstatSync.
+// lstat (so a symlink is seen as a link, not as its target). Falls back to
+// stat for injected fs shims that do not implement lstatSync.
 function lstatOrNull(fsImpl, targetPath) {
   try {
     return typeof fsImpl.lstatSync === "function"
@@ -102,12 +122,8 @@ function lstatOrNull(fsImpl, targetPath) {
   }
 }
 
-function fileExistsWith(fsImpl, filePath) {
-  try {
-    return fsImpl.statSync(filePath).isFile();
-  } catch {
-    return false;
-  }
+function isSymlinkStat(stat) {
+  return !!stat && typeof stat.isSymbolicLink === "function" && stat.isSymbolicLink();
 }
 
 function buildOwnerMarker() {
@@ -115,7 +131,7 @@ function buildOwnerMarker() {
     app: "clawd-on-desk",
     integration: "minimax",
     managed: true,
-    version: 1,
+    version: OWNER_MARKER_VERSION,
   };
 }
 
@@ -137,81 +153,71 @@ function isHookScriptArg(value) {
   return value.replace(/\\/g, "/").endsWith(`/hooks/${MARKER}`);
 }
 
-// The exact hooks document the first (pre-marker) MiniMax build generated:
-// every registered event, one matcher-less group each, one exec-form handler
-// each, all pointing at the same node binary and minimax-hook.js script with
-// the fixed timeout. Anything else — an extra handler, a matcher, a different
-// timeout, a missing event, a foreign command — is not this document.
-function isLegacyGeneratedHooksDocument(hooks) {
-  if (!isPlainObject(hooks) || Object.keys(hooks).length !== 1 || !isPlainObject(hooks.hooks)) return false;
-  const events = Object.keys(hooks.hooks);
-  if (events.length !== MINIMAX_HOOK_EVENTS.length) return false;
-  if (!MINIMAX_HOOK_EVENTS.every((event) => events.includes(event))) return false;
-  let signature = null;
-  for (const event of MINIMAX_HOOK_EVENTS) {
-    const groups = hooks.hooks[event];
-    if (!Array.isArray(groups) || groups.length !== 1) return false;
-    const group = groups[0];
-    if (!isPlainObject(group) || Object.keys(group).length !== 1) return false;
-    if (!Array.isArray(group.hooks) || group.hooks.length !== 1) return false;
-    const handler = group.hooks[0];
-    if (!isPlainObject(handler)) return false;
-    if (Object.keys(handler).sort().join(",") !== "args,command,timeout,type") return false;
-    if (handler.type !== "command" || typeof handler.command !== "string" || !handler.command) return false;
-    if (handler.timeout !== HOOK_TIMEOUT_SECONDS) return false;
-    if (!Array.isArray(handler.args) || handler.args.length !== 1 || !isHookScriptArg(handler.args[0])) return false;
-    const current = `${handler.command}\u0000${handler.args[0]}`;
-    if (signature === null) signature = current;
-    else if (current !== signature) return false;
+// The `command` of every handler that runs Clawd's hook script (its first
+// exec-form argument is an absolute path to hooks/minimax-hook.js).
+function clawdHookCommands(hooks) {
+  const commands = [];
+  if (!isPlainObject(hooks) || !isPlainObject(hooks.hooks)) return commands;
+  for (const groups of Object.values(hooks.hooks)) {
+    if (!Array.isArray(groups)) continue;
+    for (const group of groups) {
+      const handlers = isPlainObject(group) && Array.isArray(group.hooks) ? group.hooks : [];
+      for (const handler of handlers) {
+        if (!isPlainObject(handler) || !Array.isArray(handler.args)) continue;
+        if (isHookScriptArg(handler.args[0])) commands.push(handler.command);
+      }
+    }
   }
-  return true;
+  return commands;
 }
 
 function readOwnership(pluginRoot, fsImpl) {
-  // Returns { owned: true, via: "marker" | "legacy" } or { owned: false, reason }.
+  // Returns { owned: true } or { owned: false, reason }.
   const f = fsImpl || fs;
   const rootStat = lstatOrNull(f, pluginRoot);
   if (!rootStat) return { owned: false, reason: "missing" };
   // MiniMax itself refuses symlinked plugin roots, and following one would let
   // install write into — or uninstall recurse through — an arbitrary target.
-  if (typeof rootStat.isSymbolicLink === "function" && rootStat.isSymbolicLink()) {
-    return { owned: false, reason: "symlink-root" };
-  }
+  if (isSymlinkStat(rootStat)) return { owned: false, reason: "symlink-root" };
   if (!rootStat.isDirectory()) return { owned: false, reason: "not-a-directory" };
+  // Ownership is only ever read from, and files only ever written through,
+  // real paths inside this directory: a linked marker could borrow a Clawd
+  // marker from elsewhere, and a linked `hooks/` would carry a Repair outside.
+  for (const relative of MANAGED_PATHS) {
+    if (isSymlinkStat(lstatOrNull(f, path.join(pluginRoot, relative)))) {
+      return { owned: false, reason: "symlinked-managed-path" };
+    }
+  }
 
+  const markerPath = path.join(pluginRoot, OWNER_MARKER_FILE);
+  const markerStat = lstatOrNull(f, markerPath);
+  if (!markerStat) return { owned: false, reason: "missing-marker" };
+  if (!markerStat.isFile()) return { owned: false, reason: "owner-marker-not-a-file" };
   let marker;
   try {
-    marker = readJsonWith(f, path.join(pluginRoot, OWNER_MARKER_FILE));
-  } catch (err) {
-    if (!(err && err.code === "ENOENT")) return { owned: false, reason: "unreadable-owner-marker" };
+    marker = readJsonWith(f, markerPath);
+  } catch {
+    return { owned: false, reason: "unreadable-owner-marker" };
   }
-  if (marker !== undefined) {
-    return isOwnerMarker(marker)
-      ? { owned: true, via: "marker" }
-      : { owned: false, reason: "foreign-owner-marker" };
-  }
+  if (!isOwnerMarker(marker)) return { owned: false, reason: "foreign-owner-marker" };
+  if (marker.version !== OWNER_MARKER_VERSION) return { owned: false, reason: "unsupported-owner-marker-version" };
+  return { owned: true };
+}
 
-  // No marker: only the exact document the pre-marker build generated counts.
-  let manifest;
-  try {
-    manifest = readJsonWith(f, path.join(pluginRoot, ".claude-plugin", "plugin.json"));
-  } catch (err) {
-    if (err && err.code === "ENOENT") return { owned: false, reason: "no-manifest" };
-    return { owned: false, reason: "unreadable-manifest" };
+// Whether the directory's hooks document still runs Clawd's hook: true /
+// false, or null when that cannot be read without following a link.
+function hooksReferenceClawdHook(pluginRoot, fsImpl) {
+  const f = fsImpl || fs;
+  for (const relative of ["hooks", path.join("hooks", "hooks.json")]) {
+    if (isSymlinkStat(lstatOrNull(f, path.join(pluginRoot, relative)))) return null;
   }
-  if (!isPlainObject(manifest)) return { owned: false, reason: "invalid-manifest" };
-  if (manifest.name !== PLUGIN_DIR_NAME) return { owned: false, reason: "foreign-manifest" };
   let hooks;
   try {
     hooks = readJsonWith(f, path.join(pluginRoot, "hooks", "hooks.json"));
   } catch (err) {
-    if (err && err.code === "ENOENT") return { owned: false, reason: "no-hooks-document" };
-    return { owned: false, reason: "unreadable-hooks" };
+    return err && err.code === "ENOENT" ? false : null;
   }
-  if (!isDeepStrictEqual(manifest, desiredManifest()) || !isLegacyGeneratedHooksDocument(hooks)) {
-    return { owned: false, reason: "missing-marker" };
-  }
-  return { owned: true, via: "legacy" };
+  return clawdHookCommands(hooks).length > 0;
 }
 
 function resolveHookScriptPath() {
@@ -240,37 +246,48 @@ function desiredHooksDocument(hookScript, nodeBin) {
   return { hooks };
 }
 
-// The node binary an earlier install recorded in an existing hooks document:
-// the absolute command of a handler that runs our hook script.
-function extractExistingNodeBin(hooks) {
-  if (!isPlainObject(hooks) || !isPlainObject(hooks.hooks)) return null;
-  for (const groups of Object.values(hooks.hooks)) {
-    if (!Array.isArray(groups)) continue;
-    for (const group of groups) {
-      const handlers = isPlainObject(group) && Array.isArray(group.hooks) ? group.hooks : [];
-      for (const handler of handlers) {
-        if (!isPlainObject(handler) || !Array.isArray(handler.args)) continue;
-        if (!isHookScriptArg(handler.args[0])) continue;
-        if (isAbsoluteCommandPath(handler.command)) return handler.command;
-      }
-    }
+const NODE_BASENAME_RE = /^node(js)?(\.exe)?$/i;
+
+// The node binary an earlier install recorded: every handler that runs our
+// hook script must name the same absolute path, and it must be named like a
+// Node binary. A mixed or edited document proves nothing and yields null.
+function recordedNodeBin(hooks) {
+  const commands = clawdHookCommands(hooks);
+  if (commands.length === 0 || new Set(commands).size !== 1) return null;
+  const command = commands[0];
+  if (!isAbsoluteCommandPath(command)) return null;
+  const basename = command.replace(/\\/g, "/").split("/").pop();
+  return NODE_BASENAME_RE.test(basename) ? command : null;
+}
+
+function isExecutableFile(fsImpl, filePath) {
+  try {
+    if (!fsImpl.statSync(filePath).isFile()) return false;
+  } catch {
+    return false;
   }
-  return null;
+  if (process.platform === "win32" || typeof fsImpl.accessSync !== "function") return true;
+  try {
+    fsImpl.accessSync(filePath, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // The node binary the hooks document should name. When detection comes back
 // empty (a login shell that timed out, an unusual install location), keep the
-// absolute path an earlier install recorded — as the TraeCode / Qoder /
-// QwenWork / WorkBuddy installers do — rather than degrading to bare "node":
-// exec-form handlers are spawned without a shell, and a desktop app launched
-// from the Dock has no node on its PATH, so a bare "node" silently disables
-// every hook. Installer and Doctor share this so they never disagree.
+// node path an earlier install recorded — as the TraeCode / Qoder / QwenWork /
+// WorkBuddy installers do — rather than degrading to bare "node": exec-form
+// handlers are spawned without a shell, and a desktop app launched from the
+// Dock has no node on its PATH, so a bare "node" silently disables every hook.
+// Installer and Doctor share this so they never disagree.
 function resolveDesiredNodeBin(options = {}) {
   const detect = typeof options.resolveNodeBin === "function" ? options.resolveNodeBin : resolveNodeBin;
   const resolved = options.nodeBin !== undefined ? options.nodeBin : detect();
   if (resolved) return resolved;
-  const recorded = extractExistingNodeBin(options.existingHooks);
-  if (recorded && fileExistsWith(options.fs || fs, recorded)) return recorded;
+  const recorded = recordedNodeBin(options.existingHooks);
+  if (recorded && isExecutableFile(options.fs || fs, recorded)) return recorded;
   return "node";
 }
 
@@ -279,6 +296,30 @@ function readJsonOrUndefined(filePath) {
     return readJsonFile(filePath);
   } catch {
     return undefined;
+  }
+}
+
+function uniqueWorkPath(parent, prefix) {
+  return path.join(parent, `${prefix}${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+}
+
+// A first install is assembled in a staging directory and published with one
+// rename, so MiniMax — and the next install — only ever sees no plugin or a
+// complete, marked one. A failure at any step removes the staging directory
+// and leaves nothing behind that could strand the next attempt.
+function publishFreshPlugin(pluginRoot, workParent, desired, writeJson) {
+  fs.mkdirSync(path.dirname(pluginRoot), { recursive: true });
+  fs.mkdirSync(workParent, { recursive: true });
+  const staging = uniqueWorkPath(workParent, STAGING_PREFIX);
+  fs.mkdirSync(staging);
+  try {
+    writeJson(path.join(staging, OWNER_MARKER_FILE), buildOwnerMarker());
+    writeJson(path.join(staging, ".claude-plugin", "plugin.json"), desired.manifest);
+    writeJson(path.join(staging, "hooks", "hooks.json"), desired.hooks);
+    fs.renameSync(staging, pluginRoot);
+  } catch (err) {
+    try { fs.rmSync(staging, { recursive: true, force: true }); } catch { /* best effort */ }
+    throw err;
   }
 }
 
@@ -291,7 +332,7 @@ function readJsonOrUndefined(filePath) {
  * @param {string} [options.pluginRoot] internal override for tests
  * @param {string|null} [options.nodeBin] internal override for tests (null = detection failed)
  * @param {Function} [options.writeJsonAtomic] internal override for tests
- * @returns {{ added: number, skipped: number, updated: number, pluginRoot: string, ownerMarkerAdded?: boolean }}
+ * @returns {{ added: number, skipped: number, updated: number, pluginRoot: string }}
  */
 function installMinimaxPlugin(options = {}) {
   const pluginRoot = resolvePluginRoot(options);
@@ -300,10 +341,10 @@ function installMinimaxPlugin(options = {}) {
 
   // An existing directory is only ever touched after the ownership check
   // passes; anything not provably ours (foreign plugin of any manifest kind,
-  // unrelated user content, a symlink) fails closed.
-  let ownership = null;
+  // unrelated user content, an unmarked pre-release install, a symlink) fails
+  // closed.
   if (exists) {
-    ownership = readOwnership(pluginRoot);
+    const ownership = readOwnership(pluginRoot);
     if (!ownership.owned) {
       throw new Error(
         `Refusing to modify ${pluginRoot}: existing directory is not a Clawd plugin (${ownership.reason})`
@@ -313,8 +354,7 @@ function installMinimaxPlugin(options = {}) {
 
   // Skip when MiniMax Code has no data directory (not installed on this
   // machine) — do not create `~/.minimax` on behalf of an absent app.
-  const dataDir = options.dataDir
-    || resolveMinimaxDataDir(options.homeDir || os.homedir(), options.env);
+  const dataDir = resolveDataDir(options);
   if (!options.pluginRoot && !fs.existsSync(dataDir)) {
     if (!options.silent) {
       console.log(`Clawd: ${dataDir} not found — skipping MiniMax Code plugin install`);
@@ -332,30 +372,25 @@ function installMinimaxPlugin(options = {}) {
     hooks: desiredHooksDocument(resolveHookScriptPath(), nodeBin),
   };
 
-  fs.mkdirSync(pluginRoot, { recursive: true });
-  // The ownership marker is written first: if a later write fails (disk
-  // full, permission, a crash between writes), the half-written directory is
-  // still provably ours and the next install repairs it instead of refusing
-  // it forever. A legacy directory gains its marker here.
-  const ownerMarkerAdded = !ownership || ownership.via !== "marker";
-  if (ownerMarkerAdded) writeJson(path.join(pluginRoot, OWNER_MARKER_FILE), buildOwnerMarker());
-
-  // Only rewrite files whose content actually changed: startup sync runs on
-  // every launch for installed+enabled users, and unconditional writes would
-  // churn mtimes even on a fully up-to-date install.
-  if (!isDeepStrictEqual(existingManifest, desired.manifest)) {
-    writeJson(manifestPath, desired.manifest);
-  }
-
   let result;
   if (!exists) {
-    writeJson(hooksPath, desired.hooks);
+    publishFreshPlugin(pluginRoot, resolveWorkParent(options), desired, writeJson);
     result = { added: MINIMAX_HOOK_EVENTS.length, skipped: 0, updated: 0 };
-  } else if (isDeepStrictEqual(existingHooks, desired.hooks)) {
-    result = { added: 0, skipped: MINIMAX_HOOK_EVENTS.length, updated: 0 };
   } else {
-    writeJson(hooksPath, desired.hooks);
-    result = { added: 0, skipped: 0, updated: MINIMAX_HOOK_EVENTS.length };
+    // An owned directory (valid marker, no linked managed path) is refreshed
+    // in place. Its marker already exists, so a refresh interrupted between
+    // the per-file atomic writes stays provably ours and the next install
+    // finishes it. Only files whose content changed are rewritten: startup
+    // sync runs on every launch for installed+enabled users.
+    if (!isDeepStrictEqual(existingManifest, desired.manifest)) {
+      writeJson(manifestPath, desired.manifest);
+    }
+    if (isDeepStrictEqual(existingHooks, desired.hooks)) {
+      result = { added: 0, skipped: MINIMAX_HOOK_EVENTS.length, updated: 0 };
+    } else {
+      writeJson(hooksPath, desired.hooks);
+      result = { added: 0, skipped: 0, updated: MINIMAX_HOOK_EVENTS.length };
+    }
   }
 
   if (!options.silent) {
@@ -363,9 +398,30 @@ function installMinimaxPlugin(options = {}) {
     console.log(`  Added: ${result.added}, updated: ${result.updated}, skipped: ${result.skipped}`);
     console.log("  If hooks do not fire, enable the plugin inside MiniMax Code (mcode plugin enable clawd-state@local).");
   }
-  return exists && ownerMarkerAdded
-    ? { ...result, pluginRoot, ownerMarkerAdded: true }
-    : { ...result, pluginRoot };
+  return { ...result, pluginRoot };
+}
+
+// Uninstall result for a directory Clawd will not delete. When that directory
+// still runs Clawd's hook (or that cannot be read), the registration is not
+// gone: report registrationRemoved false / null with the exact path so
+// Settings and About cleanup keep the install intent and tell the user.
+function refusedUninstallResult(pluginRoot, reason) {
+  const runsClawdHook = hooksReferenceClawdHook(pluginRoot);
+  if (runsClawdHook === false) {
+    return { removed: 0, changed: false, pluginRoot, reason, registrationRemoved: true };
+  }
+  return {
+    removed: 0,
+    changed: false,
+    pluginRoot,
+    reason,
+    registrationRemoved: runsClawdHook === true ? false : null,
+    activeEntryRemaining: runsClawdHook === true ? true : null,
+    residualPaths: [pluginRoot],
+    message: `${pluginRoot} ${runsClawdHook === true ? "still runs" : "may still run"} Clawd's MiniMax hook, `
+      + `but Clawd cannot prove it owns that directory (${reason}), so it was left untouched. `
+      + "Delete the directory manually to finish uninstalling.",
+  };
 }
 
 /**
@@ -375,24 +431,51 @@ function installMinimaxPlugin(options = {}) {
  * @param {string} [options.homeDir] internal override for tests
  * @param {string} [options.dataDir] internal override for tests
  * @param {string} [options.pluginRoot] internal override for tests
- * @returns {{ removed: number, changed: boolean, pluginRoot: string, reason?: string }}
+ * @returns {{ removed: number, changed: boolean, pluginRoot: string, registrationRemoved: boolean|null, reason?: string }}
  */
 function unregisterMinimaxPlugin(options = {}) {
   const pluginRoot = resolvePluginRoot(options);
   if (lstatOrNull(fs, pluginRoot) === null) {
-    return { removed: 0, changed: false, pluginRoot };
+    return { removed: 0, changed: false, pluginRoot, registrationRemoved: true };
   }
 
   const ownership = readOwnership(pluginRoot);
   if (!ownership.owned) {
-    // Not provably ours — leave it alone, whatever it is.
     if (!options.silent) console.log(`Clawd: ${pluginRoot} is not a Clawd plugin — leaving it untouched`);
-    return { removed: 0, changed: false, pluginRoot, reason: ownership.reason };
+    return refusedUninstallResult(pluginRoot, ownership.reason);
   }
 
-  fs.rmSync(pluginRoot, { recursive: true, force: true });
+  // Move the verified directory out of MiniMax's plugins folder, re-verify
+  // what actually moved, and only then delete it: the recursive delete never
+  // runs against a path that was not just proven to be ours.
+  const removing = uniqueWorkPath(resolveWorkParent(options), REMOVAL_PREFIX);
+  try {
+    fs.renameSync(pluginRoot, removing);
+  } catch (err) {
+    return {
+      status: "error",
+      message: `Could not remove ${pluginRoot}: ${err && err.message ? err.message : err}`,
+      removed: 0,
+      changed: false,
+      pluginRoot,
+      registrationRemoved: null,
+      residualPaths: [pluginRoot],
+    };
+  }
+  const moved = readOwnership(removing);
+  if (!moved.owned) {
+    // Whatever moved is not the directory we verified — put it back untouched.
+    let restored = false;
+    try {
+      fs.renameSync(removing, pluginRoot);
+      restored = true;
+    } catch { /* reported below */ }
+    const result = refusedUninstallResult(restored ? pluginRoot : removing, moved.reason);
+    return { ...result, pluginRoot };
+  }
+  fs.rmSync(removing, { recursive: true, force: true });
   if (!options.silent) console.log(`Clawd MiniMax Code plugin removed: ${pluginRoot}`);
-  return { removed: MINIMAX_HOOK_EVENTS.length, changed: true, pluginRoot };
+  return { removed: MINIMAX_HOOK_EVENTS.length, changed: true, pluginRoot, registrationRemoved: true };
 }
 
 module.exports = {
@@ -402,14 +485,18 @@ module.exports = {
   MARKER,
   MINIMAX_HOOK_EVENTS,
   OWNER_MARKER_FILE,
+  OWNER_MARKER_VERSION,
   PLUGIN_DIR_NAME,
+  REMOVAL_PREFIX,
+  STAGING_PREFIX,
   buildDesiredHooksDocument: desiredHooksDocument,
   buildOwnerMarker,
   desiredManifest,
-  extractExistingNodeBin,
+  hooksReferenceClawdHook,
   installMinimaxPlugin,
   isOwnerMarker,
   readOwnership,
+  recordedNodeBin,
   resolveDesiredNodeBin,
   resolveHookScriptPath,
   resolveMinimaxDataDir,
@@ -419,8 +506,15 @@ module.exports = {
 
 if (require.main === module) {
   try {
-    if (process.argv.includes("--uninstall")) unregisterMinimaxPlugin({});
-    else installMinimaxPlugin({});
+    if (process.argv.includes("--uninstall")) {
+      const result = unregisterMinimaxPlugin({});
+      if (result.registrationRemoved !== true) {
+        console.error(result.message || `Could not remove ${result.pluginRoot}`);
+        process.exit(1);
+      }
+    } else {
+      installMinimaxPlugin({});
+    }
   } catch (err) {
     console.error(err.message);
     process.exit(1);

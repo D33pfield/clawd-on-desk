@@ -486,6 +486,45 @@ describe("MiniMax Code plugin cleanup follows the configured data dir (#1038)", 
     }
   });
 
+  it("Settings Uninstall keeps the install intent when a directory Clawd cannot prove still runs its hook", async () => {
+    // #1038 follow-up review F04: a refused uninstall used to be committed as
+    // "uninstalled" while the plugin kept firing Clawd's hook.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-settings-uninstall-minimax-"));
+    const homeDir = path.join(root, "home");
+    const dataDir = path.join(root, "minimax-data");
+    const pluginRoot = path.join(dataDir, "plugins", MINIMAX_PLUGIN_DIR_NAME);
+    fs.mkdirSync(homeDir, { recursive: true });
+    fs.mkdirSync(dataDir, { recursive: true });
+
+    try {
+      installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+      fs.writeFileSync(path.join(pluginRoot, ".clawd-managed.json"), "{damaged", "utf8");
+
+      const runtime = createIntegrationSyncRuntime({
+        ctx: { cleanupHomeDir: homeDir, cleanupOptions: { env: { MINIMAX_DATA_DIR: dataDir }, hermesCommand: false } },
+      });
+      const snapshot = prefs.getDefaults();
+      snapshot.agents = {
+        ...snapshot.agents,
+        minimax: { ...snapshot.agents.minimax, integrationInstalled: true, enabled: true },
+      };
+
+      const result = await agentCommands.uninstallAgentIntegration({ agentId: "minimax" }, {
+        snapshot,
+        uninstallIntegrationForAgent: runtime.uninstallIntegrationForAgent,
+      });
+
+      assert.strictEqual(result.status, "error");
+      assert.strictEqual(result.commit, undefined, "no prefs commit while the hook can still fire");
+      assert.strictEqual(result.registrationRemoved, false);
+      assert.deepStrictEqual(result.residualPaths, [pluginRoot]);
+      assert.match(result.message, /Delete the directory manually/);
+      assert.ok(fs.existsSync(path.join(pluginRoot, "hooks", "hooks.json")), "nothing unproven may be deleted");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("resolves MAVIS_DATA_DIR when MINIMAX_DATA_DIR is unset", () => {
     const homeDir = path.join(os.tmpdir(), "clawd-minimax-plan-home");
     const plan = buildCleanupOptionsForHome(homeDir, {

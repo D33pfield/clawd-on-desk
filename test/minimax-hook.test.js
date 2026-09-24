@@ -199,6 +199,12 @@ describe("minimax hook agent process detection", () => {
     // The CLI sets process.title = "minimax-code" at startup (mcode 0.5.4).
     assert.ok(AGENT_NAMES.mac.includes("minimax-code"), "the retitled CLI must be recognizable on macOS");
     assert.ok(AGENT_NAMES.linux.includes("minimax-code"), "the retitled CLI must be recognizable on Linux");
+    // The NodeService helper that spawns the hooks can restart while the app
+    // keeps running; matching it would retire live desktop sessions. The walk
+    // must reach the long-lived main app instead.
+    for (const names of Object.values(AGENT_NAMES)) {
+      assert.ok(!names.some((name) => name.includes("helper")), `helper process listed: ${names}`);
+    }
   });
 
   it("recognizes the mcode CLI command lines and nothing merely similar", () => {
@@ -208,9 +214,13 @@ describe("minimax hook agent process detection", () => {
       "node /Users/me/.minimax-code/releases/0.5.4/cli.js",
       String.raw`"C:\Program Files\nodejs\node.exe" "C:\Users\me\AppData\Roaming\npm\node_modules\@minimax-ai\code\cli.js"`,
       String.raw`C:\Users\me\AppData\Roaming\npm\mcode.cmd`,
+      String.raw`"C:\Users\me\AppData\Roaming\npm\mcode.cmd" exec hi`,
       "minimax-code",
     ];
     const misses = [
+      "node server.js --label mcode",
+      "node /work/@minimax-ai/code-review/index.js",
+      "node /work/mcode/server.js",
       "node /tmp/minimax-code-clipboard-1234/paste.js",
       "node /usr/local/bin/mcode-tools convert",
       "node /Users/me/mcode-project/server.js",

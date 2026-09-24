@@ -103,26 +103,30 @@ function resolveSessionTitle(payload, event) {
 // and the Windows snapshot both lowercase), so every entry must be lowercase —
 // a mixed-case name can never match. The mcode CLI retitles itself at startup
 // (`process.title = "minimax-code"`), which on macOS and Linux is the process
-// name `ps -o comm=` reports, so that is the name to match there.
+// name `ps -o comm=` reports, so that is the name to match there. The desktop
+// app's "MiniMax Code Helper" processes are deliberately absent: hooks are
+// spawned by a NodeService helper that can restart while the app keeps
+// running, and an agent pid that dies with it would retire live sessions. The
+// walk continues to the long-lived main "MiniMax Code" process instead.
 const AGENT_NAMES = {
-  win: ["minimax code.exe", "minimax code helper.exe", "mcode.exe"],
-  mac: ["minimax code", "minimax code helper", "minimax-code", "mcode"],
+  win: ["minimax code.exe", "mcode.exe"],
+  mac: ["minimax code", "minimax-code", "mcode"],
   linux: ["minimax-code", "mcode", "minimax code"],
 };
 
 // Where the CLI still runs under a node / node.exe image name (Windows, where
 // process.title only changes the console title), recognize it by command line:
-// the npm package (`@minimax-ai/code`), the official installer's
-// `.minimax-code` directory, a `mcode` launcher, or the retitled argv. Without
-// an agent pid Clawd cannot tell when the CLI exits — MiniMax sends no
-// SessionEnd on exit — and the session row would outlive it for as long as
-// the terminal stays open.
+// the npm package directory (`/@minimax-ai/code/`), the official installer's
+// `.minimax-code` directory, or an `mcode` / `minimax-code` launcher named as
+// a whole path component. Without an agent pid Clawd cannot tell when the CLI
+// exits — MiniMax sends no SessionEnd on exit — and the session row would
+// outlive it for as long as the terminal stays open.
 function isMinimaxAgentCommandLine(cmd) {
   if (typeof cmd !== "string") return false;
   const normalized = cmd.toLowerCase().replace(/\\/g, "/");
-  return normalized.includes("@minimax-ai/code")
+  return normalized.includes("/@minimax-ai/code/")
     || normalized.includes("/.minimax-code/")
-    || /(^|[\s"'/])(mcode|minimax-code)(\.js|\.cmd|\.ps1)?($|[\s"'])/.test(normalized);
+    || /(^|\/)(mcode|minimax-code)(\.js|\.cmd|\.ps1)?(?=$|[\s"'])/.test(normalized);
 }
 
 const config = getPlatformConfig({});

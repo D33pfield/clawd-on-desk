@@ -3382,14 +3382,16 @@ describe("kimi legacy permission-mode supplement", () => {
     it("reports an owned directory drifted from the canonical document as broken-path with a Fix", () => {
       const root = makeTempDir();
       const descriptor = minimaxDescriptor(root);
+      // Every handler names a node binary that exists except one late event,
+      // so the check must walk every event, not just the first.
       const staleHooks = minimaxInstall.buildDesiredHooksDocument(
         minimaxInstall.resolveHookScriptPath(),
-        "/usr/local/bin/node",
+        process.execPath,
       );
-      // Drop one event and point the command at a node path that no longer
+      // Drop one event and point one handler at a node path that no longer
       // exists — the drift the canonical comparison must surface.
       delete staleHooks.hooks.PostCompact;
-      staleHooks.hooks.SessionStart[0].hooks[0].command = "/removed/node/path/node";
+      staleHooks.hooks.PreCompact[0].hooks[0] = { ...staleHooks.hooks.PreCompact[0].hooks[0], command: "/removed/node/path/node" };
       writeOwnedPlugin(descriptor, { hooks: staleHooks });
 
       const detail = checkAgentIntegrations({ fs, prefs: {}, descriptors: [descriptor] }).details[0];
@@ -3399,15 +3401,33 @@ describe("kimi legacy permission-mode supplement", () => {
       assert.ok(detail.fixAction, "outdated owned plugin must offer Repair");
     });
 
-    it("offers Repair for a pre-marker install that is exactly the generated document", () => {
+    it("reports an unmarked pre-release install as not provably ours, without a Fix, and says how to recover", () => {
+      // A document that looks exactly like Clawd's is still not ownership:
+      // Install fails closed there, so a Fix button would loop. The detail
+      // names the only safe recovery.
       const root = makeTempDir();
       const descriptor = minimaxDescriptor(root);
       writeOwnedPlugin(descriptor, { withOwnerMarker: false });
 
       const detail = checkAgentIntegrations({ fs, prefs: {}, descriptors: [descriptor] }).details[0];
       assert.strictEqual(detail.status, "broken-path");
-      assert.match(detail.detail, /ownership marker missing/);
-      assert.ok(detail.fixAction, "Repair adds the marker");
+      assert.match(detail.detail, /missing-marker/);
+      assert.match(detail.detail, /delete it manually, then use Install/);
+      assert.strictEqual(detail.fixAction, undefined);
+    });
+
+    it("never offers a Fix for a directory whose ownership marker is a symlink", { skip: process.platform === "win32" }, () => {
+      const root = makeTempDir();
+      const descriptor = minimaxDescriptor(root);
+      writeOwnedPlugin(descriptor, { withOwnerMarker: false });
+      const borrowed = path.join(root, "borrowed-marker.json");
+      writeJson(borrowed, minimaxInstall.buildOwnerMarker());
+      fs.symlinkSync(borrowed, path.join(descriptor.configPath, minimaxInstall.OWNER_MARKER_FILE));
+
+      const detail = checkAgentIntegrations({ fs, prefs: {}, descriptors: [descriptor] }).details[0];
+      assert.strictEqual(detail.status, "broken-path");
+      assert.match(detail.detail, /symlinked-managed-path/);
+      assert.strictEqual(detail.fixAction, undefined);
     });
 
     it("offers Repair for an owned install interrupted before the hooks document was written", () => {

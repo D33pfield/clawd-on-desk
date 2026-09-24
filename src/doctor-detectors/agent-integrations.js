@@ -2206,12 +2206,11 @@ function minimaxHooksNameMissingNode(hooks, nodeBin, fsImpl) {
 
 // MiniMax Code: verifies the plugin directory against the SAME shared helpers
 // the installer uses (hooks/minimax-install.js) instead of just checking that
-// files exist. A directory without Clawd's ownership marker — or, for a
-// pre-marker install, without the exact document that build generated — is
-// reported as foreign and never offered a Fix: re-running the installer fails
-// closed there, so the button would be an ineffective loop. An owned directory
-// that is incomplete, still lacks the marker, or drifted from the current
-// canonical document (node path, script path, event set, timeout) is
+// files exist. A directory without a valid ownership marker (or with any
+// managed path symlinked) is reported as foreign and never offered a Fix:
+// re-running the installer fails closed there, so the button would be an
+// ineffective loop. An owned directory that is incomplete or drifted from the
+// current canonical document (node path, script path, event set, timeout) is
 // broken-path with a working Repair: reinstall rewrites the owned directory.
 function checkMinimaxPluginMode(descriptor, options) {
   const pluginDir = descriptor.configPath;
@@ -2228,13 +2227,19 @@ function checkMinimaxPluginMode(descriptor, options) {
 
   const ownership = minimaxInstall.readOwnership(pluginDir, options.fs);
   if (!ownership.owned) {
+    // Still running Clawd's hook without a provable owner (for example a
+    // pre-release install written before the ownership marker existed): the
+    // only safe recovery is a manual delete followed by Install.
+    const runsClawdHook = minimaxInstall.hooksReferenceClawdHook(pluginDir, options.fs) === true;
     return makeDetail(descriptor, "broken-path", {
       level: "warning",
       parentDirExists: true,
       configFileExists: true,
       configPath: pluginDir,
       supplementary: { key: "minimax_plugin", value: "foreign" },
-      detail: `${pluginDir} exists but is not a verifiably Clawd-managed plugin (${ownership.reason}); Clawd will not modify or delete it`,
+      detail: runsClawdHook
+        ? `${pluginDir} runs Clawd's hook but Clawd cannot prove it owns the directory (${ownership.reason}); Clawd will not modify or delete it — delete it manually, then use Install`
+        : `${pluginDir} exists but is not a verifiably Clawd-managed plugin (${ownership.reason}); Clawd will not modify or delete it`,
     });
   }
 
@@ -2258,7 +2263,6 @@ function checkMinimaxPluginMode(descriptor, options) {
 
   // Spell out what drifted so the user knows what Repair rewrites.
   const drifted = [];
-  if (ownership.via === "legacy") drifted.push("ownership marker missing");
   if (manifest.problem) drifted.push(`manifest ${manifest.problem}`);
   else if (!isDeepStrictEqual(manifest.value, desiredManifest)) drifted.push("manifest");
   if (hooks.problem) drifted.push(`hooks ${hooks.problem}`);
