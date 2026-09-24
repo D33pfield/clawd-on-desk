@@ -18,6 +18,7 @@ const {
   installMinimaxPlugin,
   MINIMAX_HOOK_EVENTS,
   PLUGIN_DIR_NAME: MINIMAX_PLUGIN_DIR_NAME,
+  REMOVAL_PREFIX: MINIMAX_REMOVAL_PREFIX,
 } = require("../hooks/minimax-install");
 const { registerCodexHooks, CODEX_OFFICIAL_HOOK_EVENTS } = require("../hooks/codex-install");
 const { stableCodexHookPaths } = require("../hooks/codex-install-utils");
@@ -525,6 +526,101 @@ describe("MiniMax Code plugin cleanup follows the configured data dir (#1038)", 
     }
   });
 
+  it("Settings Uninstall moves the plugin out of plugins/ and reports a leftover it could not delete", async (t) => {
+    // #1038 round-3 R1-01: the removal directory used to be created inside
+    // plugins/, where MiniMax scans every entry as a plugin candidate.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-settings-uninstall-minimax-residual-"));
+    const homeDir = path.join(root, "home");
+    const dataDir = path.join(root, "minimax-data");
+    const pluginRoot = path.join(dataDir, "plugins", MINIMAX_PLUGIN_DIR_NAME);
+    fs.mkdirSync(homeDir, { recursive: true });
+    fs.mkdirSync(dataDir, { recursive: true });
+
+    try {
+      installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+      const realRm = fs.rmSync.bind(fs);
+      t.mock.method(fs, "rmSync", (target, rmOptions) => {
+        if (path.basename(String(target)).startsWith(MINIMAX_REMOVAL_PREFIX)) {
+          throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+        }
+        return realRm(target, rmOptions);
+      });
+
+      const runtime = createIntegrationSyncRuntime({
+        ctx: { cleanupHomeDir: homeDir, cleanupOptions: { env: { MINIMAX_DATA_DIR: dataDir }, hermesCommand: false } },
+      });
+      const snapshot = prefs.getDefaults();
+      snapshot.agents = {
+        ...snapshot.agents,
+        minimax: { ...snapshot.agents.minimax, integrationInstalled: true, enabled: true },
+      };
+
+      const result = await agentCommands.uninstallAgentIntegration({ agentId: "minimax" }, {
+        snapshot,
+        uninstallIntegrationForAgent: runtime.uninstallIntegrationForAgent,
+      });
+
+      t.mock.restoreAll();
+
+      assert.strictEqual(result.status, "ok");
+      assert.ok(result.commit, "the plugin left plugins/, so prefs may commit the uninstall");
+      assert.strictEqual(result.residualPaths.length, 1);
+      const [residual] = result.residualPaths;
+      assert.strictEqual(path.dirname(residual), dataDir);
+      assert.ok(path.basename(residual).startsWith(MINIMAX_REMOVAL_PREFIX));
+      assert.ok(fs.existsSync(residual), "the leftover directory must still be there");
+      assert.ok(
+        fs.readdirSync(path.join(dataDir, "plugins")).every((name) => !name.startsWith(".clawd-minimax-")),
+        "nothing may be left inside the scanned plugins/ directory"
+      );
+      assert.strictEqual(fs.existsSync(pluginRoot), false);
+      assert.ok(
+        result.warnings.some((warning) => warning.includes(residual)),
+        JSON.stringify(result.warnings)
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("Settings Uninstall leaves no .clawd-minimax-* directory behind on success", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-settings-uninstall-minimax-clean-"));
+    const homeDir = path.join(root, "home");
+    const dataDir = path.join(root, "minimax-data");
+    fs.mkdirSync(homeDir, { recursive: true });
+    fs.mkdirSync(dataDir, { recursive: true });
+
+    try {
+      installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+
+      const runtime = createIntegrationSyncRuntime({
+        ctx: { cleanupHomeDir: homeDir, cleanupOptions: { env: { MINIMAX_DATA_DIR: dataDir }, hermesCommand: false } },
+      });
+      const snapshot = prefs.getDefaults();
+      snapshot.agents = {
+        ...snapshot.agents,
+        minimax: { ...snapshot.agents.minimax, integrationInstalled: true, enabled: true },
+      };
+
+      const result = await agentCommands.uninstallAgentIntegration({ agentId: "minimax" }, {
+        snapshot,
+        uninstallIntegrationForAgent: runtime.uninstallIntegrationForAgent,
+      });
+
+      assert.strictEqual(result.status, "ok");
+      assert.deepStrictEqual(
+        fs.readdirSync(dataDir).filter((name) => name.startsWith(".clawd-minimax-")),
+        []
+      );
+      assert.deepStrictEqual(
+        fs.readdirSync(path.join(dataDir, "plugins")).filter((name) => name.startsWith(".clawd-minimax-")),
+        []
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("resolves MAVIS_DATA_DIR when MINIMAX_DATA_DIR is unset", () => {
     const homeDir = path.join(os.tmpdir(), "clawd-minimax-plan-home");
     const plan = buildCleanupOptionsForHome(homeDir, {
@@ -535,6 +631,7 @@ describe("MiniMax Code plugin cleanup follows the configured data dir (#1038)", 
       plan.byAgent.minimax.pluginRoot,
       path.join("/data/mavis", "plugins", MINIMAX_PLUGIN_DIR_NAME)
     );
+    assert.strictEqual(plan.byAgent.minimax.dataDir, "/data/mavis");
   });
 });
 

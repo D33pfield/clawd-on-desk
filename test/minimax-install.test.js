@@ -19,6 +19,7 @@ const {
   STAGING_PREFIX,
   recordedNodeBin,
   resolveDesiredNodeBin,
+  hooksReferenceClawdHook,
 } = require("../hooks/minimax-install");
 const { writeJsonAtomic } = require("../hooks/json-utils");
 
@@ -508,7 +509,10 @@ describe("MiniMax plugin installer", () => {
 
     assert.strictEqual(result.removed, 0);
     assert.strictEqual(result.registrationRemoved, true);
-    assert.strictEqual(result.residualPaths, undefined);
+    assert.strictEqual(result.residualPaths, undefined, "the directory is not Clawd's; it must not be reported as residue");
+    assert.strictEqual(result.warnings.length, 1);
+    assert.ok(result.warnings[0].includes(pluginRoot), result.warnings[0]);
+    assert.match(result.warnings[0], /Install will refuse/);
     assert.ok(fs.existsSync(path.join(pluginRoot, "hooks", "hooks.json")));
   });
 
@@ -553,11 +557,14 @@ describe("MiniMax plugin installer", () => {
     fs.symlinkSync(target, link, "dir");
 
     assert.deepStrictEqual(readOwnership(link), { owned: false, reason: "symlink-root" });
+    assert.strictEqual(hooksReferenceClawdHook(link), null, "Clawd does not follow a linked root");
     assert.throws(
       () => installMinimaxPlugin({ dataDir, nodeBin: "/other/node", silent: true }),
       /symlink-root/
     );
-    assert.strictEqual(unregisterMinimaxPlugin({ dataDir, silent: true }).removed, 0);
+    const result = unregisterMinimaxPlugin({ dataDir, silent: true });
+    assert.strictEqual(result.removed, 0);
+    assert.strictEqual(result.registrationRemoved, null);
     assert.ok(fs.lstatSync(link).isSymbolicLink(), "the link itself must survive");
     assert.strictEqual(fs.readFileSync(path.join(target, "hooks", "hooks.json"), "utf8"), before);
   });
@@ -605,9 +612,9 @@ describe("MiniMax plugin installer", () => {
 
   it("keeps the recorded node binary when node detection fails", () => {
     const dataDir = makeTempDataDir();
-    const recordedNode = path.join(dataDir, "node-bin", "node");
-    fs.mkdirSync(path.dirname(recordedNode), { recursive: true });
-    fs.writeFileSync(recordedNode, "", { encoding: "utf8", mode: 0o755 });
+    // A real node image: the fallback keeps the recorded path only after a
+    // `--version` probe succeeds, so a fake executable would not qualify.
+    const recordedNode = process.execPath;
     installMinimaxPlugin({ dataDir, nodeBin: recordedNode, silent: true });
     const hooksPath = path.join(dataDir, "plugins", PLUGIN_DIR_NAME, "hooks", "hooks.json");
 
@@ -649,18 +656,424 @@ describe("MiniMax plugin installer", () => {
     const notNode = buildDesiredHooksDocument(script, echo);
     const foreignScript = buildDesiredHooksDocument("/opt/vendor/hooks/other.js", realNode);
 
-    assert.strictEqual(resolveDesiredNodeBin({ nodeBin: null, existingHooks: mixed }), "node", "mixed commands");
-    assert.strictEqual(resolveDesiredNodeBin({ nodeBin: null, existingHooks: notNode }), "node", "not a node binary");
+    const acceptProbe = { probeNodeBin: () => true };
+    assert.strictEqual(resolveDesiredNodeBin({ nodeBin: null, existingHooks: mixed, ...acceptProbe }), "node", "mixed commands");
+    assert.strictEqual(resolveDesiredNodeBin({ nodeBin: null, existingHooks: notNode, ...acceptProbe }), "node", "not a node binary");
     assert.strictEqual(recordedNodeBin(foreignScript), null, "handlers that do not run our hook prove nothing");
-    assert.strictEqual(resolveDesiredNodeBin({ nodeBin: null, existingHooks: buildDesiredHooksDocument(script, realNode) }), realNode);
+    assert.strictEqual(resolveDesiredNodeBin({ nodeBin: null, existingHooks: buildDesiredHooksDocument(script, realNode), ...acceptProbe }), realNode);
     if (process.platform !== "win32") {
       fs.chmodSync(realNode, 0o644);
       assert.strictEqual(
-        resolveDesiredNodeBin({ nodeBin: null, existingHooks: buildDesiredHooksDocument(script, realNode) }),
+        resolveDesiredNodeBin({ nodeBin: null, existingHooks: buildDesiredHooksDocument(script, realNode), ...acceptProbe }),
         "node",
         "a recorded path that is not executable is not kept"
       );
     }
+  });
+
+  it("keeps a recorded node path only when it actually runs as Node", () => {
+    const dataDir = makeTempDataDir();
+    const script = resolveHookScriptPath();
+    const fakeNodeName = process.platform === "win32" ? "node.exe" : "node";
+    const fakeNode = path.join(dataDir, "bin", fakeNodeName);
+    fs.mkdirSync(path.dirname(fakeNode), { recursive: true });
+    fs.writeFileSync(fakeNode, "", { encoding: "utf8", mode: 0o755 });
+
+    // An empty executable named node exists and looks right, but ENOEXEC means
+    // it would silently break every hook — so it must not be carried forward.
+    assert.strictEqual(
+      resolveDesiredNodeBin({ nodeBin: null, existingHooks: buildDesiredHooksDocument(script, fakeNode) }),
+      "node",
+      "a file that does not run as Node must not be recorded"
+    );
+    assert.strictEqual(
+      resolveDesiredNodeBin({ nodeBin: null, existingHooks: buildDesiredHooksDocument(script, process.execPath) }),
+      process.execPath,
+      "a real node image is kept"
+    );
+  });
+
+  it("treats a plugin root it cannot inspect as still present", (t) => {
+    // #1038 round-3 R1-02: a permission error used to read as "not there", so
+    // Uninstall reported success while the live plugin stayed on disk.
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+    const realLstat = fs.lstatSync.bind(fs);
+    t.mock.method(fs, "lstatSync", (target) => {
+      if (target === pluginRoot) {
+        throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      }
+      return realLstat(target);
+    });
+
+    const result = unregisterMinimaxPlugin({ dataDir, silent: true });
+    assert.strictEqual(result.registrationRemoved, null);
+    assert.strictEqual(result.status, "error");
+    assert.deepStrictEqual(result.residualPaths, [pluginRoot]);
+    assert.throws(
+      () => installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true }),
+      /cannot inspect/
+    );
+
+    t.mock.restoreAll();
+    assert.ok(fs.existsSync(path.join(pluginRoot, OWNER_MARKER_FILE)));
+    assert.ok(fs.existsSync(path.join(pluginRoot, ".claude-plugin", "plugin.json")));
+    assert.ok(fs.existsSync(path.join(pluginRoot, "hooks", "hooks.json")));
+  });
+
+  it("never treats a dangling symlink at the plugin root as absent", {
+    skip: process.platform === "win32",
+  }, () => {
+    const dataDir = makeTempDataDir();
+    const link = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    fs.symlinkSync(path.join(dataDir, "gone-away"), link, "dir");
+
+    // existsSync reads a dangling link as absent; lstatState must not.
+    assert.strictEqual(fs.existsSync(link), false);
+    assert.deepStrictEqual(readOwnership(link), { owned: false, reason: "symlink-root" });
+    assert.throws(
+      () => installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true }),
+      /symlink-root/
+    );
+    const result = unregisterMinimaxPlugin({ dataDir, silent: true });
+    assert.strictEqual(result.removed, 0);
+    // An existsSync-based root check would read a dangling link as absent and
+    // wrongly report registrationRemoved:true.
+    assert.strictEqual(result.registrationRemoved, null);
+    assert.ok(fs.lstatSync(link).isSymbolicLink(), "the dangling link must survive");
+  });
+
+  it("stages a first install in the data directory, never inside plugins/", (t) => {
+    for (const shape of ["dataDir", "pluginRoot"]) {
+      const dataDir = makeTempDataDir();
+      const realRename = fs.renameSync.bind(fs);
+      const stagingParents = [];
+      t.mock.method(fs, "renameSync", (from, to) => {
+        if (path.basename(from).startsWith(STAGING_PREFIX)) stagingParents.push(path.dirname(from));
+        return realRename(from, to);
+      });
+      try {
+        const options = shape === "dataDir"
+          ? { dataDir, nodeBin: "/usr/local/bin/node", silent: true }
+          : { pluginRoot: path.join(dataDir, "plugins", PLUGIN_DIR_NAME), nodeBin: "/usr/local/bin/node", silent: true };
+        const result = installMinimaxPlugin(options);
+        assert.strictEqual(result.added, MINIMAX_HOOK_EVENTS.length, shape);
+      } finally {
+        t.mock.restoreAll();
+      }
+      assert.ok(stagingParents.length >= 1, shape);
+      for (const parent of stagingParents) assert.strictEqual(parent, dataDir, shape);
+    }
+  });
+
+  it("moves an uninstalled plugin out of plugins/ before deleting it", (t) => {
+    for (const shape of ["dataDir", "pluginRoot"]) {
+      const dataDir = makeTempDataDir();
+      const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+      installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+      const realRename = fs.renameSync.bind(fs);
+      const removalTargets = [];
+      t.mock.method(fs, "renameSync", (from, to) => {
+        if (path.basename(to).startsWith(REMOVAL_PREFIX)) removalTargets.push(to);
+        return realRename(from, to);
+      });
+      let result;
+      try {
+        const options = shape === "dataDir" ? { dataDir, silent: true } : { pluginRoot, silent: true };
+        result = unregisterMinimaxPlugin(options);
+      } finally {
+        t.mock.restoreAll();
+      }
+      assert.strictEqual(result.registrationRemoved, true, shape);
+      assert.ok(removalTargets.length >= 1, shape);
+      for (const target of removalTargets) assert.strictEqual(path.dirname(target), dataDir, shape);
+    }
+  });
+
+  it("publishes a first install with one rename of a complete directory", (t) => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    const required = [OWNER_MARKER_FILE, path.join(".claude-plugin", "plugin.json"), path.join("hooks", "hooks.json")];
+    const realRename = fs.renameSync.bind(fs);
+    const publishRenames = [];
+    t.mock.method(fs, "renameSync", (from, to) => {
+      if (to === pluginRoot) {
+        publishRenames.push({
+          from,
+          complete: required.every((rel) => fs.existsSync(path.join(from, rel))),
+          rootBefore: fs.existsSync(pluginRoot),
+        });
+      }
+      return realRename(from, to);
+    });
+
+    installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+
+    assert.strictEqual(publishRenames.length, 1, "the plugin is published with exactly one rename");
+    assert.strictEqual(publishRenames[0].complete, true, "every file must exist in staging before publish");
+    assert.strictEqual(publishRenames[0].rootBefore, false);
+  });
+
+  it("puts a moved directory back when it is no longer provably Clawd's", (t) => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+    const realRename = fs.renameSync.bind(fs);
+    t.mock.method(fs, "renameSync", (from, to) => {
+      realRename(from, to);
+      if (path.basename(to).startsWith(REMOVAL_PREFIX)) {
+        fs.writeFileSync(path.join(to, OWNER_MARKER_FILE), "{tampered", "utf8");
+      }
+    });
+
+    const result = unregisterMinimaxPlugin({ dataDir, silent: true });
+
+    assert.strictEqual(result.registrationRemoved, false);
+    assert.deepStrictEqual(result.residualPaths, [pluginRoot]);
+    assert.ok(fs.existsSync(path.join(pluginRoot, "hooks", "hooks.json")));
+    assert.deepStrictEqual(leftoverWorkDirs(dataDir), [], "the move must have been undone");
+  });
+
+  it("reports both locations when a moved directory can be neither verified nor put back", (t) => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+    const realRename = fs.renameSync.bind(fs);
+    let removalPath = null;
+    t.mock.method(fs, "renameSync", (from, to) => {
+      realRename(from, to);
+      if (path.basename(to).startsWith(REMOVAL_PREFIX)) {
+        removalPath = to;
+        fs.writeFileSync(path.join(to, OWNER_MARKER_FILE), "{tampered", "utf8");
+        // Another instance publishes a fresh Clawd plugin at the original path,
+        // so the move-back rename fails against a non-empty directory.
+        fs.mkdirSync(path.join(pluginRoot, "hooks"), { recursive: true });
+        fs.writeFileSync(
+          path.join(pluginRoot, "hooks", "hooks.json"),
+          JSON.stringify(buildDesiredHooksDocument(resolveHookScriptPath(), "/x/node")),
+          "utf8"
+        );
+      }
+    });
+
+    const result = unregisterMinimaxPlugin({ dataDir, silent: true });
+
+    assert.strictEqual(result.registrationRemoved, null);
+    assert.strictEqual(result.residualPaths.length, 2);
+    assert.ok(result.residualPaths.includes(removalPath));
+    assert.ok(result.residualPaths.includes(pluginRoot));
+    assert.ok(fs.existsSync(removalPath));
+    assert.ok(fs.existsSync(pluginRoot));
+    assert.ok(result.message.includes(removalPath) && result.message.includes(pluginRoot), result.message);
+  });
+
+  it("treats an empty clawd-state directory as unclaimed", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    fs.mkdirSync(pluginRoot, { recursive: true });
+
+    assert.deepStrictEqual(readOwnership(pluginRoot), { owned: false, reason: "empty-directory" });
+    const result = installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+    assert.strictEqual(result.added, MINIMAX_HOOK_EVENTS.length);
+    assert.deepStrictEqual(readOwnership(pluginRoot), { owned: true });
+
+    const otherDataDir = makeTempDataDir();
+    fs.mkdirSync(path.join(otherDataDir, "plugins", PLUGIN_DIR_NAME), { recursive: true });
+    const uninstalled = unregisterMinimaxPlugin({ dataDir: otherDataDir, silent: true });
+    assert.strictEqual(uninstalled.registrationRemoved, true);
+    assert.strictEqual(uninstalled.warnings, undefined);
+  });
+
+  it("never replaces a directory that gains content after the install check", () => {
+    // #1038 round-3 R1-05: POSIX rename replaces an EMPTY target, so the check
+    // and the publish must not be able to clobber a real directory.
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    const writeHookSeam = (filePath, data) => {
+      if (filePath.includes(STAGING_PREFIX) && path.basename(filePath) === "hooks.json") {
+        fs.mkdirSync(pluginRoot, { recursive: true });
+        fs.writeFileSync(path.join(pluginRoot, "user.txt"), "keep me", "utf8");
+      }
+      return writeJsonAtomic(filePath, data);
+    };
+
+    assert.throws(
+      () => installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true, writeJsonAtomic: writeHookSeam }),
+      // POSIX rename → ENOTEMPTY/EEXIST/ENOTDIR; Windows rename → EPERM/EACCES.
+      /ENOTEMPTY|EEXIST|ENOTDIR|EPERM|EACCES|directory not empty/
+    );
+    assert.strictEqual(fs.readFileSync(path.join(pluginRoot, "user.txt"), "utf8"), "keep me");
+    assert.deepStrictEqual(leftoverWorkDirs(dataDir), []);
+  });
+
+  it("replaces an empty directory that appears after the install check", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    const writeHookSeam = (filePath, data) => {
+      if (filePath.includes(STAGING_PREFIX) && path.basename(filePath) === "hooks.json") {
+        fs.mkdirSync(pluginRoot, { recursive: true });
+      }
+      return writeJsonAtomic(filePath, data);
+    };
+
+    const result = installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true, writeJsonAtomic: writeHookSeam });
+    assert.strictEqual(result.added, MINIMAX_HOOK_EVENTS.length);
+    assert.deepStrictEqual(readOwnership(pluginRoot), { owned: true });
+  });
+
+  it("finds a Clawd hook in the hooks document the manifest declares", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { name: PLUGIN_DIR_NAME, hooks: "hooks/other.json" });
+    writeJsonFile(
+      path.join(pluginRoot, "hooks", "other.json"),
+      buildDesiredHooksDocument(resolveHookScriptPath(), "/usr/local/bin/node")
+    );
+
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), true);
+    const result = unregisterMinimaxPlugin({ dataDir, silent: true });
+    assert.strictEqual(result.registrationRemoved, false);
+    assert.strictEqual(result.activeEntryRemaining, true);
+    assert.deepStrictEqual(result.residualPaths, [pluginRoot]);
+    assert.ok(fs.existsSync(path.join(pluginRoot, "hooks", "other.json")));
+  });
+
+  it("finds a Clawd hook in an array-declared hooks document", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { name: PLUGIN_DIR_NAME, hooks: [{ path: "./hooks/b.json" }] });
+    writeJsonFile(
+      path.join(pluginRoot, "hooks", "b.json"),
+      buildDesiredHooksDocument(resolveHookScriptPath(), "/usr/local/bin/node")
+    );
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), true);
+  });
+
+  it("finds a Clawd hook in an inlined manifest hooks document", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), {
+      name: PLUGIN_DIR_NAME,
+      hooks: buildDesiredHooksDocument(resolveHookScriptPath(), "/usr/local/bin/node"),
+    });
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), true);
+  });
+
+  it("finds a Clawd handler registered on any event, not just SessionStart", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { name: PLUGIN_DIR_NAME });
+    const handler = { type: "command", command: "/usr/local/bin/node", args: [resolveHookScriptPath()] };
+    writeJsonFile(path.join(pluginRoot, "hooks", "hooks.json"), { hooks: { PostCompact: [{ hooks: [handler] }] } });
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), true);
+  });
+
+  it("reports an unmodellable manifest hooks value as unknown, not absent", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { name: PLUGIN_DIR_NAME, hooks: 42 });
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), null);
+  });
+
+  it("never follows a manifest hook path outside the plugin directory", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { name: PLUGIN_DIR_NAME, hooks: "../outside.json" });
+    writeJsonFile(
+      path.join(dataDir, "plugins", "outside.json"),
+      buildDesiredHooksDocument(resolveHookScriptPath(), "/usr/local/bin/node")
+    );
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), null);
+  });
+
+  it("reports an unmodellable manifest format as unknown when no Clawd hook is found", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".minimax-plugin", "plugin.json"), { name: "someone-else" });
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), null);
+  });
+
+  it("reports a corrupt hooks document as unknown so Uninstall cannot claim success", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { name: PLUGIN_DIR_NAME, hooks: ["hooks/hooks.json"] });
+    fs.mkdirSync(path.join(pluginRoot, "hooks"), { recursive: true });
+    fs.writeFileSync(path.join(pluginRoot, "hooks", "hooks.json"), "{corrupt", "utf8");
+
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), null);
+    assert.strictEqual(unregisterMinimaxPlugin({ dataDir, silent: true }).registrationRemoved, null);
+  });
+
+  it("reports a declared hooks document that does not exist as absent", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { name: PLUGIN_DIR_NAME, hooks: "hooks/gone.json" });
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), false);
+  });
+
+  it("finds a Clawd hook in a bare (unwrapped) hooks document", () => {
+    // MiniMax's readHooksEnvelope uses a plain-object `hooks` field as the
+    // events map and otherwise treats the whole document as that map, so a bare
+    // document runs too and must not read as absent.
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { name: PLUGIN_DIR_NAME });
+    const bare = buildDesiredHooksDocument(resolveHookScriptPath(), "/usr/local/bin/node").hooks;
+    writeJsonFile(path.join(pluginRoot, "hooks", "hooks.json"), bare);
+
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), true);
+    assert.strictEqual(unregisterMinimaxPlugin({ dataDir, silent: true }).registrationRemoved, false);
+  });
+
+  it("trims a declared hooks path before resolving it", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { name: PLUGIN_DIR_NAME, hooks: "  hooks/other.json  " });
+    writeJsonFile(
+      path.join(pluginRoot, "hooks", "other.json"),
+      buildDesiredHooksDocument(resolveHookScriptPath(), "/usr/local/bin/node")
+    );
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), true);
+  });
+
+  it("still counts Clawd's own hooks/hooks.json when the manifest declares another document", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { name: PLUGIN_DIR_NAME, hooks: "hooks/other.json" });
+    writeJsonFile(path.join(pluginRoot, "hooks", "other.json"), {
+      hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "/usr/bin/node", args: ["/opt/vendor/audit.js"] }] }] },
+    });
+    writeJsonFile(
+      path.join(pluginRoot, "hooks", "hooks.json"),
+      buildDesiredHooksDocument(resolveHookScriptPath(), "/usr/local/bin/node")
+    );
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), true);
+  });
+
+  it("treats a symlinked hooks document as unconfirmable", { skip: process.platform === "win32" }, () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { name: PLUGIN_DIR_NAME, hooks: "hooks/hooks.json" });
+    const outside = path.join(dataDir, "outside-hooks");
+    writeJsonFile(path.join(outside, "hooks.json"), {
+      hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "/usr/bin/node", args: ["/opt/vendor/audit.js"] }] }] },
+    });
+    fs.symlinkSync(outside, path.join(pluginRoot, "hooks"), "dir");
+
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), null);
+  });
+
+  it("treats a plugin root under a non-directory parent as absent", () => {
+    const dataDir = makeTempDataDir();
+    fs.writeFileSync(path.join(dataDir, "plugins"), "not a directory", "utf8");
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+
+    assert.deepStrictEqual(readOwnership(pluginRoot), { owned: false, reason: "missing" });
+    const result = unregisterMinimaxPlugin({ dataDir, silent: true });
+    assert.strictEqual(result.registrationRemoved, true);
+    assert.strictEqual(result.status, undefined);
   });
 
   it("registers exactly the 10 state events and never PermissionRequest", () => {

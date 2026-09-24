@@ -216,6 +216,16 @@ describe("minimax hook agent process detection", () => {
       String.raw`C:\Users\me\AppData\Roaming\npm\mcode.cmd`,
       String.raw`"C:\Users\me\AppData\Roaming\npm\mcode.cmd" exec hi`,
       "minimax-code",
+      // The script argument is what identifies the CLI, not a directory that
+      // merely appears somewhere in the line.
+      "node --max-old-space-size=4096 /usr/local/lib/node_modules/@minimax-ai/code/cli.js exec hi",
+      String.raw`"C:\Program Files\nodejs\node.exe" --no-warnings "C:\Users\me\AppData\Roaming\npm\node_modules\@minimax-ai\code\cli.js" exec`,
+      "node -- /Users/me/.minimax-code/releases/0.5.4/cli.js",
+      "node /usr/local/lib/node_modules/@minimax-ai/code/cli.js\n",
+      // Single quotes are literal on POSIX and on Windows, so a path with an
+      // apostrophe must not be swallowed as if quoted.
+      "/Users/o'brien/.nvm/versions/node/v24.18.0/bin/node /Users/o'brien/.nvm/versions/node/v24.18.0/lib/node_modules/@minimax-ai/code/cli.js exec",
+      String.raw`C:\Users\O'Brien\AppData\Roaming\npm\node.exe C:\Users\O'Brien\AppData\Roaming\npm\node_modules\@minimax-ai\code\cli.js exec`,
     ];
     const misses = [
       "node server.js --label mcode",
@@ -226,6 +236,11 @@ describe("minimax hook agent process detection", () => {
       "node /Users/me/mcode-project/server.js",
       "node /Users/me/src/mcode.json.js",
       "node /Users/me/.nvm/versions/node/v24.18.0/bin/gemini",
+      "node server.js --config=/work/@minimax-ai/code/config.json",
+      "node server.js /work/.minimax-code/demo.js",
+      "node -e \"require('/x/@minimax-ai/code/cli.js')\"",
+      "node --require /x/@minimax-ai/code/preload.js server.js",
+      "bash -c 'node /x/@minimax-ai/code/cli.js'",
       "",
       undefined,
     ];

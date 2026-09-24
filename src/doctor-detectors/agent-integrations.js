@@ -2226,6 +2226,18 @@ function checkMinimaxPluginMode(descriptor, options) {
   }
 
   const ownership = minimaxInstall.readOwnership(pluginDir, options.fs);
+  if (!ownership.owned && ownership.reason === "empty-directory") {
+    // An empty directory is unclaimed and Install publishes over it, so from
+    // the user's point of view it is the same as no plugin at all.
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: false,
+      configPath: pluginDir,
+      detail: `${pluginDir} is an empty directory`,
+      missingPluginFiles: descriptor.managedFiles || [],
+    });
+  }
   if (!ownership.owned) {
     // Still running Clawd's hook without a provable owner (for example a
     // pre-release install written before the ownership marker existed): the
@@ -2239,7 +2251,7 @@ function checkMinimaxPluginMode(descriptor, options) {
       supplementary: { key: "minimax_plugin", value: "foreign" },
       detail: runsClawdHook
         ? `${pluginDir} runs Clawd's hook but Clawd cannot prove it owns the directory (${ownership.reason}); Clawd will not modify or delete it — delete it manually, then use Install`
-        : `${pluginDir} exists but is not a verifiably Clawd-managed plugin (${ownership.reason}); Clawd will not modify or delete it`,
+        : `${pluginDir} exists but is not a verifiably Clawd-managed plugin (${ownership.reason}); Clawd will not modify or delete it. Installation will refuse to write there until you remove or rename that directory`,
     });
   }
 

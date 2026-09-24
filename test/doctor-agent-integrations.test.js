@@ -3459,6 +3459,24 @@ describe("kimi legacy permission-mode supplement", () => {
       assert.strictEqual(detail.fixAction, undefined);
     });
 
+    it("reports an empty plugin directory like a missing one", () => {
+      // #1038 round-3 R1-05: an empty directory is unclaimed and Install
+      // publishes over it, so it must not be reported as a foreign conflict.
+      const emptyRoot = makeTempDir();
+      const emptyDescriptor = minimaxDescriptor(emptyRoot);
+      fs.mkdirSync(emptyDescriptor.configPath, { recursive: true });
+      const emptyDetail = checkAgentIntegrations({ fs, prefs: {}, descriptors: [emptyDescriptor] }).details[0];
+
+      const missingRoot = makeTempDir();
+      const missingDescriptor = minimaxDescriptor(missingRoot);
+      const missingDetail = checkAgentIntegrations({ fs, prefs: {}, descriptors: [missingDescriptor] }).details[0];
+
+      assert.strictEqual(emptyDetail.status, "not-connected");
+      assert.strictEqual(emptyDetail.status, missingDetail.status);
+      assert.strictEqual(Boolean(emptyDetail.fixAction), Boolean(missingDetail.fixAction));
+      assert.match(emptyDetail.detail, /is an empty directory/);
+    });
+
     it("reports a current owned plugin as ok", () => {
       const root = makeTempDir();
       const descriptor = minimaxDescriptor(root);

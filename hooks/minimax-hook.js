@@ -114,19 +114,105 @@ const AGENT_NAMES = {
   linux: ["minimax-code", "mcode", "minimax code"],
 };
 
+// Split a command line into argv-like tokens. Only double quotes group: that is
+// CommandLineToArgvW's rule on Windows (where process snapshots quote each
+// path), while POSIX `ps` output is unquoted and carries quote characters
+// literally. Treating single quotes as grouping would swallow a path that
+// contains an apostrophe (e.g. /Users/o'brien/...) into one bogus token. An
+// unquoted path with spaces is split and simply fails to match — that loses one
+// match and falls back to the previous behavior rather than matching something
+// else.
+function splitCommandLine(cmd) {
+  const tokens = [];
+  let current = "";
+  let inQuote = false;
+  let hasToken = false;
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (inQuote) {
+      if (ch === "\"") inQuote = false;
+      else current += ch;
+      hasToken = true;
+      continue;
+    }
+    if (ch === "\"") {
+      inQuote = true;
+      hasToken = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (hasToken) {
+        tokens.push(current);
+        current = "";
+        hasToken = false;
+      }
+      continue;
+    }
+    current += ch;
+    hasToken = true;
+  }
+  if (hasToken) tokens.push(current);
+  return tokens;
+}
+
+// Node options that consume the following token as their value, so the script
+// search must skip both.
+const NODE_OPTIONS_WITH_VALUE = new Set([
+  "-r", "--require", "--import", "--loader", "--experimental-loader",
+  "-C", "--conditions", "--title", "--env-file", "--input-type", "--disable-warning",
+]);
+const MINIMAX_LAUNCHER_RE = /^(mcode|minimax-code)(\.(c?js|mjs|cmd|ps1|exe))?$/;
+const NODE_EXEC_RE = /^node(\.exe)?$/;
+
+function commandBasename(token) {
+  return token.replace(/\\/g, "/").split("/").pop().toLowerCase();
+}
+
 // Where the CLI still runs under a node / node.exe image name (Windows, where
 // process.title only changes the console title), recognize it by command line:
-// the npm package directory (`/@minimax-ai/code/`), the official installer's
-// `.minimax-code` directory, or an `mcode` / `minimax-code` launcher named as
-// a whole path component. Without an agent pid Clawd cannot tell when the CLI
-// exits — MiniMax sends no SessionEnd on exit — and the session row would
-// outlive it for as long as the terminal stays open.
+// the launcher itself, the npm package directory (`/@minimax-ai/code/`), or the
+// official installer's `.minimax-code` directory — but only where a script
+// argument sits, never from an arbitrary option value or later argument. Without
+// an agent pid Clawd cannot tell when the CLI exits — MiniMax sends no SessionEnd
+// on exit — and the session row would outlive it as long as the terminal is open.
 function isMinimaxAgentCommandLine(cmd) {
   if (typeof cmd !== "string") return false;
-  const normalized = cmd.toLowerCase().replace(/\\/g, "/");
-  return normalized.includes("/@minimax-ai/code/")
-    || normalized.includes("/.minimax-code/")
-    || /(^|\/)(mcode|minimax-code)(\.js|\.cmd|\.ps1)?(?=$|[\s"'])/.test(normalized);
+  const tokens = splitCommandLine(cmd.trim());
+  if (tokens.length === 0) return false;
+
+  const first = commandBasename(tokens[0]);
+  if (MINIMAX_LAUNCHER_RE.test(first)) return true;
+  if (!NODE_EXEC_RE.test(first)) return false;
+
+  // Find the script argument after node's own options.
+  let script = null;
+  let i = 1;
+  while (i < tokens.length) {
+    const token = tokens[i];
+    if (token === "-e" || token === "--eval" || token === "-p" || token === "--print" || token === "-") {
+      return false;
+    }
+    if (token === "--") {
+      script = i + 1 < tokens.length ? tokens[i + 1] : null;
+      break;
+    }
+    if (NODE_OPTIONS_WITH_VALUE.has(token)) {
+      i += 2;
+      continue;
+    }
+    if (token.startsWith("-")) {
+      i += 1;
+      continue;
+    }
+    script = token;
+    break;
+  }
+  if (!script) return false;
+
+  if (MINIMAX_LAUNCHER_RE.test(commandBasename(script))) return true;
+  const normalizedScript = script.replace(/\\/g, "/").toLowerCase();
+  return normalizedScript.includes("/@minimax-ai/code/")
+    || normalizedScript.includes("/.minimax-code/");
 }
 
 const config = getPlatformConfig({});
@@ -272,6 +358,7 @@ module.exports = {
   __test: {
     AGENT_NAMES,
     isMinimaxAgentCommandLine,
+    splitCommandLine,
     resolveSessionTitle,
     extractPromptTitle,
     normalizeTitle,
