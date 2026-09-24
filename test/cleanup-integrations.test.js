@@ -16,6 +16,7 @@ const { resolveManagedRoot: resolveDshManagedRoot } = require("../hooks/dsh-inst
 const { registerQwenWorkHooks } = require("../hooks/qwenwork-install");
 const {
   installMinimaxPlugin,
+  readOwnership: readMinimaxOwnership,
   MINIMAX_HOOK_EVENTS,
   PLUGIN_DIR_NAME: MINIMAX_PLUGIN_DIR_NAME,
   REMOVAL_PREFIX: MINIMAX_REMOVAL_PREFIX,
@@ -614,6 +615,59 @@ describe("MiniMax Code plugin cleanup follows the configured data dir (#1038)", 
       );
       assert.deepStrictEqual(
         fs.readdirSync(path.join(dataDir, "plugins")).filter((name) => name.startsWith(".clawd-minimax-")),
+        []
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("Settings Uninstall keeps the install intent when another instance reinstalls mid-uninstall", async (t) => {
+    // #R2-03: instance A moves the old plugin out; instance B publishes a fresh
+    // one at the same path before A returns. The production Settings path must
+    // not commit "uninstalled" while a live plugin sits there.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-settings-uninstall-minimax-reinstall-"));
+    const homeDir = path.join(root, "home");
+    const dataDir = path.join(root, "minimax-data");
+    const pluginRoot = path.join(dataDir, "plugins", MINIMAX_PLUGIN_DIR_NAME);
+    fs.mkdirSync(homeDir, { recursive: true });
+    fs.mkdirSync(dataDir, { recursive: true });
+
+    try {
+      installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+      const realRename = fs.renameSync.bind(fs);
+      let triggered = false;
+      t.mock.method(fs, "renameSync", (from, to) => {
+        realRename(from, to);
+        if (!triggered && path.basename(to).startsWith(MINIMAX_REMOVAL_PREFIX)) {
+          triggered = true;
+          installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+        }
+      });
+
+      const runtime = createIntegrationSyncRuntime({
+        ctx: { cleanupHomeDir: homeDir, cleanupOptions: { env: { MINIMAX_DATA_DIR: dataDir }, hermesCommand: false } },
+      });
+      const snapshot = prefs.getDefaults();
+      snapshot.agents = {
+        ...snapshot.agents,
+        minimax: { ...snapshot.agents.minimax, integrationInstalled: true, enabled: true },
+      };
+
+      const result = await agentCommands.uninstallAgentIntegration({ agentId: "minimax" }, {
+        snapshot,
+        uninstallIntegrationForAgent: runtime.uninstallIntegrationForAgent,
+      });
+
+      t.mock.restoreAll();
+
+      assert.strictEqual(result.status, "error");
+      assert.strictEqual(result.commit, undefined, "no prefs commit while a plugin is still registered");
+      assert.strictEqual(result.registrationRemoved, false);
+      assert.ok(result.residualPaths.includes(pluginRoot));
+      assert.deepStrictEqual(readMinimaxOwnership(pluginRoot), { owned: true });
+      assert.deepStrictEqual(
+        fs.readdirSync(dataDir).filter((name) => name.startsWith(MINIMAX_REMOVAL_PREFIX)),
         []
       );
     } finally {

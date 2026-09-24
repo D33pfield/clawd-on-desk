@@ -1076,6 +1076,145 @@ describe("MiniMax plugin installer", () => {
     assert.strictEqual(result.status, undefined);
   });
 
+  it("reads a manifest hook path written with backslashes the way MiniMax does", () => {
+    // MiniMax splits declared paths on both separators, so hooks\other.json is
+    // hooks/other.json on every platform.
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { name: PLUGIN_DIR_NAME, hooks: "hooks\\other.json" });
+    writeJsonFile(
+      path.join(pluginRoot, "hooks", "other.json"),
+      buildDesiredHooksDocument(resolveHookScriptPath(), "/usr/local/bin/node")
+    );
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), true);
+    assert.strictEqual(unregisterMinimaxPlugin({ dataDir, silent: true }).registrationRemoved, false);
+  });
+
+  it("counts a shell-form command handler that references Clawd's hook", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { name: PLUGIN_DIR_NAME });
+    writeJsonFile(path.join(pluginRoot, "hooks", "hooks.json"), {
+      hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: "\"/usr/local/bin/node\" \"/opt/clawd/hooks/minimax-hook.js\"" }] }] },
+    });
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), true);
+    assert.strictEqual(unregisterMinimaxPlugin({ dataDir, silent: true }).registrationRemoved, false);
+  });
+
+  it("counts a handler whose commandWindows references Clawd's hook", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { name: PLUGIN_DIR_NAME });
+    writeJsonFile(path.join(pluginRoot, "hooks", "hooks.json"), {
+      hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", commandWindows: "node \"C:\\clawd\\hooks\\minimax-hook.js\"" }] }] },
+    });
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), true);
+  });
+
+  it("counts a handler that references Clawd's hook outside args[0]", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { name: PLUGIN_DIR_NAME });
+    writeJsonFile(path.join(pluginRoot, "hooks", "hooks.json"), {
+      hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: "/usr/bin/env", args: ["node", "/opt/clawd/hooks/minimax-hook.js"] }] }] },
+    });
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), true);
+  });
+
+  it("finds a Clawd handler declared in the second of two array documents", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { name: PLUGIN_DIR_NAME, hooks: ["hooks/a.json", "hooks/b.json"] });
+    writeJsonFile(path.join(pluginRoot, "hooks", "a.json"), {
+      hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "/usr/bin/node", args: ["/opt/vendor/audit.js"] }] }] },
+    });
+    writeJsonFile(
+      path.join(pluginRoot, "hooks", "b.json"),
+      buildDesiredHooksDocument(resolveHookScriptPath(), "/usr/local/bin/node")
+    );
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), true);
+  });
+
+  it("finds a Clawd handler when the declared { path } has surrounding whitespace", () => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    writeJsonFile(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { name: PLUGIN_DIR_NAME, hooks: { path: "  hooks/other.json  " } });
+    writeJsonFile(
+      path.join(pluginRoot, "hooks", "other.json"),
+      buildDesiredHooksDocument(resolveHookScriptPath(), "/usr/local/bin/node")
+    );
+    assert.strictEqual(hooksReferenceClawdHook(pluginRoot), true);
+  });
+
+  it("reports a plugin reinstalled at the same path during uninstall", (t) => {
+    // #R2-03: instance A removes the old plugin; instance B publishes a fresh
+    // one at the same path before A returns. A must not claim uninstalled.
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+    const realRename = fs.renameSync.bind(fs);
+    let triggered = false;
+    t.mock.method(fs, "renameSync", (from, to) => {
+      realRename(from, to);
+      if (!triggered && path.basename(to).startsWith(REMOVAL_PREFIX)) {
+        triggered = true;
+        installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+      }
+    });
+
+    const result = unregisterMinimaxPlugin({ dataDir, silent: true });
+
+    assert.strictEqual(result.registrationRemoved, false);
+    assert.strictEqual(result.activeEntryRemaining, true);
+    assert.ok(result.residualPaths.includes(pluginRoot));
+    assert.deepStrictEqual(readOwnership(pluginRoot), { owned: true });
+    assert.deepStrictEqual(leftoverWorkDirs(dataDir), []);
+  });
+
+  it("stays removed when only a foreign non-Clawd directory reappears during uninstall", (t) => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+    const realRename = fs.renameSync.bind(fs);
+    let triggered = false;
+    t.mock.method(fs, "renameSync", (from, to) => {
+      realRename(from, to);
+      if (!triggered && path.basename(to).startsWith(REMOVAL_PREFIX)) {
+        triggered = true;
+        fs.mkdirSync(pluginRoot, { recursive: true });
+        fs.writeFileSync(path.join(pluginRoot, "user.txt"), "keep", "utf8");
+      }
+    });
+
+    const result = unregisterMinimaxPlugin({ dataDir, silent: true });
+
+    assert.strictEqual(result.registrationRemoved, true);
+    assert.ok(result.warnings.some((warning) => warning.includes(pluginRoot)), JSON.stringify(result.warnings));
+    assert.strictEqual(result.residualPaths, undefined, "a foreign directory is not Clawd's residue");
+    assert.ok(fs.existsSync(path.join(pluginRoot, "user.txt")));
+  });
+
+  it("stays removed when only an empty directory reappears during uninstall", (t) => {
+    const dataDir = makeTempDataDir();
+    const pluginRoot = path.join(dataDir, "plugins", PLUGIN_DIR_NAME);
+    installMinimaxPlugin({ dataDir, nodeBin: "/usr/local/bin/node", silent: true });
+    const realRename = fs.renameSync.bind(fs);
+    let triggered = false;
+    t.mock.method(fs, "renameSync", (from, to) => {
+      realRename(from, to);
+      if (!triggered && path.basename(to).startsWith(REMOVAL_PREFIX)) {
+        triggered = true;
+        fs.mkdirSync(pluginRoot, { recursive: true });
+      }
+    });
+
+    const result = unregisterMinimaxPlugin({ dataDir, silent: true });
+
+    assert.strictEqual(result.registrationRemoved, true);
+    assert.strictEqual(result.warnings, undefined);
+    assert.deepStrictEqual(readOwnership(pluginRoot), { owned: false, reason: "empty-directory" });
+  });
+
   it("registers exactly the 10 state events and never PermissionRequest", () => {
     assert.deepStrictEqual([...MINIMAX_HOOK_EVENTS].sort(), [
       "PostCompact",

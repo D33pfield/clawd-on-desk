@@ -306,11 +306,11 @@ function withAgentFixAction(detail, descriptor) {
     descriptor.agentId === "minimax"
     && detail.supplementary
     && detail.supplementary.key === "minimax_plugin"
-    && detail.supplementary.value === "foreign"
+    && (detail.supplementary.value === "foreign" || detail.supplementary.value === "uninspectable")
   ) {
     // Install fails closed on a directory whose ownership cannot be proven
-    // (manifest name + hook marker), so a Fix button would be an ineffective
-    // loop. Surface the finding without a Fix.
+    // (ownership marker) and on one it cannot inspect at all, so a Fix button
+    // would be an ineffective loop. Surface the finding without a Fix.
     return detail;
   }
   if (
@@ -2214,7 +2214,11 @@ function minimaxHooksNameMissingNode(hooks, nodeBin, fsImpl) {
 // broken-path with a working Repair: reinstall rewrites the owned directory.
 function checkMinimaxPluginMode(descriptor, options) {
   const pluginDir = descriptor.configPath;
-  if (!dirExists(options.fs, pluginDir)) {
+  // readOwnership distinguishes "missing" from "cannot be inspected", so a
+  // permission error on the root is never reported as an absent plugin with an
+  // Install Fix that the installer would then refuse.
+  const ownership = minimaxInstall.readOwnership(pluginDir, options.fs);
+  if (!ownership.owned && ownership.reason === "missing") {
     return makeDetail(descriptor, "not-connected", {
       level: "warning",
       parentDirExists: true,
@@ -2224,8 +2228,6 @@ function checkMinimaxPluginMode(descriptor, options) {
       missingPluginFiles: descriptor.managedFiles || [],
     });
   }
-
-  const ownership = minimaxInstall.readOwnership(pluginDir, options.fs);
   if (!ownership.owned && ownership.reason === "empty-directory") {
     // An empty directory is unclaimed and Install publishes over it, so from
     // the user's point of view it is the same as no plugin at all.
@@ -2236,6 +2238,16 @@ function checkMinimaxPluginMode(descriptor, options) {
       configPath: pluginDir,
       detail: `${pluginDir} is an empty directory`,
       missingPluginFiles: descriptor.managedFiles || [],
+    });
+  }
+  if (!ownership.owned && ownership.reason === "uninspectable-root") {
+    return makeDetail(descriptor, "broken-path", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: pluginDir,
+      supplementary: { key: "minimax_plugin", value: "uninspectable" },
+      detail: `${pluginDir} could not be inspected; Clawd cannot verify the plugin or repair it`,
     });
   }
   if (!ownership.owned) {

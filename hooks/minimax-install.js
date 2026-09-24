@@ -180,28 +180,54 @@ function isHookScriptArg(value) {
   return value.replace(/\\/g, "/").endsWith(`/hooks/${MARKER}`);
 }
 
-// The `command` of every handler that runs Clawd's hook script (its first
-// exec-form argument is an absolute path to hooks/minimax-hook.js).
-//
-// Envelope rule mirrors MiniMax's readHooksEnvelope (parsePluginHookDocuments):
-// when the document is a plain object, a plain-object `hooks` field is the
-// events map, otherwise the whole document is itself the events map. So a bare
-// `{ "SessionStart": [...] }` document runs too and must not be read as absent.
+// The `command` of every handler that runs Clawd's hook script in exec form
+// (its first argument is an absolute path to hooks/minimax-hook.js). Used by
+// recordedNodeBin, which needs that exact node path — the broader
+// documentReferencesClawdHook below covers shell-form handlers too.
 function clawdHookCommands(doc) {
   const commands = [];
-  if (!isPlainObject(doc)) return commands;
+  for (const handler of collectHookHandlers(doc)) {
+    if (Array.isArray(handler.args) && isHookScriptArg(handler.args[0])) commands.push(handler.command);
+  }
+  return commands;
+}
+
+// Every handler in a hooks document. The envelope rule mirrors MiniMax's
+// readHooksEnvelope (parsePluginHookDocuments): a plain-object `hooks` field is
+// the events map, otherwise the whole document is itself the events map — so a
+// bare `{ "SessionStart": [...] }` document runs too and must not be read as
+// absent. Groups whose `hooks` is not an array contribute none.
+function collectHookHandlers(doc) {
+  const handlers = [];
+  if (!isPlainObject(doc)) return handlers;
   const events = isPlainObject(doc.hooks) ? doc.hooks : doc;
   for (const groups of Object.values(events)) {
     if (!Array.isArray(groups)) continue;
     for (const group of groups) {
-      const handlers = isPlainObject(group) && Array.isArray(group.hooks) ? group.hooks : [];
-      for (const handler of handlers) {
-        if (!isPlainObject(handler) || !Array.isArray(handler.args)) continue;
-        if (isHookScriptArg(handler.args[0])) commands.push(handler.command);
+      const groupHandlers = isPlainObject(group) && Array.isArray(group.hooks) ? group.hooks : [];
+      for (const handler of groupHandlers) {
+        if (isPlainObject(handler)) handlers.push(handler);
       }
     }
   }
-  return commands;
+  return handlers;
+}
+
+// Whether any handler could run Clawd's hook script: exec-form args, a shell
+// `command` (MiniMax runs command-only CLAUDE handlers through a shell), or the
+// Windows command fields. A case-insensitive `minimax-hook.js` substring in any
+// of them counts. This is only "may still be running Clawd's hook" and
+// over-reports on purpose — it is never an ownership signal; ownership stays
+// the marker file alone.
+function documentReferencesClawdHook(doc) {
+  const mentions = (value) => typeof value === "string" && value.toLowerCase().includes(MARKER.toLowerCase());
+  for (const handler of collectHookHandlers(doc)) {
+    if (mentions(handler.command) || mentions(handler.commandWindows) || mentions(handler.command_windows)) {
+      return true;
+    }
+    if (Array.isArray(handler.args) && handler.args.some(mentions)) return true;
+  }
+  return false;
 }
 
 function readOwnership(pluginRoot, fsImpl) {
@@ -282,8 +308,12 @@ function declaredHookEntries(declared) {
 // `{ kind: "unknown" }` for anything Clawd cannot safely resolve or parse.
 function readContainedJson(f, root, relative) {
   if (typeof relative !== "string" || !relative) return { kind: "unknown" };
+  if (relative.includes("\0")) return { kind: "unknown" };
   if (path.posix.isAbsolute(relative) || path.win32.isAbsolute(relative)) return { kind: "unknown" };
-  const abs = path.resolve(root, relative);
+  // MiniMax's own resolver (kHe) splits on both separators before path.resolve,
+  // so `hooks\other.json` means hooks/other.json on every platform. Match that
+  // instead of letting POSIX treat the backslash as a literal name character.
+  const abs = path.resolve(root, ...relative.split(/[\\/]/));
   const rel = path.relative(root, abs);
   if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return { kind: "unknown" };
   const segments = rel.split(path.sep);
@@ -322,7 +352,7 @@ function hooksReferenceClawdHook(pluginRoot, fsImpl) {
   const inspectDocument = (relative) => {
     const read = readContainedJson(f, pluginRoot, relative);
     if (read.kind === "unknown") unknown = true;
-    else if (read.kind === "value" && clawdHookCommands(read.value).length > 0) found = true;
+    else if (read.kind === "value" && documentReferencesClawdHook(read.value)) found = true;
   };
 
   // Manifest formats Clawd does not model could still declare a hook document
@@ -341,7 +371,7 @@ function hooksReferenceClawdHook(pluginRoot, fsImpl) {
       for (const entry of declaredHookEntries(claudeManifest.value.hooks)) {
         if (entry.path !== undefined) inspectDocument(entry.path);
         else if (entry.inline !== undefined) {
-          if (clawdHookCommands(entry.inline).length > 0) found = true;
+          if (documentReferencesClawdHook(entry.inline)) found = true;
           else unknown = true;
         } else {
           unknown = true;
@@ -624,6 +654,66 @@ function refusedUninstallResult(pluginRoot, reason) {
   };
 }
 
+// After the verified directory has left plugins/, another Clawd instance could
+// have seen the root as missing and published a fresh plugin there before this
+// uninstall returns. Re-read the location so such a reinstall is never reported
+// as removed. An install that lands after this check is a later operation and
+// is accounted for by that operation's own result.
+function recheckReinstalledAtRoot(pluginRoot, result) {
+  const state = lstatState(fs, pluginRoot);
+  if (state.kind === "missing") return result;
+  const ownership = readOwnership(pluginRoot);
+  if (ownership.reason === "empty-directory") return result;
+
+  const residualPaths = [pluginRoot, ...(Array.isArray(result.residualPaths) ? result.residualPaths : [])];
+
+  if (ownership.owned) {
+    return {
+      ...result,
+      registrationRemoved: false,
+      activeEntryRemaining: true,
+      residualPaths,
+      message: `Clawd removed the original MiniMax plugin, but a new plugin was installed at ${pluginRoot} `
+        + "before this uninstall returned (possibly by another Clawd instance). It is still registered; "
+        + "close that instance and uninstall again.",
+    };
+  }
+
+  const runsClawdHook = hooksReferenceClawdHook(pluginRoot);
+  if (runsClawdHook === true) {
+    return {
+      ...result,
+      registrationRemoved: false,
+      activeEntryRemaining: true,
+      residualPaths,
+      message: `${pluginRoot} still runs Clawd's MiniMax hook but Clawd cannot prove it owns that directory `
+        + `(${ownership.reason}); close the other Clawd instance and uninstall again, or delete it manually.`,
+    };
+  }
+  if (runsClawdHook === null) {
+    return {
+      ...result,
+      registrationRemoved: null,
+      activeEntryRemaining: null,
+      residualPaths,
+      message: `${pluginRoot} may still run Clawd's MiniMax hook and cannot be confirmed removed `
+        + `(${ownership.reason}); inspect it manually before relying on this uninstall.`,
+    };
+  }
+  // Nothing of Clawd's runs there: keep the removal result's own leftovers but
+  // do not list this foreign directory as residue (same rule as
+  // refusedUninstallResult) — only warn that it blocks the next Install.
+  return {
+    ...result,
+    registrationRemoved: true,
+    warnings: [
+      ...(Array.isArray(result.warnings) ? result.warnings : []),
+      `${pluginRoot} is not a Clawd plugin (${ownership.reason}), so Clawd left it untouched. `
+        + "It does not run Clawd's hook, but Install will refuse to write there until you remove or rename it.",
+    ],
+  };
+}
+
 /**
  * Remove the Clawd MiniMax plugin directory after verifying ownership.
  * @param {object} [options]
@@ -720,13 +810,16 @@ function unregisterMinimaxPlugin(options = {}) {
         + `or move it back (${detail}). Inspect both paths and delete them manually to finish uninstalling.`,
     };
   }
+  let result;
   try {
     fs.rmSync(removing, { recursive: true, force: true });
+    if (!options.silent) console.log(`Clawd MiniMax Code plugin removed: ${pluginRoot}`);
+    result = { removed: MINIMAX_HOOK_EVENTS.length, changed: true, pluginRoot, registrationRemoved: true };
   } catch (err) {
     // The plugin has left plugins/ already, so MiniMax will not load it and the
     // registration is gone; only the leftover directory needs manual cleanup.
     const detail = (err && (err.code || err.message)) || err;
-    return {
+    result = {
       removed: MINIMAX_HOOK_EVENTS.length,
       changed: true,
       pluginRoot,
@@ -738,8 +831,7 @@ function unregisterMinimaxPlugin(options = {}) {
       ],
     };
   }
-  if (!options.silent) console.log(`Clawd MiniMax Code plugin removed: ${pluginRoot}`);
-  return { removed: MINIMAX_HOOK_EVENTS.length, changed: true, pluginRoot, registrationRemoved: true };
+  return recheckReinstalledAtRoot(pluginRoot, result);
 }
 
 module.exports = {

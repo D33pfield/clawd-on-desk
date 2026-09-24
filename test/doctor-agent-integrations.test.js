@@ -3477,6 +3477,35 @@ describe("kimi legacy permission-mode supplement", () => {
       assert.match(emptyDetail.detail, /is an empty directory/);
     });
 
+    it("reports a plugin root it cannot inspect as broken-path without a Fix", (t) => {
+      const root = makeTempDir();
+      const descriptor = minimaxDescriptor(root);
+      const realLstat = fs.lstatSync.bind(fs);
+      t.mock.method(fs, "lstatSync", (target) => {
+        if (target === descriptor.configPath) {
+          throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+        }
+        return realLstat(target);
+      });
+
+      const detail = checkAgentIntegrations({ fs, prefs: {}, descriptors: [descriptor] }).details[0];
+      assert.strictEqual(detail.status, "broken-path");
+      assert.match(detail.detail, /could not be inspected/);
+      assert.strictEqual(detail.fixAction, undefined, "an uninspectable root must not offer a Fix");
+    });
+
+    it("reports a plugin root that is a regular file without a Fix", () => {
+      const root = makeTempDir();
+      const descriptor = minimaxDescriptor(root);
+      fs.mkdirSync(path.dirname(descriptor.configPath), { recursive: true });
+      fs.writeFileSync(descriptor.configPath, "not a directory", "utf8");
+
+      const detail = checkAgentIntegrations({ fs, prefs: {}, descriptors: [descriptor] }).details[0];
+      assert.strictEqual(detail.status, "broken-path");
+      assert.match(detail.detail, /not-a-directory|not a verifiably Clawd-managed plugin/);
+      assert.strictEqual(detail.fixAction, undefined);
+    });
+
     it("reports a current owned plugin as ok", () => {
       const root = makeTempDir();
       const descriptor = minimaxDescriptor(root);
