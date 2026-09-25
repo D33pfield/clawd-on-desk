@@ -186,23 +186,14 @@ describe("minimax hook lifecycle", () => {
 });
 
 describe("minimax hook agent process detection", () => {
-  const { AGENT_NAMES, AGENT_CMDLINE_NAMES, RESOLVER_OPTIONS, isMinimaxAgentCommandLine } = __test;
+  const { AGENT_NAMES, RESOLVER_OPTIONS, isMinimaxAgentCommandLine } = __test;
 
-  it("checks the command line of node processes under every name ps reports for them", () => {
-    // On Linux, Node 23.8–25.4 names its main thread "MainThread" and Node ≥
-    // 25.5 "node-MainThread"; `ps -o comm=` reports that name for a node
-    // process that never set process.title. Without them the command-line
-    // check never runs there (seen on Linux CI with Node 24).
-    for (const name of ["node", "node.exe", "mainthread", "node-mainthread"]) {
-      assert.ok(AGENT_CMDLINE_NAMES.includes(name), name);
-    }
-    for (const name of AGENT_CMDLINE_NAMES) {
-      assert.strictEqual(name, name.toLowerCase(), `${name} can never match a lowercased basename`);
-    }
-    // The list only matters if it reaches the resolver: without the option the
-    // shared default checks node / node.exe alone.
-    assert.ok(RESOLVER_OPTIONS.agentCmdlineNames instanceof Set, "agentCmdlineNames must be passed to the resolver");
-    assert.deepStrictEqual([...RESOLVER_OPTIONS.agentCmdlineNames].sort(), [...AGENT_CMDLINE_NAMES].sort());
+  it("checks the command line under the shared default process names", () => {
+    // Passing no list keeps MiniMax on DEFAULT_AGENT_CMDLINE_NAMES, which
+    // covers node / node.exe and, on Linux, the names newer Node gives its
+    // main thread (MainThread / node-MainThread). A list of its own would
+    // replace that default and go stale.
+    assert.ok(!("agentCmdlineNames" in RESOLVER_OPTIONS), "MiniMax must use the shared default names");
     assert.strictEqual(RESOLVER_OPTIONS.agentCmdlineCheck, isMinimaxAgentCommandLine);
   });
 
