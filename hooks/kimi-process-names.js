@@ -48,9 +48,11 @@ const KIMI_STARTUP_RECOVERY_PROCESS_NAMES = Object.freeze({
 // only passes a file inside the package directory as an argument (say
 // `node relay.js --config ...\@moonshot-ai\kimi-code\config.json`) matches too;
 // the resolver reaches it only when no nearer Kimi process was recognized, and
-// no known real launch looks like that. Windows 8.3 short paths only ever
-// appear in the prefix: the npm, pnpm and yarn cmd shims write the package path
-// out in full, so a short path does not affect the match.
+// no known real launch looks like that. Windows 8.3 short names: the npm, pnpm
+// and yarn cmd shims write the package directory out in full, so a short name
+// can only appear before it (C:\PROGRA~1\...) and does not affect the match. A
+// command line that shortens the package directory itself (@MOONS~1\KIMI-C~1)
+// is not recognized.
 function isKimiAgentCommandLine(cmd) {
   if (typeof cmd !== "string") return false;
   return cmd.toLowerCase().replace(/\\/g, "/").includes("/@moonshot-ai/kimi-code/");
