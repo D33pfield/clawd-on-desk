@@ -30,7 +30,10 @@ const HOOK_MAP = {
   SubagentStart:    { state: "juggling",  event: "SubagentStart" },
   SubagentStop:     { state: "working",   event: "SubagentStop" },
   PreCompact:       { state: "sweeping",  event: "PreCompact" },
-  PostCompact:      { state: "attention", event: "PostCompact" },
+  // PostCompact is "compaction finished", not turn completion (#406, same rule
+  // as the Claude Code adapter): an automatic compaction resumes the task, so
+  // stay busy; main() settles a manual compaction (trigger "manual") to idle.
+  PostCompact:      { state: "thinking",  event: "PostCompact" },
 };
 
 // Lifecycle for the shared resolver's cross-process pid cache. Stop is
@@ -96,15 +99,141 @@ function resolveSessionTitle(payload, event) {
   return null;
 }
 
+// The resolver compares lowercased process basenames (normalizePosixProcessName
+// and the Windows snapshot both lowercase), so every entry must be lowercase —
+// a mixed-case name can never match. The mcode CLI retitles itself at startup
+// (`process.title = "minimax-code"`), which on macOS and Linux is the process
+// name `ps -o comm=` reports, so that is the name to match there. The desktop
+// app's "MiniMax Code Helper" processes are deliberately absent: hooks are
+// spawned by a NodeService helper that can restart while the app keeps
+// running, and an agent pid that dies with it would retire live sessions. The
+// walk continues to the long-lived main "MiniMax Code" process instead.
+const AGENT_NAMES = {
+  win: ["minimax code.exe", "mcode.exe"],
+  mac: ["minimax code", "minimax-code", "mcode"],
+  linux: ["minimax-code", "mcode", "minimax code"],
+};
+
+// Split a command line into argv-like tokens. Only double quotes group: that is
+// CommandLineToArgvW's rule on Windows (where process snapshots quote each
+// path), while POSIX `ps` output is unquoted and carries quote characters
+// literally. Treating single quotes as grouping would swallow a path that
+// contains an apostrophe (e.g. /Users/o'brien/...) into one bogus token. An
+// unquoted path with spaces is split and simply fails to match — that loses one
+// match and falls back to the previous behavior rather than matching something
+// else.
+function splitCommandLine(cmd) {
+  const tokens = [];
+  let current = "";
+  let inQuote = false;
+  let hasToken = false;
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (inQuote) {
+      if (ch === "\"") inQuote = false;
+      else current += ch;
+      hasToken = true;
+      continue;
+    }
+    if (ch === "\"") {
+      inQuote = true;
+      hasToken = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (hasToken) {
+        tokens.push(current);
+        current = "";
+        hasToken = false;
+      }
+      continue;
+    }
+    current += ch;
+    hasToken = true;
+  }
+  if (hasToken) tokens.push(current);
+  return tokens;
+}
+
+// Node options that consume the following token as their value, so the script
+// search must skip both.
+const NODE_OPTIONS_WITH_VALUE = new Set([
+  "-r", "--require", "--import", "--loader", "--experimental-loader",
+  "-C", "--conditions", "--title", "--env-file", "--input-type", "--disable-warning",
+]);
+const MINIMAX_LAUNCHER_RE = /^(mcode|minimax-code)(\.(c?js|mjs|cmd|ps1|exe))?$/;
+const NODE_EXEC_RE = /^node(\.exe)?$/;
+
+function commandBasename(token) {
+  return token.replace(/\\/g, "/").split("/").pop().toLowerCase();
+}
+
+// Where the CLI still runs under a node / node.exe image name (Windows, where
+// process.title only changes the console title), recognize it by command line:
+// the launcher itself, the npm package directory (`/@minimax-ai/code/`), or the
+// official installer's `.minimax-code` directory — but only where a script
+// argument sits, never from an arbitrary option value or later argument. Without
+// an agent pid Clawd cannot tell when the CLI exits — MiniMax sends no SessionEnd
+// on exit — and the session row would outlive it as long as the terminal is open.
+function isMinimaxAgentCommandLine(cmd) {
+  if (typeof cmd !== "string") return false;
+  const tokens = splitCommandLine(cmd.trim());
+  if (tokens.length === 0) return false;
+
+  const first = commandBasename(tokens[0]);
+  if (MINIMAX_LAUNCHER_RE.test(first)) return true;
+  if (!NODE_EXEC_RE.test(first)) return false;
+
+  // Find the script argument after node's own options.
+  let script = null;
+  let i = 1;
+  while (i < tokens.length) {
+    const token = tokens[i];
+    if (token === "-e" || token === "--eval" || token === "-p" || token === "--print" || token === "-") {
+      return false;
+    }
+    if (token === "--") {
+      script = i + 1 < tokens.length ? tokens[i + 1] : null;
+      break;
+    }
+    if (NODE_OPTIONS_WITH_VALUE.has(token)) {
+      i += 2;
+      continue;
+    }
+    if (token.startsWith("-")) {
+      i += 1;
+      continue;
+    }
+    script = token;
+    break;
+  }
+  if (!script) return false;
+
+  if (MINIMAX_LAUNCHER_RE.test(commandBasename(script))) return true;
+  const normalizedScript = script.replace(/\\/g, "/").toLowerCase();
+  return normalizedScript.includes("/@minimax-ai/code/")
+    || normalizedScript.includes("/.minimax-code/");
+}
+
+// Process names whose command line is checked with isMinimaxAgentCommandLine.
+// Node 23.8–25.4 names its main thread "MainThread" (nodejs/node#56416) and
+// Node ≥ 25.5 "node-MainThread" (nodejs/node#61307). On Linux `ps -o comm=`
+// reports the main thread's name, so a node process that never set
+// process.title appears under one of those there rather than as "node".
+const AGENT_CMDLINE_NAMES = ["node", "node.exe", "mainthread", "node-mainthread"];
+
 const config = getPlatformConfig({});
-const resolve = createPidResolver({
+const RESOLVER_OPTIONS = {
   agentNames: {
-    win: new Set(["MiniMax Code.exe", "MiniMax Code Helper.exe", "mcode.exe"]),
-    mac: new Set(["MiniMax Code", "MiniMax Code Helper", "mcode"]),
-    linux: new Set(["mcode", "MiniMax Code"]),
+    win: new Set(AGENT_NAMES.win),
+    mac: new Set(AGENT_NAMES.mac),
+    linux: new Set(AGENT_NAMES.linux),
   },
+  agentCmdlineCheck: isMinimaxAgentCommandLine,
+  agentCmdlineNames: new Set(AGENT_CMDLINE_NAMES),
   platformConfig: config,
-});
+};
+const resolve = createPidResolver(RESOLVER_OPTIONS);
 
 // This integration is state-only and does not own permission decisions, so
 // every event emits {} — for MiniMax's wire contract an empty output means
@@ -195,7 +324,10 @@ function main(deps = {}) {
       });
       const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = pidMetadata;
 
-      const body = { state, session_id: sessionId, event };
+      const resolvedState = hookName === "PostCompact" && payload && payload.trigger === "manual"
+        ? "idle"
+        : state;
+      const body = { state: resolvedState, session_id: sessionId, event };
       body.agent_id = "minimax";
       if (cwd) body.cwd = cwd;
       const resolvedTitle = resolveSessionTitle(payload, event);
@@ -233,6 +365,11 @@ if (require.main === module) {
 
 module.exports = {
   __test: {
+    AGENT_NAMES,
+    AGENT_CMDLINE_NAMES,
+    RESOLVER_OPTIONS,
+    isMinimaxAgentCommandLine,
+    splitCommandLine,
     resolveSessionTitle,
     extractPromptTitle,
     normalizeTitle,

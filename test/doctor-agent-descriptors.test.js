@@ -186,6 +186,7 @@ describe("doctor agent descriptors", () => {
     assert.deepStrictEqual(getAgentDescriptor("minimax").hookEvents, minimax.MINIMAX_HOOK_EVENTS);
     assert.strictEqual(getAgentDescriptor("minimax").configMode, "minimax-plugin");
     assert.deepStrictEqual(getAgentDescriptor("minimax").managedFiles, [
+      minimax.OWNER_MARKER_FILE,
       ".claude-plugin/plugin.json",
       "hooks/hooks.json",
     ]);
