@@ -190,12 +190,33 @@ MiniMax Code 状态同步（hook-only / state-only，本地插件目录）：
     .claude-plugin/plugin.json（name clawd-state，hooks: ["hooks/hooks.json"]），hooks 文档按 CLAUDE sourceFormat 解析。
     不用 .minimax-plugin/（那走 MINIMAX 格式：matcher 必须非空、不支持 exec-form args）。
   handler 固定 exec-form（command=node 路径、args=[minimax-hook.js]、timeout=2 秒）：spawn 直执行、无 shell、跨平台免引号；
-    MiniMax 把 timeout 钳在 1–10 秒（SessionEnd 事件总预算 3s），阻塞式人工审批物理不可行。
+    MiniMax 只接受 1–10 的整数秒 timeout（越界的 handler 被丢弃；SessionEnd 事件总预算 3s），阻塞式人工审批物理不可行。
   PermissionRequest 完全不注册，也无 Notification 事件；stdout 恒为 `{}`（permissionDecision 缺省 abstain），
     不注册 /permission、不进 permission automation eligibility，Allow / Deny 全部留在 MiniMax 原生权限流程。
-  插件目录整体 Clawd 独占：install 对已存在但非 Clawd 内容的目录 fail closed（任何 manifest kind），uninstall
-    校验 manifest name + marker 后才删目录；启用状态在 App 内（mcode plugin enable clawd-state@local / 插件面板），
-    磁盘不可读，Doctor（configMode "minimax-plugin"）与 Settings 只做提示。
+  插件目录整体 Clawd 独占，所有权只认结构化凭据 .clawd-managed.json，凭据与受管理路径都不得是符号链接；只有
+    ENOENT/ENOTDIR 算“不存在”，其他 lstat 错误按“无法确认”处理（绝不宣告卸载）。空的 clawd-state/ 视为未占用、
+    Install 会发布覆盖；非空外来目录 fail closed，且它会挡住后续 Install（卸载时给出提示）。
+    staging / removal 目录固定落在数据目录（plugins/ 之外；MiniMax 把 plugins/ 下每个目录项都扫描为插件候选，含点号名）：
+    install 在 staging 写全三份文件后一次 rename 发布，只覆盖空目标，非空目录 / 文件 / 链接一律拒绝；
+    uninstall 先 rename 出 plugins/、复验后再删（复验失败先尝试移回，移回也失败时两个位置都报、registrationRemoved:null，
+    不宣称卸载）。移走失败报 error 并保留原路径与安装意图；移走成功但删除失败时插件已离开 plugins/，按已移除提交并在
+    warnings 里给出残留 .clawd-minimax-removing-* 路径。删除后返回前复查一次原位置：此时已有另一实例重新发布的插件就报仍有注册、
+    不宣称卸载；复查是快照，复查之后、Settings 提交之前的安装不在本次结果里（多实例强一致需跨进程锁，未做）。进程中途崩溃可能留下 .clawd-minimax-staging-* /
+    .clawd-minimax-removing-*，MiniMax 不会加载，只能手动删除；plugins/ 与数据目录跨文件系统（EXDEV）时安装和卸载都会
+    明确失败，不支持这种布局。判断外来目录是否仍跑 Clawd hook 时按 manifest 声明的 hooks 文档 + MiniMax 默认规则检查
+    （含裸文档外壳、按 [\\/] 拆分的反斜杠路径、不带 args 时经 shell 执行的 command 以及 commandWindows）；
+    Clawd 不建模的 manifest（根 plugin.json / .minimax-plugin/ / .codex-plugin/）或读不清时按“无法确认”处理。
+    node 探测失败时只保留通过 `node --version` 有界探测、且全部 handler 一致、basename 像 node、可执行的已记录路径；
+    PostCompact 上报 thinking（手动压缩 idle）；agent pid：桌面版认主程序（不认会重启的 helper），CLI 把进程标题改成
+    minimax-code（macOS/Linux 按名字、Windows 只看 argv 里的脚本位置，参数里的目录片段不算），CLI 退出（无 SessionEnd）
+    后会话按 agent-exit 清理；启用状态在 App 内（mcode plugin enable clawd-state@local / 插件面板），磁盘不可读，
+    Doctor（configMode "minimax-plugin"）与 Settings 只做提示。
+  已知限制：原地 Repair 在所有权检查后逐文件写、不持锁，检查与写入之间同一用户的其他写入方把受管理路径换成链接的情况
+    不在防护范围内（后续处理）；原地 Repair 与另一个实例的卸载交错时，Repair 可能在原位置重建出缺凭据的半成品目录，
+    需要手动删除（与上一条同一窗口）。CLI 进程识别是启发式——脚本位于名为 @minimax-ai/code 或 .minimax-code 的目录、
+    或可执行文件名为 mcode 时就当作 MiniMax CLI；Windows 桌面 helper 与主程序同名时仍可能先选中 helper，见
+    known-limitations。Settings 界面不显示成功结果里的 warnings / residualPaths（Agents 页只弹“已卸载”，About
+    清理只显示计数），删除失败留下的残留路径在界面上看不到。
   无原生会话标题字段：从首次 prompt 首行派生并保持首个标题（server 端 first-wins，同 traecode）。
 
 Kimi Code CLI（Kimi-CLI）状态同步（hook-only，config.toml）：

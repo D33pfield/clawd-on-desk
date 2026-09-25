@@ -8,7 +8,7 @@ const HOOK_PATH = require("node:path").resolve(__dirname, "..", "hooks", "minima
 
 function runMinimaxHook(payload, options = {}) {
   return runSpawnedHook({
-    script: HOOK_PATH,
+    script: options.script || HOOK_PATH,
     payload,
     httpContract: options.httpContract || "expect-attempt",
     env: {
@@ -85,7 +85,8 @@ describe("minimax hook lifecycle", () => {
       ["SubagentStart", "juggling"],
       ["SubagentStop", "working"],
       ["PreCompact", "sweeping"],
-      ["PostCompact", "attention"],
+      // Compaction finishing is not turn completion (#406): never attention.
+      ["PostCompact", "thinking"],
     ];
     for (const [event, state] of cases) {
       const result = runMinimaxHook({
@@ -100,6 +101,20 @@ describe("minimax hook lifecycle", () => {
       assert.strictEqual(body.state, state, `${event}: mapped state`);
       assert.strictEqual(body.event, event);
       assert.strictEqual(body.agent_id, "minimax");
+    }
+  });
+
+  it("settles a manual compaction to idle and keeps an automatic one busy", () => {
+    for (const [trigger, state] of [["manual", "idle"], ["auto", "thinking"], [undefined, "thinking"]]) {
+      const result = runMinimaxHook({
+        session_id: `sess-compact-${trigger}`,
+        cwd: "/tmp/project",
+        hook_event_name: "PostCompact",
+        ...(trigger ? { trigger } : {}),
+      });
+      assert.strictEqual(result.status, 0, `trigger=${trigger}`);
+      assert.strictEqual(postedBody(result).state, state, `trigger=${trigger}`);
+      assert.strictEqual(postedBody(result).event, "PostCompact", `trigger=${trigger}`);
     }
   });
 
@@ -167,6 +182,148 @@ describe("minimax hook lifecycle", () => {
 
     assert.strictEqual(result.status, 0);
     assert.strictEqual(result.stdout.trim(), "{}");
+  });
+});
+
+describe("minimax hook agent process detection", () => {
+  const { AGENT_NAMES, AGENT_CMDLINE_NAMES, RESOLVER_OPTIONS, isMinimaxAgentCommandLine } = __test;
+
+  it("checks the command line of node processes under every name ps reports for them", () => {
+    // On Linux, Node 23.8–25.4 names its main thread "MainThread" and Node ≥
+    // 25.5 "node-MainThread"; `ps -o comm=` reports that name for a node
+    // process that never set process.title. Without them the command-line
+    // check never runs there (seen on Linux CI with Node 24).
+    for (const name of ["node", "node.exe", "mainthread", "node-mainthread"]) {
+      assert.ok(AGENT_CMDLINE_NAMES.includes(name), name);
+    }
+    for (const name of AGENT_CMDLINE_NAMES) {
+      assert.strictEqual(name, name.toLowerCase(), `${name} can never match a lowercased basename`);
+    }
+    // The list only matters if it reaches the resolver: without the option the
+    // shared default checks node / node.exe alone.
+    assert.ok(RESOLVER_OPTIONS.agentCmdlineNames instanceof Set, "agentCmdlineNames must be passed to the resolver");
+    assert.deepStrictEqual([...RESOLVER_OPTIONS.agentCmdlineNames].sort(), [...AGENT_CMDLINE_NAMES].sort());
+    assert.strictEqual(RESOLVER_OPTIONS.agentCmdlineCheck, isMinimaxAgentCommandLine);
+  });
+
+  it("lists only lowercase process names (the resolver compares lowercased basenames)", () => {
+    for (const [platform, names] of Object.entries(AGENT_NAMES)) {
+      for (const name of names) {
+        assert.strictEqual(name, name.toLowerCase(), `${platform}: ${name} can never match`);
+      }
+    }
+    assert.ok(AGENT_NAMES.mac.includes("minimax code"), "the desktop app must be recognizable on macOS");
+    assert.ok(AGENT_NAMES.win.includes("minimax code.exe"), "the desktop app must be recognizable on Windows");
+    // The CLI sets process.title = "minimax-code" at startup (mcode 0.5.4).
+    assert.ok(AGENT_NAMES.mac.includes("minimax-code"), "the retitled CLI must be recognizable on macOS");
+    assert.ok(AGENT_NAMES.linux.includes("minimax-code"), "the retitled CLI must be recognizable on Linux");
+    // The NodeService helper that spawns the hooks can restart while the app
+    // keeps running; matching it would retire live desktop sessions. The walk
+    // must reach the long-lived main app instead.
+    for (const names of Object.values(AGENT_NAMES)) {
+      assert.ok(!names.some((name) => name.includes("helper")), `helper process listed: ${names}`);
+    }
+  });
+
+  it("recognizes the mcode CLI command lines and nothing merely similar", () => {
+    const matches = [
+      "node /Users/me/.nvm/versions/node/v24.18.0/bin/mcode exec hi",
+      "/usr/local/bin/node /usr/local/lib/node_modules/@minimax-ai/code/cli.js",
+      "node /Users/me/.minimax-code/releases/0.5.4/cli.js",
+      String.raw`"C:\Program Files\nodejs\node.exe" "C:\Users\me\AppData\Roaming\npm\node_modules\@minimax-ai\code\cli.js"`,
+      String.raw`C:\Users\me\AppData\Roaming\npm\mcode.cmd`,
+      String.raw`"C:\Users\me\AppData\Roaming\npm\mcode.cmd" exec hi`,
+      "minimax-code",
+      // The script argument is what identifies the CLI, not a directory that
+      // merely appears somewhere in the line.
+      "node --max-old-space-size=4096 /usr/local/lib/node_modules/@minimax-ai/code/cli.js exec hi",
+      String.raw`"C:\Program Files\nodejs\node.exe" --no-warnings "C:\Users\me\AppData\Roaming\npm\node_modules\@minimax-ai\code\cli.js" exec`,
+      "node -- /Users/me/.minimax-code/releases/0.5.4/cli.js",
+      "node /usr/local/lib/node_modules/@minimax-ai/code/cli.js\n",
+      // Single quotes are literal on POSIX and on Windows, so a path with an
+      // apostrophe must not be swallowed as if quoted.
+      "/Users/o'brien/.nvm/versions/node/v24.18.0/bin/node /Users/o'brien/.nvm/versions/node/v24.18.0/lib/node_modules/@minimax-ai/code/cli.js exec",
+      String.raw`C:\Users\O'Brien\AppData\Roaming\npm\node.exe C:\Users\O'Brien\AppData\Roaming\npm\node_modules\@minimax-ai\code\cli.js exec`,
+    ];
+    const misses = [
+      "node server.js --label mcode",
+      "node /work/@minimax-ai/code-review/index.js",
+      "node /work/mcode/server.js",
+      "node /tmp/minimax-code-clipboard-1234/paste.js",
+      "node /usr/local/bin/mcode-tools convert",
+      "node /Users/me/mcode-project/server.js",
+      "node /Users/me/src/mcode.json.js",
+      "node /Users/me/.nvm/versions/node/v24.18.0/bin/gemini",
+      "node server.js --config=/work/@minimax-ai/code/config.json",
+      "node server.js /work/.minimax-code/demo.js",
+      "node -e \"require('/x/@minimax-ai/code/cli.js')\"",
+      "node --require /x/@minimax-ai/code/preload.js server.js",
+      "bash -c 'node /x/@minimax-ai/code/cli.js'",
+      "",
+      undefined,
+    ];
+    for (const cmd of matches) assert.strictEqual(isMinimaxAgentCommandLine(cmd), true, cmd);
+    for (const cmd of misses) assert.strictEqual(isMinimaxAgentCommandLine(cmd), false, String(cmd));
+  });
+
+  // Stands in for the real CLI and spawns the hook the way MiniMax's plugin
+  // runner does (exec-form, no shell), then returns the hook's POST body.
+  // execArgv forwards the harness's HTTP recorder; that recorder is also
+  // preloaded in the launcher and dumps its own empty recording on exit, so
+  // the launcher hands the hook's recording back to it last.
+  function postedBodyUnderLauncher({ retitle }) {
+    const fs = require("node:fs");
+    const os = require("node:os");
+    const path = require("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-minimax-launcher-"));
+    const launcher = path.join(dir, "bin", "mcode");
+    fs.mkdirSync(path.dirname(launcher), { recursive: true });
+    fs.writeFileSync(launcher, [
+      retitle ? `process.title = ${JSON.stringify(retitle)};` : "",
+      "const fs = require(\"node:fs\");",
+      "const { spawnSync } = require(\"node:child_process\");",
+      "const out = process.env.CLAWD_POST_OUT;",
+      "const hookOut = `${out}.hook.json`;",
+      `const child = spawnSync(process.execPath, [...process.execArgv, ${JSON.stringify(HOOK_PATH)}], {`,
+      "  input: fs.readFileSync(0),",
+      "  stdio: [\"pipe\", \"inherit\", \"inherit\"],",
+      "  env: { ...process.env, CLAWD_POST_OUT: hookOut },",
+      "});",
+      "process.on(\"exit\", () => { try { fs.copyFileSync(hookOut, out); } catch {} });",
+      "process.exit(child.status == null ? 1 : child.status);",
+    ].join("\n"), "utf8");
+    try {
+      const result = runMinimaxHook({
+        session_id: `sess-agent-pid-${retitle || "cmdline"}`,
+        cwd: "/tmp/project",
+        hook_event_name: "UserPromptSubmit",
+        prompt: "hi",
+      }, { script: launcher });
+      assert.strictEqual(result.status, 0, result.stderr);
+      return postedBody(result);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // Without an agent pid Clawd cannot retire the session when the CLI exits —
+  // MiniMax sends no SessionEnd on exit.
+  it("reports the real, retitled mcode CLI (minimax-code) as the agent pid", {
+    skip: process.platform === "win32",
+  }, () => {
+    // mcode 0.5.4 sets process.title = "minimax-code" at startup; on macOS and
+    // Linux that is the process name ps reports, so the name list must match.
+    const body = postedBodyUnderLauncher({ retitle: "minimax-code" });
+    assert.ok(Number.isInteger(body.agent_pid) && body.agent_pid > 1, `agent_pid missing: ${JSON.stringify(body)}`);
+  });
+
+  it("reports a node-named mcode process as the agent pid by its command line", {
+    skip: process.platform === "win32",
+  }, () => {
+    // A node process whose command line is `node …/bin/mcode` (the shape the
+    // CLI keeps on Windows) is only identifiable through the command line.
+    const body = postedBodyUnderLauncher({ retitle: null });
+    assert.ok(Number.isInteger(body.agent_pid) && body.agent_pid > 1, `agent_pid missing: ${JSON.stringify(body)}`);
   });
 });
 

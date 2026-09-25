@@ -182,6 +182,7 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
     || path.join(openClawStateDir, "openclaw.json");
   const hermesHome = options.hermesHome
     || resolveHermesHome({ homeDir, env, platform: options.platform || process.platform });
+  const minimaxDataDir = resolveMinimaxDataDir(homeDir, env);
 
   return {
     homeDir,
@@ -338,12 +339,10 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
         // Same resolution the installer used — MINIMAX_DATA_DIR →
         // MAVIS_DATA_DIR → ~/.minimax — so uninstalling from Settings or
         // About cleanup always finds the directory install wrote, even when
-        // a custom data dir is configured.
-        pluginRoot: path.join(
-          resolveMinimaxDataDir(homeDir, env),
-          "plugins",
-          PLUGIN_DIR_NAME,
-        ),
+        // a custom data dir is configured. dataDir is where staging and removal
+        // directories go (beside `plugins/`, which MiniMax scans in full).
+        dataDir: minimaxDataDir,
+        pluginRoot: path.join(minimaxDataDir, "plugins", PLUGIN_DIR_NAME),
       },
     },
   };
