@@ -18,7 +18,7 @@ const {
   buildShadowComparison,
   processMetadataForState,
 } = require("./server-windows-process-metadata");
-const { stripRemoteProcessMetadata } = require("./remote-process-metadata");
+const { isWslSourced, stripRemoteProcessMetadata } = require("./remote-process-metadata");
 const {
   normalizeHookToolUseId,
   findPendingPermissionForStateEvent,
@@ -250,10 +250,14 @@ function handleStatePost(req, res, options) {
       const rawWtHwnd = normalizeHwndString(data.wt_hwnd ?? data.wtHwnd);
       const cwd = typeof data.cwd === "string" ? data.cwd : "";
       const rawAgentPid = data.agent_pid ?? data.claude_pid ?? data.cursor_pid;
+      // A WSL hook reports Linux PIDs that alias unrelated processes on this
+      // Windows host, so they are stripped exactly like Remote SSH metadata.
+      // `orcaPaneKey`, `cwd` and `host` are untouched by design — see
+      // remote-process-metadata.js.
+      const wslSourced = isWslSourced({ wslDistro: data.wsl_distro, host: data.host });
       // Stripped at the parse boundary rather than at the updateSession call so
       // that no downstream consumer (legacy metadata, the Windows chain gate,
-      // the codex user-input bubble) has to remember the rule. `orcaPaneKey`,
-      // `cwd` and `host` are untouched by design — see remote-process-metadata.js.
+      // the codex user-input bubble) has to remember the rule.
       const {
         sourcePid: source_pid,
         wtHwnd,
@@ -270,7 +274,7 @@ function handleStatePost(req, res, options) {
         editor: (data.editor === "code" || data.editor === "cursor") ? data.editor : null,
         tmuxSocket: normalizeTmuxSocket(data.tmux_socket),
         tmuxClient: normalizeTmuxClient(data.tmux_client),
-      }, remoteProfile);
+      }, remoteProfile, wslSourced);
       const orcaPaneKey = normalizeOrcaPaneKey(data.orca_pane_key);
       const agentId = agentIdentity.agentId;
       const hasExplicitPermissionLifecycleSession = hasExplicitPermissionLifecycleSessionIdentity(
