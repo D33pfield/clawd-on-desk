@@ -332,15 +332,14 @@ describe("createPidResolver() — default command-line process names", () => {
   // Passing agentCmdlineNames replaces the default, so an adapter that only
   // means to add a name must spread the default back in; a hand-written or
   // trimmed node list silently goes stale again on Linux. This is a text
-  // check, not a parser, so it fails closed on anything it cannot read: every
-  // mention of agentCmdlineNames in a hook must read
-  // `agentCmdlineNames: new Set([..., ...DEFAULT_AGENT_CMDLINE_NAMES])`, one
-  // line or several, with no comments inside the brackets and the spread as a
-  // whole element of its own (not `...DEFAULT_AGENT_CMDLINE_NAMES.slice(...)`,
-  // and not inside a string). A shorthand property, a variable, or a mention in
-  // a comment is reported, not guessed at; deliberately disguised keys (a
-  // computed property name) are beyond a text check. The one exception is a
-  // probe deliberately scoped to a non-Node host process.
+  // check, not a parser, so it accepts one shape and reports everything else:
+  // `agentCmdlineNames: new Set([..., ...DEFAULT_AGENT_CMDLINE_NAMES])`, where
+  // the brackets hold only plain string literals and the spread itself (one
+  // line or several, no comments). A shorthand property, a variable, or any
+  // other mention not in that shape (one in a comment included) is reported,
+  // not guessed at; deliberately disguised keys (a computed property name) are
+  // beyond a text check. The one exception is a probe deliberately scoped to a
+  // non-Node host process.
   it("keeps every adapter that passes agentCmdlineNames on the shared node names", () => {
     const fs = require("node:fs");
     const path = require("node:path");
@@ -349,10 +348,14 @@ describe("createPidResolver() — default command-line process names", () => {
     const scopedToNonNodeHost = new Set(["workbuddy-hook.js"]);
     // The bracket contents: anything but "]" or a comment opener.
     const setLiteral = /^agentCmdlineNames\s*:\s*new Set\(\[((?:(?!\/[/*])[^\]])*)\]\)/;
-    const spreadsDefault = (contents) => contents
-      .replace(/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g, "\"\"")
-      .split(",")
-      .some((element) => element.trim() === "...DEFAULT_AGENT_CMDLINE_NAMES");
+    const stringLiteral = /^(?:"[^"\\\n]*"|'[^'\\\n]*')$/;
+    const spread = "...DEFAULT_AGENT_CMDLINE_NAMES";
+    const spreadsDefault = (contents) => {
+      const elements = contents.split(",").map((element) => element.trim());
+      if (elements[elements.length - 1] === "") elements.pop(); // trailing comma
+      return elements.includes(spread)
+        && elements.every((element) => element === spread || stringLiteral.test(element));
+    };
     const stale = [];
     for (const file of fs.readdirSync(hooksDir).sort()) {
       if (!file.endsWith(".js") || file === "shared-process.js" || scopedToNonNodeHost.has(file)) continue;
