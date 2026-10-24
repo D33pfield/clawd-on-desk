@@ -135,6 +135,27 @@ async function installPageApi(win) {
         badges.appendChild(step);
       }
 
+      // A real setup step: number + a settings row, so the number can be
+      // aligned against the row's label the way the channel cards render it.
+      {
+        const step = document.createElement("div");
+        step.className = "channel-setup-step";
+        step.dataset.stepProbe = "1";
+        const num = document.createElement("span");
+        num.className = "channel-setup-num";
+        num.textContent = "1";
+        const body = document.createElement("div");
+        body.className = "channel-setup-body";
+        const parts = helpers.buildSettingRow({
+          label: "Platform",
+          description: "Pick the platform the app is registered on.",
+        });
+        body.appendChild(parts.element);
+        step.appendChild(num);
+        step.appendChild(body);
+        badges.appendChild(step);
+      }
+
       const idType = helpers.buildSegmentedRadio({
         id: "feishu-id-type",
         ariaLabel: "approver id type",
@@ -182,6 +203,26 @@ async function installPageApi(win) {
         // Every circular icon-ish element in the Settings surface: a standard
         // circle means one square box with a 50% radius, and the content it
         // carries must sit on that circle's centre.
+        measureStepAlignment() {
+          const step = document.querySelector('[data-step-probe="1"]');
+          const num = step.querySelector(".channel-setup-num");
+          const label = step.querySelector(".row-label");
+          const numRect = num.getBoundingClientRect();
+          const labelRect = label.getBoundingClientRect();
+          const numStyle = getComputedStyle(num);
+          return {
+            numSize: String(numRect.width.toFixed(2)) + "x" + String(numRect.height.toFixed(2)),
+            marginTop: numStyle.marginTop,
+            numCentreY: Number((numRect.top + numRect.height / 2).toFixed(2)),
+            labelCentreY: Number((labelRect.top + labelRect.height / 2).toFixed(2)),
+            labelHeight: Number(labelRect.height.toFixed(2)),
+            delta: Number(((numRect.top + numRect.height / 2)
+              - (labelRect.top + labelRect.height / 2)).toFixed(2)),
+            stepHeight: Number(step.getBoundingClientRect().height.toFixed(2)),
+            size: String(numRect.width.toFixed(2)) + "x" + String(numRect.height.toFixed(2)),
+            borderRadius: numStyle.borderRadius,
+          };
+        },
         measureCircleInventory() {
           const selectors = {
             disclosure: ".row-desc-toggle",
@@ -688,6 +729,15 @@ function assertCircleInventory(items, context) {
   }
 }
 
+function assertStepNumberAligned(measure) {
+  const detail = JSON.stringify(measure);
+  assert.equal(measure.borderRadius, "50%", `the step number is a circle; ${detail}`);
+  const width = Number(String(measure.numSize).split("x")[0]);
+  assert.ok(Math.abs(width - 16) <= 0.5, `the step number circle is 16px; ${detail}`);
+  assert.ok(Math.abs(measure.delta) <= 1.5,
+    `the step number centres on its row label; ${detail}`);
+}
+
 function assertBadgeCentred(measure, context, tolerance = 0.9) {
   const detail = `${context}: ${JSON.stringify(measure)}`;
   assert.ok(measure.ink >= 8, `the step digit is painted; ${detail}`);
@@ -832,6 +882,9 @@ async function main() {
     assertLabelAlignment(
       await win.webContents.executeJavaScript("__polish.measureLabelAlignment()"),
       "default zoom",
+    );
+    assertStepNumberAligned(
+      await win.webContents.executeJavaScript("__polish.measureStepAlignment()"),
     );
     const chineseInk = await measureLabelInkAlignment(win, "plain-3");
     assert.ok(!chineseInk.empty, "the Chinese label has rasterised ink");
