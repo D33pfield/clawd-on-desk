@@ -1975,29 +1975,29 @@ html, body {
   align-items: center;
   justify-content: center;
   /* Sizes are multiples of four on purpose: at 100/125/150/175/200/225/250/300%
-     display scaling, 4n CSS px is always a whole number of device pixels, so
-     every icon rasterises to the same extent. A 14px box is 17.5 device px at
-     125%, and each row's fractional x/y phase then rounded the same circle to
-     17 or 18 device px — which reads as "some circles are bigger". */
-  width: 16px;
-  height: 16px;
+     display scaling, 4n CSS px is a whole number of device pixels, so every icon
+     rasterises to the same extent. A box whose width × scale lands on a half
+     device pixel (e.g. 14px at 125%) rounds to 17 or 18 device px depending on
+     the row's fractional position, which reads as "some circles are bigger". */
+  width: 12px;
+  height: 12px;
   margin-left: 6px;
   /* Optical centring only: the serif italic glyph's ink box sits slightly above
      and left of the circle's centre when its line box is centred mechanically.
      These asymmetric paddings move the glyph inside the box; the border circle,
-     which is drawn on the 16px border box, stays put. */
-  padding: 1.5px 0 0 0.3px;
+     which is drawn on the 12px border box, stays put. */
+  padding: 1.1px 0 0 0.2px;
   border: 1px solid var(--text-tertiary);
   border-radius: 50%;
   background: transparent;
   color: var(--text-tertiary);
   font-family: Georgia, "Times New Roman", serif;
-  font-size: 10.5px;
+  font-size: 8px;
   font-style: italic;
   font-weight: 400;
-  /* A 14px line box matches the content box, so the glyph's baseline is placed
-     from the box edges instead of from a 10.5px strut. */
-  line-height: 14px;
+  /* A 10px line box matches the content box, so the glyph's baseline is placed
+     from the box edges instead of from an 8px strut. */
+  line-height: 10px;
   cursor: pointer;
 }
 .row-desc-toggle:hover {
@@ -5060,19 +5060,19 @@ html, body {
 .channel-setup-num {
   flex: 0 0 auto;
   /* Multiple of four for the same device-pixel reason as .row-desc-toggle. */
-  width: 20px;
-  height: 20px;
-  margin-top: 11px;
+  width: 16px;
+  height: 16px;
+  margin-top: 12px;
   border: 1.5px solid var(--text-tertiary);
   border-radius: 50%;
   color: var(--text-tertiary);
-  font-size: 12px;
+  font-size: 9.5px;
   font-weight: 700;
   /* Same optical-centring idea as .row-desc-toggle: the bold digit's ink sits
-     slightly above and right of the circle centre once the line box is centred,
-     so the padding lowers and nudges it back. */
+     slightly above the circle centre once the line box is centred, so the
+     padding lowers and nudges it back. */
   line-height: 1;
-  padding: 1px 0 0 0.15px;
+  padding: 0.8px 0 0 0.12px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
