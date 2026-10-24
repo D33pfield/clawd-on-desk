@@ -1951,6 +1951,18 @@ html, body {
 .row-desc-collapsed {
   display: none;
 }
+/* Rows that carry the (i) disclosure centre it against the label's line box,
+   so the icon and the text always share one horizontal line — for 12.5px detail
+   rows and 13px rows alike, across every text zoom and locale. A hand-tuned
+   `vertical-align` cannot: it is one fixed length against a font-relative
+   baseline, and it left the icon ~0.6-1.2px below the text's optical centre. */
+.row-label:has(> .row-desc-toggle) {
+  display: flex;
+  align-items: center;
+}
+.row-label:has(> .row-desc-toggle) > .row-desc-toggle {
+  flex: 0 0 auto;
+}
 .row-desc-toggle {
   display: inline-flex;
   align-items: center;
@@ -1975,7 +1987,6 @@ html, body {
   /* A 12px line box matches the content box, so the glyph's baseline is placed
      from the box edges instead of from a 9.5px strut. */
   line-height: 12px;
-  vertical-align: 1px;
   cursor: pointer;
 }
 .row-desc-toggle:hover {
