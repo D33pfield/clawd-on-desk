@@ -171,6 +171,13 @@
     if (!view.refreshQueued || view.refreshInFlight) return;
     if (coreState.activeTab !== "recap") return;
     if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    // A rebuild that starts mid-scroll lands inside the frame the user is
+    // waiting on, and the cards are rebuilt whole. Hold the refresh until the
+    // pane has been quiet for a moment instead of dropping frames.
+    if (scrollActivity.scrolling) {
+      scrollActivity.pendingRefresh = true;
+      return;
+    }
     if (["unavailable", "error"].includes(view.status)) {
       view.refreshQueued = false;
       view.status = "idle";
@@ -209,6 +216,63 @@
   function applyDataChanged() {
     view.refreshQueued = true;
     refreshIfNeeded();
+  }
+
+  // Scroll activity of the Settings pane. The Recap page is the tallest page in
+  // Settings, and both of its live behaviours are hostile to a frame that is
+  // already busy scrolling: a card rebuild changes the whole subtree, and a cell
+  // hover popover is built and measured against the layout. Chromium re-resolves
+  // the hover target as content streams under a resting pointer, so during a
+  // scroll those mouseenter handlers can fire dozens of times per second.
+  // Both are therefore deferred to the quiet window after the scroll stops.
+  const SCROLL_QUIET_MS = 260;
+  const scrollActivity = {
+    scroller: null,
+    bound: false,
+    scrolling: false,
+    timer: null,
+    pendingRefresh: false,
+  };
+
+  function onContentScroll() {
+    if (scrollActivity.timer !== null) clearTimeout(scrollActivity.timer);
+    if (!scrollActivity.scrolling) {
+      scrollActivity.scrolling = true;
+      if (mountedInteraction) mountedInteraction.clearPeek();
+    }
+    scrollActivity.timer = setTimeout(() => {
+      scrollActivity.timer = null;
+      scrollActivity.scrolling = false;
+      if (scrollActivity.pendingRefresh) {
+        scrollActivity.pendingRefresh = false;
+        view.refreshQueued = true;
+        refreshIfNeeded();
+      }
+    }, SCROLL_QUIET_MS);
+  }
+
+  function unbindScrollActivity() {
+    if (scrollActivity.timer !== null) clearTimeout(scrollActivity.timer);
+    scrollActivity.timer = null;
+    scrollActivity.scrolling = false;
+    scrollActivity.pendingRefresh = false;
+    if (scrollActivity.bound && scrollActivity.scroller
+      && typeof scrollActivity.scroller.removeEventListener === "function") {
+      scrollActivity.scroller.removeEventListener("scroll", onContentScroll);
+    }
+    scrollActivity.scroller = null;
+    scrollActivity.bound = false;
+  }
+
+  function bindScrollActivity() {
+    if (typeof document === "undefined" || typeof document.getElementById !== "function") return;
+    const scroller = document.getElementById("content");
+    if (!scroller || typeof scroller.addEventListener !== "function") return;
+    if (scrollActivity.bound && scrollActivity.scroller === scroller) return;
+    unbindScrollActivity();
+    scrollActivity.scroller = scroller;
+    scrollActivity.bound = true;
+    scroller.addEventListener("scroll", onContentScroll, { passive: true });
   }
 
   function resetInteraction() {
@@ -1098,6 +1162,9 @@
         interaction.popover = null;
       },
       showPeek(cell, element, rowByKey) {
+        // Cells stream under a resting pointer while the pane scrolls; building
+        // and measuring a popover for every one of them is pure jank.
+        if (scrollActivity.scrolling) return;
         this.clearPeek();
         const entries = cell.counts.slice().sort((left, right) => right.count - left.count);
         this.peekElement = element;
@@ -1302,6 +1369,7 @@
   function render(parent) {
     clearLoadingIndicator();
     clearInteraction();
+    bindScrollActivity();
     if (mountedHost) mountedHost.dispose();
     mountedHost = helpers.createSubpageHost({ disposeBody: clearInteraction });
     const header = document.createElement("div");
@@ -1405,6 +1473,7 @@
       onExit() {
         clearLoadingIndicator();
         clearInteraction();
+        unbindScrollActivity();
         // Bumping requestSeq drops an in-flight background refresh; queue it
         // again so returning to Recap fetches the data it would have shown.
         if (view.refreshInFlight) view.refreshQueued = true;

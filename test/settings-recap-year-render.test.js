@@ -88,6 +88,12 @@ class FakeElement {
   set textContent(value) { this._textContent = value == null ? "" : String(value); this.children = []; }
   appendChild(child) { child.parentNode = this; this.children.push(child); return child; }
   append(...children) { for (const child of children) this.appendChild(child); }
+  remove() {
+    if (!this.parentNode) return;
+    const index = this.parentNode.children.indexOf(this);
+    if (index !== -1) this.parentNode.children.splice(index, 1);
+    this.parentNode = null;
+  }
   setAttribute(name, value) {
     this.attributes[name] = String(value);
     if (name === "class") this.className = String(value);
@@ -193,18 +199,22 @@ function sampleView() {
 
 function createDocument() {
   const body = new FakeElement("body");
+  // The Settings pane scroller: the tab binds one passive scroll listener to it
+  // so live refreshes and hover hints can yield to an active scroll.
+  const pane = new FakeElement("main");
+  pane.className = "content";
   const documentValue = {
     body,
     visibilityState: "visible",
     createElement: (tagName) => new FakeElement(tagName),
-    getElementById: () => null,
+    getElementById: (id) => (id === "content" ? pane : null),
     addEventListener() {},
   };
-  return { document: documentValue, body };
+  return { document: documentValue, body, pane };
 }
 
 function mountRecapTab({ queryRecap }) {
-  const { document, body } = createDocument();
+  const { document, body, pane } = createDocument();
   const intl = makeIntlCounter();
   const context = {
     console,
@@ -264,6 +274,7 @@ function mountRecapTab({ queryRecap }) {
     body,
     content,
     core,
+    pane,
     counts: intl.counts,
     setPeriod(period) { periodChange(period); },
     async settle() {
@@ -363,4 +374,50 @@ test("agent hover only rewrites the cells that actually match", async () => {
   } finally {
     touchedCells = null;
   }
+});
+
+test("a live data refresh waits for the settings pane to stop scrolling", async () => {
+  let payload = sampleView();
+  let queries = 0;
+  const harness = mountRecapTab({
+    queryRecap: async () => {
+      queries += 1;
+      return payload;
+    },
+  });
+  await harness.settle();
+  harness.setPeriod("year");
+  await harness.settle();
+  const queriesAfterLoad = queries;
+
+  harness.pane.dispatchEvent({ type: "scroll" });
+  for (let index = 0; index < 5; index += 1) harness.core.tabs.recap.applyDataChanged();
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.equal(queries, queriesAfterLoad,
+    "no background rebuild starts while the pane is scrolling");
+
+  await new Promise((resolve) => setTimeout(resolve, 320));
+  assert.equal(queries, queriesAfterLoad + 1,
+    "exactly one coalesced refresh runs once the scroll settles");
+});
+
+test("cell hover hints are suppressed while the settings pane scrolls", async () => {
+  const harness = mountRecapTab({ queryRecap: async () => sampleView() });
+  await harness.settle();
+  harness.setPeriod("year");
+  await harness.settle();
+  const cell = harness.content.querySelectorAll(".recap-cell-activity")
+    .find((node) => node.getAttribute("role") === "gridcell");
+  assert.ok(cell, "the year grid renders at least one cell with per-agent counts");
+
+  harness.pane.dispatchEvent({ type: "scroll" });
+  cell.dispatchEvent({ type: "mouseenter" });
+  assert.equal(cell.querySelectorAll(".recap-cell-segments").length, 0,
+    "content streaming under the pointer must not build hint overlays");
+
+  await new Promise((resolve) => setTimeout(resolve, 320));
+  cell.dispatchEvent({ type: "mouseenter" });
+  assert.equal(cell.querySelectorAll(".recap-cell-segments").length, 1,
+    "hints return once the scroll has settled");
+  cell.dispatchEvent({ type: "mouseleave" });
 });
