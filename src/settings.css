@@ -1952,45 +1952,31 @@ html, body {
   display: none;
 }
 .row-desc-toggle {
-  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 14px;
   height: 14px;
   margin-left: 6px;
-  padding: 0;
+  /* Optical centring only: the serif italic glyph's ink box sits about 0.65px
+     above and 0.3px left of the circle's centre when its 12px line box is
+     centred mechanically (measured at 125% display scaling). These asymmetric
+     paddings move the glyph inside the box; the border circle, which is drawn
+     on the 14px border box, stays put. */
+  padding: 1.3px 0 0 0.25px;
   border: 1px solid var(--text-tertiary);
   border-radius: 50%;
   background: transparent;
   color: var(--text-tertiary);
-  /* A serif italic "i" is never optically centred inside a 14px circle: the
-     glyph carries side bearings and an italic slant. The character therefore
-     stays in the DOM (tests and assistive text read it) but is not painted —
-     the dot and stem below are geometric and pixel-centred. */
-  font-size: 0;
-  line-height: 0;
-  vertical-align: middle;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 9.5px;
+  font-style: italic;
+  font-weight: 400;
+  /* A 12px line box matches the content box, so the glyph's baseline is placed
+     from the box edges instead of from a 9.5px strut. */
+  line-height: 12px;
+  vertical-align: 1px;
   cursor: pointer;
-}
-.row-desc-toggle::before,
-.row-desc-toggle::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  width: 2px;
-  transform: translateX(-50%);
-  background: currentColor;
-}
-.row-desc-toggle::before {
-  top: 2.5px;
-  height: 2px;
-  border-radius: 50%;
-}
-.row-desc-toggle::after {
-  top: 5.5px;
-  height: 4px;
-  border-radius: 1px;
 }
 .row-desc-toggle:hover {
   border-color: var(--accent);
@@ -5059,6 +5045,11 @@ html, body {
   color: var(--text-tertiary);
   font-size: 10.5px;
   font-weight: 700;
+  /* Same optical-centring idea as .row-desc-toggle: the bold digit's ink sits
+     about 0.45px below and 0.25px left of the circle centre once the line box is
+     centred, so the padding lifts and nudges it back. */
+  line-height: 1;
+  padding: 0 0 0.9px 0.5px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
