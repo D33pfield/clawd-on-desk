@@ -9684,6 +9684,62 @@ describe("settings renderer browser environment", () => {
     assert.equal(status.element.querySelector(".settings-status-text").textContent, "Bad");
   });
 
+  it("replaces the native disclosure title with the shared in-page hint", () => {
+    const document = {
+      body: new FakeElement("body"),
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: () => null,
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const row = buildFakeSettingRow(document, {
+      label: "Label",
+      description: "Folded description",
+    });
+    core.helpers.attachDescriptionDisclosure(row.element);
+    const toggle = row.element.querySelector(".row-desc-toggle");
+    assert.ok(toggle);
+    assert.equal(toggle.getAttribute("title"), undefined, "native OS tooltip must not be used");
+    assert.equal(toggle.getAttribute("aria-describedby"), row.descriptionElement.id);
+
+    toggle.dispatchEvent({ type: "mouseenter" });
+    const tooltip = document.body.children.find((child) => child.classList.contains("settings-tooltip"));
+    assert.ok(tooltip, "hovering the disclosure mounts the shared tooltip");
+    assert.equal(tooltip.textContent, "Folded description");
+    assert.equal(tooltip.classList.contains("visible"), true);
+    assert.equal(tooltip.getAttribute("aria-hidden"), "false");
+
+    toggle.dispatchEvent({ type: "click" });
+    assert.equal(tooltip.classList.contains("visible"), false);
+    assert.equal(row.descriptionElement.classList.contains("row-desc-collapsed"), false);
+    // Once the text is inline there is nothing left to hint.
+    toggle.dispatchEvent({ type: "mouseenter" });
+    assert.equal(tooltip.classList.contains("visible"), false);
+    assert.equal(document.body.children.includes(tooltip), true, "a single tooltip node is reused");
+  });
+
+  it("keeps a parenthetical button label group on one line", () => {
+    const document = {
+      body: new FakeElement("body"),
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: () => null,
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const button = core.helpers.buildButton({ label: "重置令牌并启用（推荐）", size: "large" });
+    const label = button.querySelector(".settings-button-label");
+    assert.equal(label.textContent, "重置令牌并启用（推荐）");
+    const keep = label.querySelectorAll(".settings-button-label-keep");
+    assert.equal(keep.length, 1);
+    assert.equal(keep[0].textContent, "（推荐）");
+
+    const plain = core.helpers.buildButton({ label: "Install" });
+    assert.equal(plain.querySelector(".settings-button-label").textContent, "Install");
+    assert.equal(plain.querySelectorAll(".settings-button-label-keep").length, 0);
+
+    core.helpers.setButtonState(button, { label: "保留令牌并启用" });
+    assert.equal(label.textContent, "保留令牌并启用");
+    assert.equal(label.querySelectorAll(".settings-button-label-keep").length, 0);
+  });
+
   it("removes the legacy channel markup from source and CSS", () => {
     const telegram = fs.readFileSync(path.join(SRC_DIR, "settings-tab-telegram-approval.js"), "utf8");
     const mobile = fs.readFileSync(path.join(SRC_DIR, "settings-tab-mobile.js"), "utf8");
