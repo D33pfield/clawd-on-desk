@@ -7712,6 +7712,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.content.querySelector(".feishu-approval-timeout-select"), select);
     assert.equal(getSelectedPickerValue(select), "30");
 
+    const renderRequestsBefore = harness.renderRequests.length;
     assert.equal(harness.core.tabs.permissions.patchInPlace(
       { feishuApproval: { ...nextSnapshot.feishuApproval, enabled: false } },
       {
@@ -7721,7 +7722,14 @@ describe("settings renderer browser environment", () => {
           feishuApproval: { ...nextSnapshot.feishuApproval, enabled: false },
         },
       }
-    ), false, "other Feishu configuration changes still require a full render");
+    ), true, "the remote module claims its own config changes before applyChanges repaints");
+    assert.equal(harness.renderRequests.length, renderRequestsBefore + 1,
+      "the claim still rebuilds the card");
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(harness.renderRequests.at(-1))),
+      { content: true, preserveScroll: true },
+      "the rebuild must keep the settings pane scroll position"
+    );
   });
 
   it("saves Feishu Enable through an authoritative field-level patch", async () => {
