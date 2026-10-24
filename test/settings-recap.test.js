@@ -127,6 +127,18 @@ test("recap card keeps day grids square, makes only today a bar chart, and expos
   assert.ok(!preload.includes("shareRecap"));
 });
 
+test("the settings scroller is announced as scroll-changing to the compositor", () => {
+  // First-scroll stutter on 足迹 was a one-time ~40ms scroll-layer preparation
+  // after the card repaint, not the cost of the 372 cells: hiding every cell
+  // left it unchanged, and a 24-cell page paid it too. The compositor hint moves
+  // that preparation into the settling phase.
+  const css = fs.readFileSync(path.join(SRC, "settings.css"), "utf8");
+  assert.match(css, /\.content\s*\{[^}]*will-change:\s*scroll-position;/);
+  const contentRule = css.match(/\.content\s*\{[^}]*\}/)[0];
+  assert.match(contentRule, /overflow-y:\s*auto;/);
+  assert.match(contentRule, /scrollbar-gutter:\s*stable;/);
+});
+
 test("today bar ratios use one honest linear scale", () => {
   const context = { globalThis: null };
   context.globalThis = context;
