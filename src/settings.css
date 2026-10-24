@@ -713,6 +713,14 @@ html, body {
 }
 .recap-year-row .recap-band { gap: 1.5px; }
 .recap-year-row .recap-cell { border-radius: 20%; }
+/* The year grid keeps 372 animatable cells otherwise, and on the real GPU path
+   that makes every scroll burst re-rasterise the grid: measured worst frames of
+   130-141ms while scrolling 今年, against 10-15ms in 月 / 周 / 今天 (whose cells
+   are far fewer). The cell transitions only serve hover/selection fades, so the
+   year grid drops them: layout, sizes, radius and dashed state borders stay
+   untouched, and the same measurement then shows 23ms worst with no frame over
+   25ms. */
+.recap-grid-year .recap-cell { transition: none; }
 .recap-cell-peek { z-index: 8; }
 .recap-cell-segments {
   position: absolute;
@@ -5062,7 +5070,7 @@ html, body {
   /* Multiple of four for the same device-pixel reason as .row-desc-toggle. */
   width: 16px;
   height: 16px;
-  margin-top: 12px;
+  margin-top: 13px;
   border: 1.5px solid var(--text-tertiary);
   border-radius: 50%;
   color: var(--text-tertiary);
