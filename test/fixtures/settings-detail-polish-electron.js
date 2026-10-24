@@ -400,6 +400,59 @@ function analyseInk(image, box, cropX, cropY, cropWidth, ringInset) {
   };
 }
 
+// Full painted extent of an icon (circle ring plus glyph), used to prove every
+// icon rasterises to the same size regardless of its fractional position.
+async function measureRasterBox(win, selector) {
+  const box = await win.webContents.executeJavaScript(`(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    const r = el.getBoundingClientRect();
+    return { pageX: r.left, pageY: r.top, width: r.width, height: r.height };
+  })()`);
+  const cropX = Math.floor(box.pageX) - 2;
+  const cropY = Math.floor(box.pageY) - 2;
+  const cropWidth = Math.ceil(box.width) + 4;
+  const cropHeight = Math.ceil(box.height) + 4;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const image = await win.webContents.capturePage({
+      x: cropX,
+      y: cropY,
+      width: cropWidth,
+      height: cropHeight,
+    });
+    const size = image.getSize();
+    const bitmap = image.getBitmap();
+    const scale = size.width / cropWidth;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let ink = 0;
+    for (let y = 0; y < size.height; y += 1) {
+      for (let x = 0; x < size.width; x += 1) {
+        const index = (y * size.width + x) * 4;
+        const luminance = 0.2126 * bitmap[index + 2]
+          + 0.7152 * bitmap[index + 1]
+          + 0.0722 * bitmap[index];
+        if (luminance >= 210) continue;
+        ink += 1;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (ink > 0 || attempt === 2) {
+      return {
+        ink,
+        width: Number(((maxX - minX + 1) / scale).toFixed(2)),
+        height: Number(((maxY - minY + 1) / scale).toFixed(2)),
+      };
+    }
+    await waitForPaint(win);
+  }
+  return { ink: 0, width: 0, height: 0 };
+}
+
 // Icon centre against the label's line-box centre, plus a raster check of the
 // text ink centre so the icon cannot merely be centred in an empty box.
 function assertLabelAlignment(rows, context) {
@@ -485,10 +538,33 @@ async function measureLabelInkAlignment(win, rowKey) {
   };
 }
 
-function assertGlyphCentred(measure, context, tolerance = 0.75) {  const detail = `${context}: ${JSON.stringify(measure)}`;
+function assertGlyphCentred(measure, context, tolerance = 0.75) {
+  const detail = `${context}: ${JSON.stringify(measure)}`;
   assert.ok(measure.ink >= 10, `the serif glyph is painted, not hidden; ${detail}`);
   assert.ok(Math.abs(measure.delta.x) <= tolerance, `glyph ink is horizontally centred; ${detail}`);
   assert.ok(Math.abs(measure.delta.y) <= tolerance, `glyph ink is vertically centred; ${detail}`);
+}
+
+// Every icon rasterises to the same extent: with 4n CSS px boxes a fractional
+// row position cannot round the same circle to 17 or 18 device px.
+function assertIconSizesUniform(toggles, badges, context) {
+  const spread = (items) => {
+    const widths = items.map((item) => item.width);
+    const heights = items.map((item) => item.height);
+    return {
+      width: Number((Math.max(...widths) - Math.min(...widths)).toFixed(2)),
+      height: Number((Math.max(...heights) - Math.min(...heights)).toFixed(2)),
+    };
+  };
+  const toggleSpread = spread(toggles);
+  const badgeSpread = spread(badges);
+  assert.ok(toggleSpread.width <= 0.5 && toggleSpread.height <= 0.5,
+    `every (i) circle rasterises to one size (${JSON.stringify(toggles)}); ${context}`);
+  assert.ok(badgeSpread.width <= 0.5 && badgeSpread.height <= 0.5,
+    `every step-number circle rasterises to one size (${JSON.stringify(badges)}); ${context}`);
+  for (const item of [...toggles, ...badges]) {
+    assert.ok(Math.abs(item.width - Math.round(item.width)) <= 0.5, `icon box is integral; ${JSON.stringify(item)}`);
+  }
 }
 
 function assertBadgeCentred(measure, context, tolerance = 0.9) {
@@ -574,7 +650,7 @@ function assertToggleContract(description) {
   assert.equal(description.textContent, "i", `the "i" text stays in the DOM; ${detail}`);
   assert.ok(description.title == null, `native OS tooltip must not be used; ${detail}`);
   assert.ok(description.ariaDescribedBy, `description stays programmatically associated; ${detail}`);
-  assert.equal(description.fontSize, "9.5px", `the original serif glyph size is preserved; ${detail}`);
+  assert.equal(description.fontSize, "10.5px", `the serif glyph keeps its proportional size; ${detail}`);
 }
 
 async function main() {
@@ -612,6 +688,22 @@ async function main() {
     const inkRatio = Math.max(...toggleInk) / Math.min(...toggleInk);
     assert.ok(inkRatio <= 1.5,
       `the restored glyph renders at a consistent weight (ink ${toggleInk.join("/")})`);
+
+    // 1a2. Every icon rasterises to the same size (4n px boxes at fractional
+    //      positions).
+    {
+      const toggleBoxes = [];
+      for (const index of [0, 1, 2]) {
+        const selector = await win.webContents.executeJavaScript(`__polish.toggleSelector(${index})`);
+        toggleBoxes.push(await measureRasterBox(win, selector));
+      }
+      const badgeBoxes = [];
+      for (const digit of ["1", "2", "3"]) {
+        const selector = await win.webContents.executeJavaScript(`__polish.badgeSelector(${JSON.stringify(digit)})`);
+        badgeBoxes.push(await measureRasterBox(win, selector));
+      }
+      assertIconSizesUniform(toggleBoxes, badgeBoxes, "default zoom");
+    }
 
     // 1b. The (i) and its label text share one horizontal line: centre-vs-box
     //     for every label shape, plus the rasterised text ink for the reported
