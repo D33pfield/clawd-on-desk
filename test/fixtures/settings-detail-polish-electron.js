@@ -34,7 +34,12 @@ const ROW_LABELS = [
   "Ask before auto-allowing",
   "Ask before auto-allowing destructive commands",
   "Ask before auto-allowing destructive commands that could delete or rewrite files",
+  "在手机上显示权限摘要",
 ];
+// Labels that also carry another inline child, plus a label long enough to wrap
+// inside a narrow row: the (i) must stay on the text's line in both shapes.
+const EXTRA_CHILD_LABEL = "Token configured";
+const LONG_LABEL = "在手机上显示权限摘要以及更多说明文字以便在窄窗口里换行显示";
 const BADGE_DIGITS = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
 const INK_LUMINANCE_THRESHOLD = 205;
 
@@ -52,6 +57,7 @@ async function installPageApi(win) {
         const row = document.createElement("div");
         row.className = "row";
         row.dataset.rowIndex = String(index);
+        row.dataset.labelAlignment = "plain-" + String(index);
         const text = document.createElement("div");
         text.className = "row-text";
         const label = document.createElement("span");
@@ -64,6 +70,53 @@ async function installPageApi(win) {
         text.appendChild(desc);
         row.appendChild(text);
         rows.appendChild(row);
+        helpers.attachDescriptionDisclosure(row);
+      }
+
+      // A label with an extra inline child (the masked token) next to the (i).
+      {
+        const row = document.createElement("div");
+        row.className = "row";
+        row.dataset.labelAlignment = "extra-child";
+        const text = document.createElement("div");
+        text.className = "row-text";
+        const label = document.createElement("span");
+        label.className = "row-label";
+        label.textContent = ${JSON.stringify(EXTRA_CHILD_LABEL)};
+        const masked = document.createElement("span");
+        masked.className = "tg-approval-token-masked";
+        masked.textContent = "1234";
+        label.appendChild(masked);
+        const desc = document.createElement("span");
+        desc.className = "row-desc";
+        desc.textContent = ${JSON.stringify(ROW_DESCRIPTION)};
+        text.appendChild(label);
+        text.appendChild(desc);
+        row.appendChild(text);
+        rows.appendChild(row);
+        helpers.attachDescriptionDisclosure(row);
+      }
+
+      // A label that must wrap inside a narrow row without losing the icon.
+      {
+        const narrow = document.createElement("div");
+        narrow.style.width = "260px";
+        rows.appendChild(narrow);
+        const row = document.createElement("div");
+        row.className = "row";
+        row.dataset.labelAlignment = "wrapped";
+        const text = document.createElement("div");
+        text.className = "row-text";
+        const label = document.createElement("span");
+        label.className = "row-label";
+        label.textContent = ${JSON.stringify(LONG_LABEL)};
+        const desc = document.createElement("span");
+        desc.className = "row-desc";
+        desc.textContent = ${JSON.stringify(ROW_DESCRIPTION)};
+        text.appendChild(label);
+        text.appendChild(desc);
+        row.appendChild(text);
+        narrow.appendChild(row);
         helpers.attachDescriptionDisclosure(row);
       }
 
@@ -125,6 +178,34 @@ async function installPageApi(win) {
             fontSize: getComputedStyle(toggle).fontSize,
             rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
           };
+        },
+        measureLabelAlignment() {
+          return Array.from(document.querySelectorAll(".row[data-label-alignment]")).map((row) => {
+            const label = row.querySelector(".row-label");
+            const toggle = row.querySelector(".row-desc-toggle");
+            const labelRect = label.getBoundingClientRect();
+            const toggleRect = toggle.getBoundingClientRect();
+            const masked = row.querySelector(".tg-approval-token-masked");
+            const maskedRect = masked ? masked.getBoundingClientRect() : null;
+            return {
+              key: row.dataset.labelAlignment,
+              labelHeight: Number(labelRect.height.toFixed(2)),
+              labelWidth: Number(labelRect.width.toFixed(2)),
+              overflow: Number((label.scrollWidth - label.clientWidth).toFixed(2)),
+              display: getComputedStyle(label).display,
+              delta: Number(((toggleRect.top + toggleRect.height / 2)
+                - (labelRect.top + labelRect.height / 2)).toFixed(3)),
+              toggleInside: toggleRect.left >= labelRect.left - 0.5
+                && toggleRect.right <= labelRect.right + 0.5
+                && toggleRect.top >= labelRect.top - 0.5
+                && toggleRect.bottom <= labelRect.bottom + 0.5,
+              masked: maskedRect && {
+                centreDelta: Number(((maskedRect.top + maskedRect.height / 2)
+                  - (labelRect.top + labelRect.height / 2)).toFixed(3)),
+                height: Number(maskedRect.height.toFixed(2)),
+              },
+            };
+          });
         },
         measureIdType() {
           return Array.from(document.querySelectorAll(".feishu-approval-id-type button")).map((button) => {
@@ -243,6 +324,14 @@ async function installPageApi(win) {
 
 // Crop the icon's box and measure the ink of the glyph inside the circle: the
 // border ring is excluded by radius, so only the glyph contributes.
+// Offscreen `capturePage` occasionally returns a frame from before the latest
+// layout, so an empty scan is retried after letting a frame paint.
+async function waitForPaint(win) {
+  await win.webContents.executeJavaScript(
+    "new Promise((resolve) => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(resolve)), 30))",
+  );
+}
+
 async function measureInk(win, selector, ringInset) {
   const box = await win.webContents.executeJavaScript(`(() => {
     const el = document.querySelector(${JSON.stringify(selector)});
@@ -253,12 +342,21 @@ async function measureInk(win, selector, ringInset) {
   const cropY = Math.floor(box.pageY);
   const cropWidth = Math.ceil(box.width) + 1;
   const cropHeight = Math.ceil(box.height) + 1;
-  const image = await win.webContents.capturePage({
-    x: cropX,
-    y: cropY,
-    width: cropWidth,
-    height: cropHeight,
-  });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const image = await win.webContents.capturePage({
+      x: cropX,
+      y: cropY,
+      width: cropWidth,
+      height: cropHeight,
+    });
+    const measure = analyseInk(image, box, cropX, cropY, cropWidth, ringInset);
+    if (measure.ink > 0 || attempt === 2) return measure;
+    await waitForPaint(win);
+  }
+  return { ink: 0, scale: 0, delta: null, inkSize: null };
+}
+
+function analyseInk(image, box, cropX, cropY, cropWidth, ringInset) {
   const size = image.getSize();
   const bitmap = image.getBitmap();
   const scale = size.width / cropWidth;
@@ -302,8 +400,92 @@ async function measureInk(win, selector, ringInset) {
   };
 }
 
-function assertGlyphCentred(measure, context, tolerance = 0.75) {
-  const detail = `${context}: ${JSON.stringify(measure)}`;
+// Icon centre against the label's line-box centre, plus a raster check of the
+// text ink centre so the icon cannot merely be centred in an empty box.
+function assertLabelAlignment(rows, context) {
+  assert.ok(rows.length >= 5, `label alignment rows are mounted; ${context}`);
+  for (const row of rows) {
+    const detail = `${context} ${JSON.stringify(row)}`;
+    assert.equal(row.display, "flex", `the row label becomes a centred flex line; ${detail}`);
+    assert.ok(Math.abs(row.delta) <= 0.5, `the (i) shares the label's line; ${detail}`);
+    assert.ok(row.toggleInside, `the (i) stays inside the label box; ${detail}`);
+  }
+  const wrapped = rows.find((row) => row.key === "wrapped");
+  assert.ok(wrapped, "the wrapping row is mounted");
+  assert.ok(wrapped.labelHeight > 20, `a long label still wraps; ${JSON.stringify(wrapped)}`);
+  assert.ok(wrapped.overflow <= 1, `the wrapped label does not overflow; ${JSON.stringify(wrapped)}`);
+  const extra = rows.find((row) => row.key === "extra-child");
+  assert.ok(extra && extra.masked, "the masked-token row keeps its inline child");
+  assert.ok(Math.abs(extra.masked.centreDelta) <= 1,
+    `the masked token stays on the label's line; ${JSON.stringify(extra)}`);
+  assert.ok(extra.labelHeight <= 30,
+    `the masked token chip keeps the label on one line; ${JSON.stringify(extra)}`);
+}
+
+async function measureLabelInkAlignment(win, rowKey) {
+  const box = await win.webContents.executeJavaScript(`(() => {
+    const row = document.querySelector('.row[data-label-alignment="${rowKey}"]');
+    const label = row.querySelector(".row-label");
+    const toggle = row.querySelector(".row-desc-toggle");
+    const labelRect = label.getBoundingClientRect();
+    const toggleRect = toggle.getBoundingClientRect();
+    return {
+      pageX: labelRect.left,
+      pageY: labelRect.top,
+      width: labelRect.width,
+      height: labelRect.height,
+      iconLeft: toggleRect.left,
+      iconCentreY: toggleRect.top + toggleRect.height / 2,
+    };
+  })()`);
+  const cropX = Math.floor(box.pageX);
+  const cropY = Math.floor(box.pageY);
+  const cropWidth = Math.ceil(box.width);
+  const cropHeight = Math.ceil(box.height);
+  let image = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    image = await win.webContents.capturePage({
+      x: cropX,
+      y: cropY,
+      width: cropWidth,
+      height: cropHeight,
+    });
+    const probe = image.getBitmap();
+    let anyInk = false;
+    for (let index = 0; index < probe.length; index += 4) {
+      const luminance = 0.2126 * probe[index + 2] + 0.7152 * probe[index + 1] + 0.0722 * probe[index];
+      if (luminance < INK_LUMINANCE_THRESHOLD) { anyInk = true; break; }
+    }
+    if (anyInk || attempt === 2) break;
+    await waitForPaint(win);
+  }
+  const size = image.getSize();
+  const bitmap = image.getBitmap();
+  const scale = size.width / cropWidth;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (let y = 0; y < size.height; y += 1) {
+    for (let x = 0; x < size.width; x += 1) {
+      const index = (y * size.width + x) * 4;
+      const luminance = 0.2126 * bitmap[index + 2]
+        + 0.7152 * bitmap[index + 1]
+        + 0.0722 * bitmap[index];
+      if (luminance >= INK_LUMINANCE_THRESHOLD) continue;
+      if (x / scale + cropX >= box.iconLeft - 1) continue;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (maxY < 0) return { empty: true };
+  const textInkCentre = (minY + maxY) / 2 / scale + cropY;
+  return {
+    textInkCentre: Number(textInkCentre.toFixed(3)),
+    iconCentre: Number(box.iconCentreY.toFixed(3)),
+    delta: Number((box.iconCentreY - textInkCentre).toFixed(3)),
+  };
+}
+
+function assertGlyphCentred(measure, context, tolerance = 0.75) {  const detail = `${context}: ${JSON.stringify(measure)}`;
   assert.ok(measure.ink >= 10, `the serif glyph is painted, not hidden; ${detail}`);
   assert.ok(Math.abs(measure.delta.x) <= tolerance, `glyph ink is horizontally centred; ${detail}`);
   assert.ok(Math.abs(measure.delta.y) <= tolerance, `glyph ink is vertically centred; ${detail}`);
@@ -403,7 +585,7 @@ async function main() {
   const win = new BrowserWindow({
     show: false,
     width: 1000,
-    height: 900,
+    height: 1600,
     useContentSize: true,
     webPreferences: { offscreen: true, backgroundThrottling: false },
   });
@@ -430,6 +612,18 @@ async function main() {
     const inkRatio = Math.max(...toggleInk) / Math.min(...toggleInk);
     assert.ok(inkRatio <= 1.5,
       `the restored glyph renders at a consistent weight (ink ${toggleInk.join("/")})`);
+
+    // 1b. The (i) and its label text share one horizontal line: centre-vs-box
+    //     for every label shape, plus the rasterised text ink for the reported
+    //     Chinese label.
+    assertLabelAlignment(
+      await win.webContents.executeJavaScript("__polish.measureLabelAlignment()"),
+      "default zoom",
+    );
+    const chineseInk = await measureLabelInkAlignment(win, "plain-3");
+    assert.ok(!chineseInk.empty, "the Chinese label has rasterised ink");
+    assert.ok(Math.abs(chineseInk.delta) <= 1,
+      `the (i) sits on the Chinese text's optical centre; ${JSON.stringify(chineseInk)}`);
 
     // 2. Step-number badges: every digit is centred in its circle.
     for (const digit of BADGE_DIGITS) {
@@ -482,6 +676,10 @@ async function main() {
       );
       const selector = await win.webContents.executeJavaScript("__polish.toggleSelector(0)");
       assertGlyphCentred(await measureInk(win, selector, 3.5), `zoom ${zoom} glyph`, 0.9);
+      assertLabelAlignment(
+        await win.webContents.executeJavaScript("__polish.measureLabelAlignment()"),
+        `zoom ${zoom} labels`,
+      );
     }
     applyZoomToWindow(win, 1);
     await win.webContents.__clawdTextZoomQueue;
