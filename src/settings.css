@@ -190,6 +190,13 @@ html, body {
   overflow-y: auto;
   scrollbar-gutter: stable;
   padding: 28px 36px;
+  /* The pane is always a scroller, and every tab repaint replaces its subtree.
+     Telling the compositor up front that the scroll position will change lets
+     it prepare the scrollable layer while the page is settling. Without it the
+     first scroll after a repaint pays a one-time ~40ms frame on the 足迹
+     page — and that cost is independent of what was painted (hiding every cell
+     leaves it unchanged, a 24-cell page pays it too). */
+  will-change: scroll-position;
 }
 .content::-webkit-scrollbar { width: 6px; }
 .content::-webkit-scrollbar-track { background: transparent; }
