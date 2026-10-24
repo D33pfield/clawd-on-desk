@@ -54,8 +54,38 @@
     return ({ zh: "zh-CN", "zh-TW": "zh-TW", ko: "ko-KR", ja: "ja-JP", "pt-BR": "pt-BR", es: "es" })[lang] || "en";
   }
 
+  // A local-year render asks for a few hundred formatted labels and numbers.
+  // Intl formatter construction is one to two orders of magnitude more
+  // expensive than format(), so keep one formatter per locale/options pair.
+  // The key set is bounded by the literals used in this file times the number
+  // of locales a long-lived window can switch through, and the cap keeps a
+  // pathological caller from growing it without bound.
+  const FORMATTER_CACHE_LIMIT = 64;
+  const dateFormatCache = new Map();
+  const numberFormatCache = new Map();
+
+  function createDateFormat(lang, options) {
+    return new Intl.DateTimeFormat(lang, { timeZone: "UTC", ...options });
+  }
+
+  function createNumberFormat(lang, options) {
+    return new Intl.NumberFormat(lang, options);
+  }
+
+  function cachedFormatter(cache, options, create) {
+    const lang = locale();
+    const key = `${lang}\0${JSON.stringify(options)}`;
+    let formatter = cache.get(key);
+    if (!formatter) {
+      if (cache.size >= FORMATTER_CACHE_LIMIT) cache.clear();
+      formatter = create(lang, options);
+      cache.set(key, formatter);
+    }
+    return formatter;
+  }
+
   function formatNumber(value, options) {
-    return new Intl.NumberFormat(locale(), options).format(value);
+    return cachedFormatter(numberFormatCache, options, createNumberFormat).format(value);
   }
 
   function replace(template, values) {
@@ -99,7 +129,7 @@
   function formatDate(localDate, options) {
     const date = parseLocalDate(localDate);
     return date
-      ? new Intl.DateTimeFormat(locale(), { timeZone: "UTC", ...options }).format(date)
+      ? cachedFormatter(dateFormatCache, options, createDateFormat).format(date)
       : String(localDate || "");
   }
 
@@ -289,53 +319,23 @@
     element.style.setProperty("--recap-bar-ratio", String(barRatio(value, maximum)));
   }
 
-  function coverageForDay(day) {
+  // Everything a cell needs from its local day, derived once per day instead of
+  // once per cell. A year grid renders 372 cells, and the old per-cell path
+  // allocated a 24-slot coverage array plus a 24-slot capacity array (and a
+  // closure) for every one of them. Hour-cell geometries (today/week) keep the
+  // per-hour arrays; day-cell geometries (month/year) only need the totals.
+  function dayMetrics(data, localDate, day, hourly) {
+    const hasShape = !!(day && (
+      Array.isArray(day.hourCapacities)
+      || (day.coverage && Array.isArray(day.coverage.hourCapacities))
+    ));
     const minutes = day && day.coverage && Array.isArray(day.coverage.coverageMinutes)
       ? day.coverage.coverageMinutes
       : [];
-    return Array.from({ length: 24 }, (_, hour) => {
-      const value = Number(minutes[hour]);
-      return Number.isFinite(value) && value > 0 ? value : 0;
-    });
-  }
-
-  function hourCapacity(day, hour) {
-    const hasShape = !!(day && (
-      Array.isArray(day.hourCapacities)
-      || (day.coverage && Array.isArray(day.coverage.hourCapacities))
-    ));
-    const capacities = [
-      day && Array.isArray(day.hourCapacities) ? day.hourCapacities[hour] : 0,
-      day && day.coverage && Array.isArray(day.coverage.hourCapacities)
-        ? day.coverage.hourCapacities[hour]
-        : 0,
-    ];
-    const capacity = Math.max(...capacities.map((value) => Number(value) || 0));
-    return { capacity, hasShape };
-  }
-
-  function hourKind(day, hour) {
-    const { capacity, hasShape } = hourCapacity(day, hour);
-    if (capacity > 60) return "fold";
-    if (hasShape && capacity === 0) return "gap";
-    if (capacity > 0 && capacity < 60) return "gap";
-    return "normal";
-  }
-
-  function expectedCoverage(data, localDate, hour, day) {
-    const hasShape = !!(day && (
-      Array.isArray(day.hourCapacities)
-      || (day.coverage && Array.isArray(day.coverage.hourCapacities))
-    ));
-    const capacities = Array.from({ length: 24 }, (_, index) => {
-      const known = Math.max(
-        Number(day && Array.isArray(day.hourCapacities) ? day.hourCapacities[index] : 0) || 0,
-        Number(day && day.coverage && Array.isArray(day.coverage.hourCapacities)
-          ? day.coverage.hourCapacities[index]
-          : 0) || 0
-      );
-      return hasShape ? known : 60;
-    });
+    const coverage = hourly ? new Array(24) : null;
+    const capacities = hourly ? new Array(24) : null;
+    const targets = hourly ? new Array(24) : null;
+    let coveredTotal = 0;
     const startedDate = data.recordingStartedDate || data.startDate || data.anchorDate;
     const startedHour = localDate === startedDate && Number.isInteger(data.recordingStartedLocalHour)
       ? data.recordingStartedLocalHour
@@ -343,26 +343,48 @@
     const endHour = localDate === data.anchorDate && Number.isInteger(data.currentLocalHour)
       ? data.currentLocalHour
       : 23;
-    function targetForHour(index) {
-      if (index < startedHour || index > endHour) return 0;
-      const capacity = capacities[index];
-      let eligibleStart = 0;
-      let eligibleEnd = capacity;
-      if (localDate === startedDate && index === startedHour && Number.isInteger(data.recordingStartedLocalMinute)) {
-        eligibleStart = Number.isInteger(data.recordingStartedHourElapsedMinutes)
-          ? data.recordingStartedHourElapsedMinutes
-          : data.recordingStartedLocalMinute;
+    const startedMinute = data.recordingStartedLocalMinute;
+    const startedElapsed = data.recordingStartedHourElapsedMinutes;
+    const currentMinute = data.currentLocalMinute;
+    const currentElapsed = data.currentHourElapsedMinutes;
+    let expectedTotal = 0;
+    for (let hour = 0; hour < 24; hour += 1) {
+      const coveredValue = Number(minutes[hour]);
+      const coveredMinutes = Number.isFinite(coveredValue) && coveredValue > 0 ? coveredValue : 0;
+      if (coverage) coverage[hour] = coveredMinutes;
+      coveredTotal += coveredMinutes;
+      const known = Math.max(
+        Number(day && Array.isArray(day.hourCapacities) ? day.hourCapacities[hour] : 0) || 0,
+        Number(day && day.coverage && Array.isArray(day.coverage.hourCapacities)
+          ? day.coverage.hourCapacities[hour]
+          : 0) || 0
+      );
+      const capacity = hasShape ? known : 60;
+      if (capacities) capacities[hour] = capacity;
+      let target = 0;
+      if (hour >= startedHour && hour <= endHour) {
+        let eligibleStart = 0;
+        let eligibleEnd = capacity;
+        if (localDate === startedDate && hour === startedHour && Number.isInteger(startedMinute)) {
+          eligibleStart = Number.isInteger(startedElapsed) ? startedElapsed : startedMinute;
+        }
+        if (localDate === data.anchorDate && hour === endHour && Number.isInteger(currentMinute)) {
+          eligibleEnd = Number.isInteger(currentElapsed) ? currentElapsed : currentMinute;
+        }
+        target = Math.max(0, Math.min(capacity, eligibleEnd) - Math.min(capacity, eligibleStart));
       }
-      if (localDate === data.anchorDate && index === endHour && Number.isInteger(data.currentLocalMinute)) {
-        eligibleEnd = Number.isInteger(data.currentHourElapsedMinutes)
-          ? data.currentHourElapsedMinutes
-          : data.currentLocalMinute;
-      }
-      return Math.max(0, Math.min(capacity, eligibleEnd) - Math.min(capacity, eligibleStart));
+      if (targets) targets[hour] = target;
+      expectedTotal += target;
     }
-    if (hour !== null) return targetForHour(hour);
-    return Array.from({ length: 24 }, (_, index) => targetForHour(index))
-      .reduce((sum, value) => sum + value, 0);
+    return { coverage, coveredTotal, capacities, hasShape, targets, expectedTotal };
+  }
+
+  function hourKind(metrics, hour) {
+    const capacity = metrics.capacities[hour];
+    if (capacity > 60) return "fold";
+    if (metrics.hasShape && capacity === 0) return "gap";
+    if (capacity > 0 && capacity < 60) return "gap";
+    return "normal";
   }
 
   function countsForHour(day, hour) {
@@ -399,7 +421,7 @@
     return counts;
   }
 
-  function classifyCell(data, localDate, hour, day, counts, kind, invalid = false) {
+  function classifyCell(data, localDate, hour, metricsFor, counts, kind, invalid = false) {
     const total = counts.reduce((sum, entry) => sum + entry.count, 0);
     if (invalid) return { state: "blank", total, counts, kind: "normal" };
     // A DST gap is not a zero, a future slot, or a pre-recording slot: this
@@ -408,7 +430,7 @@
     // example Lord Howe's 30-minute jump) still have real time in which
     // activity and coverage can occur, so they must continue through the
     // normal classification path.
-    if (kind === "gap" && hour !== null && hourCapacity(day, hour).capacity === 0) {
+    if (kind === "gap" && hour !== null && metricsFor().capacities[hour] === 0) {
       return { state: "gap", total: 0, counts: [], kind };
     }
     const anchorDate = data.anchorDate;
@@ -419,11 +441,11 @@
     // Historical local hours remain frozen after a timezone change. Existing
     // activity and coverage are evidence, even if today's clock is now behind.
     if (total > 0) return { state: "activity", total, counts, kind };
-    const coverage = coverageForDay(day);
-    const coveredMinutes = hour === null
-      ? coverage.reduce((sum, minutes) => sum + minutes, 0)
-      : coverage[hour];
-    const expectedMinutes = expectedCoverage(data, localDate, hour, day);
+    // The per-day metrics are only needed for the coverage path, so an active
+    // day never pays to derive them.
+    const metrics = metricsFor();
+    const coveredMinutes = hour === null ? metrics.coveredTotal : metrics.coverage[hour];
+    const expectedMinutes = hour === null ? metrics.expectedTotal : metrics.targets[hour];
     if (coveredMinutes > 0) {
       return {
         state: expectedMinutes > 0 && coveredMinutes >= expectedMinutes ? "covered" : "partial",
@@ -445,20 +467,31 @@
     return { state: "uncovered", total: 0, counts: [], kind };
   }
 
-  function createCell(data, localDate, hour, day, optionsValue = {}) {
+  function createCell(data, localDate, hour, day, metricsFor, optionsValue = {}) {
+    const getMetrics = () => metricsFor(localDate, day);
     const counts = hour === null ? countsForDay(day) : countsForHour(day, hour);
-    const kind = hour === null ? "normal" : hourKind(day, hour);
+    const kind = hour === null ? "normal" : hourKind(getMetrics(), hour);
     return {
       key: hour === null ? localDate : `${localDate}T${String(hour).padStart(2, "0")}`,
       localDate,
       hour,
       dayNumber: optionsValue.dayNumber || null,
-      ...classifyCell(data, localDate, hour, day, counts, kind, optionsValue.invalid === true),
+      ...classifyCell(data, localDate, hour, getMetrics, counts, kind, optionsValue.invalid === true),
     };
   }
 
   function buildTimelineModel(data, period) {
     const dayMap = new Map((data.days || []).map((day) => [day.localDate, day]));
+    const hourly = period === "today" || period === "week";
+    const metricsByDate = new Map();
+    function metricsFor(localDate, day) {
+      let metrics = metricsByDate.get(localDate);
+      if (!metrics) {
+        metrics = dayMetrics(data, localDate, day, hourly);
+        metricsByDate.set(localDate, metrics);
+      }
+      return metrics;
+    }
     const cells = [];
     let columns = 24;
     let rows = 1;
@@ -466,7 +499,7 @@
     if (period === "today") {
       const day = dayMap.get(data.anchorDate);
       for (let hour = 0; hour < 24; hour += 1) {
-        cells.push(createCell(data, data.anchorDate, hour, day));
+        cells.push(createCell(data, data.anchorDate, hour, day, metricsFor));
       }
     } else if (period === "week") {
       startDate = data.startDate;
@@ -475,7 +508,7 @@
         const localDate = addLocalDays(startDate, dayIndex);
         const day = dayMap.get(localDate);
         for (let hour = 0; hour < 24; hour += 1) {
-          cells.push(createCell(data, localDate, hour, day));
+          cells.push(createCell(data, localDate, hour, day, metricsFor));
         }
       }
     } else if (period === "month") {
@@ -489,13 +522,13 @@
       columns = 7;
       rows = Math.ceil((leading + dayCount) / 7);
       for (let index = 0; index < leading; index += 1) {
-        const blank = createCell(data, startDate, null, null, { invalid: true });
+        const blank = createCell(data, startDate, null, null, metricsFor, { invalid: true });
         blank.key = `month-leading-${index}`;
         cells.push(blank);
       }
       for (let dayNumber = 1; dayNumber <= dayCount; dayNumber += 1) {
         const localDate = `${String(year).padStart(4, "0")}-${String(month + 1).padStart(2, "0")}-${String(dayNumber).padStart(2, "0")}`;
-        cells.push(createCell(data, localDate, null, dayMap.get(localDate), { dayNumber }));
+        cells.push(createCell(data, localDate, null, dayMap.get(localDate), metricsFor, { dayNumber }));
       }
     } else {
       const year = Number(String(data.anchorDate).slice(0, 4));
@@ -506,10 +539,11 @@
         const dayCount = new Date(Date.UTC(year, month, 0)).getUTCDate();
         for (let dayNumber = 1; dayNumber <= 31; dayNumber += 1) {
           const localDate = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(dayNumber).padStart(2, "0")}`;
-          cells.push(createCell(data, localDate, null, dayMap.get(localDate), {
-            dayNumber,
-            invalid: dayNumber > dayCount,
-          }));
+          cells.push(createCell(data, localDate, null,
+            dayNumber > dayCount ? null : dayMap.get(localDate), metricsFor, {
+              dayNumber,
+              invalid: dayNumber > dayCount,
+            }));
         }
       }
     }
@@ -684,9 +718,9 @@
       : t(keys[cell.state]);
   }
 
-  function buildTimeline(data, summary, interaction) {
+  function buildTimeline(data, interaction) {
     const model = buildTimelineModel(data, view.period);
-    const rowByKey = new Map(summary.rows.map((row) => [row.key, row]));
+    const rowByKey = interaction.rowByKey;
     const section = document.createElement("section");
     section.className = "recap-visual";
     interaction.visual = section;
@@ -722,10 +756,13 @@
       const element = document.createElement("div");
       element.id = `recap-cell-${serial}-${renderedCellCount}`;
       renderedCellCount += 1;
-      element.className = `recap-cell recap-cell-${cell.state}`;
-      if (view.period === "today") element.classList.add("recap-bar-slot");
+      // Collect classes first and write them once: a year grid used to perform
+      // one class write per conditional class on all 372 cells.
+      const classes = ["recap-cell", `recap-cell-${cell.state}`];
+      if (view.period === "today") classes.push("recap-bar-slot");
       element.dataset.cellKey = cell.key;
       if (cell.state === "blank") {
+        element.className = classes.join(" ");
         element.setAttribute("role", "presentation");
         element.setAttribute("aria-hidden", "true");
         parent.appendChild(element);
@@ -734,8 +771,7 @@
       element.setAttribute("role", "gridcell");
       element.setAttribute("aria-rowindex", String(rowIndex));
       element.setAttribute("aria-colindex", String(columnIndex));
-      const label = cellAriaLabel(cell, rowByKey);
-      element.setAttribute("aria-label", label);
+      element.setAttribute("aria-label", cellAriaLabel(cell, rowByKey));
       if (view.period === "today") {
         element.dataset.barMaximum = String(todayBarMaximum);
         setTodayBarLevel(element, cell.total);
@@ -744,11 +780,11 @@
         fill.setAttribute("aria-hidden", "true");
         element.appendChild(fill);
       }
-      if (cell.state === "activity") element.classList.add(`recap-depth-${depthOf(cell.total)}`);
-      if (cell.kind === "fold") element.classList.add("recap-cell-fold");
+      if (cell.state === "activity") classes.push(`recap-depth-${depthOf(cell.total)}`);
+      if (cell.kind === "fold") classes.push("recap-cell-fold");
       if (cell.dayNumber && view.period === "month") {
         if (cell.localDate === data.anchorDate) {
-          element.classList.add("recap-cell-current");
+          classes.push("recap-cell-current");
           element.setAttribute("aria-current", "date");
         }
         const dayNumber = document.createElement("span");
@@ -757,11 +793,13 @@
         dayNumber.setAttribute("aria-hidden", "true");
         element.appendChild(dayNumber);
       }
+      element.className = classes.join(" ");
+      const cellIndex = cellElements.length;
       element.addEventListener("mouseenter", () => interaction.showPeek(cell, element, rowByKey));
       element.addEventListener("mouseleave", interaction.clearPeek);
-      element.addEventListener("mousedown", () => {
-        interaction.selectGridCell(cellElements.findIndex((entry) => entry.element === element), false);
-      });
+      // The grid owns one delegated mousedown handler; record the index so the
+      // handler is O(1) instead of scanning every rendered cell.
+      interaction.cellIndexByElement.set(element, cellIndex);
       interaction.cellElements.set(cell.key, { cell, element });
       cellElements.push({ cell, element, rowIndex, columnIndex });
       parent.appendChild(element);
@@ -873,7 +911,21 @@
       grid.classList.toggle("recap-keyboard-mode", keyboard);
       interaction.selectGridCell(view.gridIndex, keyboard);
     });
-    grid.addEventListener("mousedown", () => grid.classList.remove("recap-keyboard-mode"));
+    grid.addEventListener("mousedown", (event) => {
+      grid.classList.remove("recap-keyboard-mode");
+      // One delegated listener replaces one mousedown closure per cell. Walk up
+      // from the event target (a cell or one of its spans) to the owning cell
+      // and select it through the precomputed index.
+      let node = event.target;
+      while (node && node !== grid) {
+        const index = interaction.cellIndexByElement.get(node);
+        if (index !== undefined) {
+          interaction.selectGridCell(index, false);
+          return;
+        }
+        node = node.parentNode;
+      }
+    });
     grid.addEventListener("blur", () => {
       grid.classList.remove("recap-keyboard-mode");
       interaction.clearPeek();
@@ -954,7 +1006,12 @@
     const interaction = {
       rowElements: new Map(),
       cellElements: new Map(),
+      cellIndexByElement: new Map(),
       cellList: [],
+      rowByKey: new Map(summary.rows.map((row) => [row.key, row])),
+      highlightedKey: undefined,
+      highlightedCells: [],
+      hitCount: 0,
       grid: null,
       live: null,
       visual: null,
@@ -973,33 +1030,47 @@
       applyHighlight() {
         const activeKey = view.hoverRowKey || view.lockedRowKey;
         if (this.grid) this.grid.classList.toggle("recap-grid-dim", !!activeKey);
-        let hitCount = 0;
-        for (const { cell, element } of this.cellElements.values()) {
-          element.classList.remove("recap-cell-hit", "recap-depth-1", "recap-depth-2", "recap-depth-3");
-          element.style.removeProperty("--recap-cell-color");
-          const match = activeKey && cell.counts.find((entry) => entry.rowKey === activeKey);
-          if (match) {
-            hitCount += 1;
-            const row = summary.rows.find((candidate) => candidate.key === activeKey);
-            element.classList.add("recap-cell-hit", `recap-depth-${depthOf(match.count)}`);
-            element.style.setProperty("--recap-cell-color", agentColorToken(row ? row.agentId : match.agentId));
-          } else if (cell.state === "activity") {
-            element.classList.add(`recap-depth-${depthOf(cell.total)}`);
+        if (activeKey !== this.highlightedKey) {
+          // Restore the cells the previous highlight touched instead of
+          // clearing and re-applying classes on every rendered cell. On the
+          // year grid that turns a 372-cell class/style rewrite per hover into
+          // work proportional to the actual hit count.
+          for (const { cell, element } of this.highlightedCells) {
+            element.classList.remove("recap-cell-hit", "recap-depth-1", "recap-depth-2", "recap-depth-3");
+            element.style.removeProperty("--recap-cell-color");
+            if (cell.state === "activity") element.classList.add(`recap-depth-${depthOf(cell.total)}`);
+            if (view.period === "today") setTodayBarLevel(element, cell.total);
           }
-          if (view.period === "today") setTodayBarLevel(element, match ? match.count : cell.total);
+          this.highlightedCells = [];
+          this.highlightedKey = activeKey;
+          let hitCount = 0;
+          if (activeKey) {
+            const row = this.rowByKey.get(activeKey);
+            const rowColor = row ? agentColorToken(row.agentId) : null;
+            for (const { cell, element } of this.cellElements.values()) {
+              const match = cell.counts.find((entry) => entry.rowKey === activeKey);
+              if (!match) continue;
+              hitCount += 1;
+              element.classList.add("recap-cell-hit", `recap-depth-${depthOf(match.count)}`);
+              element.style.setProperty("--recap-cell-color", rowColor || agentColorToken(match.agentId));
+              if (view.period === "today") setTodayBarLevel(element, match.count);
+              this.highlightedCells.push({ cell, element });
+            }
+          }
+          this.hitCount = hitCount;
         }
         for (const [key, element] of this.rowElements) {
           element.classList.toggle("active", key === activeKey);
           element.setAttribute("aria-pressed", view.lockedRowKey === key ? "true" : "false");
         }
         if (activeKey && this.live) {
-          const row = summary.rows.find((candidate) => candidate.key === activeKey);
+          const row = this.rowByKey.get(activeKey);
           const unitKey = view.period === "today" || view.period === "week"
             ? "recapCellUnitHour"
             : "recapCellUnitDay";
           this.live.textContent = replace(t("recapLookingAt"), {
             agent: row ? rowDisplayName(row) : "",
-            count: formatNumber(hitCount),
+            count: formatNumber(this.hitCount),
             unit: t(unitKey),
           });
         } else if (this.live) this.live.textContent = "";
@@ -1101,20 +1172,19 @@
       },
       selectGridCell(index, announce) {
         if (!this.cellList.length) return;
+        const previous = this.cellList[view.gridIndex];
         view.gridIndex = Math.max(0, Math.min(index, this.cellList.length - 1));
-        this.cellList.forEach(({ element }, cellIndex) => {
-          element.classList.toggle("recap-cell-keyboard", cellIndex === view.gridIndex);
-        });
         const current = this.cellList[view.gridIndex].element;
+        if (previous && previous.element !== current) previous.element.classList.remove("recap-cell-keyboard");
+        if (!current.classList.contains("recap-cell-keyboard")) current.classList.add("recap-cell-keyboard");
         if (this.grid) this.grid.setAttribute("aria-activedescendant", current.id);
         if (announce && this.live) this.live.textContent = current.getAttribute("aria-label") || "";
-        if (announce) this.showPeek(this.cellList[view.gridIndex].cell, current,
-          new Map(summary.rows.map((row) => [row.key, row])));
+        if (announce) this.showPeek(this.cellList[view.gridIndex].cell, current, this.rowByKey);
       },
     };
 
     card.appendChild(buildAgentRows(summary, interaction));
-    card.appendChild(buildTimeline(data, summary, interaction));
+    card.appendChild(buildTimeline(data, interaction));
     card.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       if (!view.lockedRowKey && !interaction.peekElement) return;
