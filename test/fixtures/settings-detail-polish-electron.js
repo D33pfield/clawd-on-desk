@@ -179,8 +179,42 @@ async function installPageApi(win) {
             rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
           };
         },
-        measureLabelAlignment() {
-          return Array.from(document.querySelectorAll(".row[data-label-alignment]")).map((row) => {
+        // Every circular icon-ish element in the Settings surface: a standard
+        // circle means one square box with a 50% radius, and the content it
+        // carries must sit on that circle's centre.
+        measureCircleInventory() {
+          const selectors = {
+            disclosure: ".row-desc-toggle",
+            stepNumber: ".channel-setup-num",
+          };
+          const out = [];
+          for (const [key, selector] of Object.entries(selectors)) {
+            for (const element of document.querySelectorAll(selector)) {
+              const rect = element.getBoundingClientRect();
+              const style = getComputedStyle(element);
+              const range = document.createRange();
+              range.selectNodeContents(element);
+              const contentRect = range.getBoundingClientRect();
+              range.detach();
+              out.push({
+                key,
+                width: Number(rect.width.toFixed(2)),
+                height: Number(rect.height.toFixed(2)),
+                borderRadius: style.borderRadius,
+                contentCentreDelta: contentRect.width || contentRect.height
+                  ? {
+                    x: Number((((contentRect.left + contentRect.right) / 2)
+                      - (rect.left + rect.right) / 2).toFixed(3)),
+                    y: Number((((contentRect.top + contentRect.bottom) / 2)
+                      - (rect.top + rect.bottom) / 2).toFixed(3)),
+                  }
+                  : null,
+              });
+            }
+          }
+          return out;
+        },
+        measureLabelAlignment() {          return Array.from(document.querySelectorAll(".row[data-label-alignment]")).map((row) => {
             const label = row.querySelector(".row-label");
             const toggle = row.querySelector(".row-desc-toggle");
             const labelRect = label.getBoundingClientRect();
@@ -244,6 +278,8 @@ async function installPageApi(win) {
           const dialog = document.querySelector(".settings-confirm-modal");
           const dialogRect = dialog.getBoundingClientRect();
           const buttons = Array.from(dialog.querySelectorAll(".settings-confirm-actions .soft-btn"));
+          const icon = dialog.querySelector(".settings-confirm-icon");
+          const iconRect = icon ? icon.getBoundingClientRect() : null;
           return {
             dialog: {
               left: dialogRect.left,
@@ -252,6 +288,13 @@ async function installPageApi(win) {
               bottom: dialogRect.bottom,
             },
             viewport: { width: innerWidth, height: innerHeight },
+            icon: iconRect && {
+              left: iconRect.left,
+              top: iconRect.top,
+              width: iconRect.width,
+              height: iconRect.height,
+              borderRadius: getComputedStyle(icon).borderRadius,
+            },
             buttons: buttons.map((button) => {
               const label = button.querySelector(".settings-button-label");
               const labelRect = label.getBoundingClientRect();
@@ -455,6 +498,66 @@ async function measureRasterBox(win, selector) {
 
 // Icon centre against the label's line-box centre, plus a raster check of the
 // text ink centre so the icon cannot merely be centred in an empty box.
+// The dialog's warning circle carries a white glyph on a coloured disc, so its
+// ink is found by brightness instead of darkness.
+async function measureConfirmIconInk(win) {
+  const box = await win.webContents.executeJavaScript(`(() => {
+    const el = document.querySelector(".settings-confirm-icon");
+    const r = el.getBoundingClientRect();
+    return { pageX: r.left, pageY: r.top, width: r.width, height: r.height };
+  })()`);
+  const cropX = Math.floor(box.pageX);
+  const cropY = Math.floor(box.pageY);
+  const cropWidth = Math.ceil(box.width) + 1;
+  const cropHeight = Math.ceil(box.height) + 1;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const image = await win.webContents.capturePage({
+      x: cropX,
+      y: cropY,
+      width: cropWidth,
+      height: cropHeight,
+    });
+    const size = image.getSize();
+    const bitmap = image.getBitmap();
+    const scale = size.width / cropWidth;
+    const centreX = (box.pageX + box.width / 2 - cropX) * scale;
+    const centreY = (box.pageY + box.height / 2 - cropY) * scale;
+    const radius = (box.width / 2 - 2) * scale;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let ink = 0;
+    for (let y = 0; y < size.height; y += 1) {
+      for (let x = 0; x < size.width; x += 1) {
+        const index = (y * size.width + x) * 4;
+        const luminance = 0.2126 * bitmap[index + 2]
+          + 0.7152 * bitmap[index + 1]
+          + 0.0722 * bitmap[index];
+        if (luminance < 240) continue;
+        if (Math.hypot(x + 0.5 - centreX, y + 0.5 - centreY) > radius) continue;
+        ink += 1;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (ink > 0 || attempt === 2) {
+      if (ink === 0) return { ink: 0, delta: null };
+      return {
+        ink,
+        delta: {
+          x: Number((((minX + (maxX - minX) / 2 + 0.5) / scale + cropX) - (box.pageX + box.width / 2)).toFixed(3)),
+          y: Number((((minY + (maxY - minY) / 2 + 0.5) / scale + cropY) - (box.pageY + box.height / 2)).toFixed(3)),
+        },
+      };
+    }
+    await waitForPaint(win);
+  }
+  return { ink: 0, delta: null };
+}
+
 function assertLabelAlignment(rows, context) {
   assert.ok(rows.length >= 5, `label alignment rows are mounted; ${context}`);
   for (const row of rows) {
@@ -540,7 +643,7 @@ async function measureLabelInkAlignment(win, rowKey) {
 
 function assertGlyphCentred(measure, context, tolerance = 0.75) {
   const detail = `${context}: ${JSON.stringify(measure)}`;
-  assert.ok(measure.ink >= 10, `the serif glyph is painted, not hidden; ${detail}`);
+  assert.ok(measure.ink >= 6, `the serif glyph is painted, not hidden; ${detail}`);
   assert.ok(Math.abs(measure.delta.x) <= tolerance, `glyph ink is horizontally centred; ${detail}`);
   assert.ok(Math.abs(measure.delta.y) <= tolerance, `glyph ink is vertically centred; ${detail}`);
 }
@@ -567,9 +670,27 @@ function assertIconSizesUniform(toggles, badges, context) {
   }
 }
 
+// "A standard circle with its icon centred": square box, 50% radius, and the
+// content the circle carries sits on the circle's centre.
+function assertCircleInventory(items, context) {
+  assert.ok(items.length >= 12, `every circular icon is inventoried; ${context}`);
+  const sizes = { disclosure: 12, stepNumber: 16 };
+  for (const item of items) {
+    const detail = `${context} ${JSON.stringify(item)}`;
+    assert.equal(item.borderRadius, "50%", `circle uses a 50% radius; ${detail}`);
+    assert.ok(Math.abs(item.width - item.height) <= 0.5, `circle is square; ${detail}`);
+    assert.ok(Math.abs(item.width - sizes[item.key]) <= 0.5,
+      `${item.key} circle is ${sizes[item.key]}px; ${detail}`);
+    if (item.contentCentreDelta) {
+      assert.ok(Math.abs(item.contentCentreDelta.x) <= 1.5, `content is horizontally centred; ${detail}`);
+      assert.ok(Math.abs(item.contentCentreDelta.y) <= 1.5, `content is vertically centred; ${detail}`);
+    }
+  }
+}
+
 function assertBadgeCentred(measure, context, tolerance = 0.9) {
   const detail = `${context}: ${JSON.stringify(measure)}`;
-  assert.ok(measure.ink >= 10, `the step digit is painted; ${detail}`);
+  assert.ok(measure.ink >= 8, `the step digit is painted; ${detail}`);
   assert.ok(Math.abs(measure.delta.x) <= tolerance, `step digit is horizontally centred; ${detail}`);
   assert.ok(Math.abs(measure.delta.y) <= tolerance, `step digit is vertically centred; ${detail}`);
 }
@@ -650,7 +771,7 @@ function assertToggleContract(description) {
   assert.equal(description.textContent, "i", `the "i" text stays in the DOM; ${detail}`);
   assert.ok(description.title == null, `native OS tooltip must not be used; ${detail}`);
   assert.ok(description.ariaDescribedBy, `description stays programmatically associated; ${detail}`);
-  assert.equal(description.fontSize, "10.5px", `the serif glyph keeps its proportional size; ${detail}`);
+  assert.equal(description.fontSize, "8px", `the serif glyph keeps its proportional size; ${detail}`);
 }
 
 async function main() {
@@ -723,10 +844,18 @@ async function main() {
       assertBadgeCentred(await measureInk(win, selector, 4), `step ${digit}`);
     }
 
+    // 2b. Every circular icon in the surface is a square box with a 50% radius,
+    //     at its intended size, and carries its content on the centre.
+    assertCircleInventory(
+      await win.webContents.executeJavaScript("__polish.measureCircleInventory()"),
+      "default zoom",
+    );
+
     // 3. Approver id-type slider: the monospace segment labels are centred.
     assertIdTypeCentred(await win.webContents.executeJavaScript("__polish.measureIdType()"));
 
-    // 4. Mobile permission-summary dialog: "（推荐）" is moved to line two whole.
+    // 4. Mobile permission-summary dialog: "（推荐）" is moved to line two whole,
+    //    and the warning circle keeps its "!" centred.
     await win.webContents.executeJavaScript("__polish.openConsentDialog()");
     await win.webContents.executeJavaScript("__polish.waitFrames()");
     assertDialogLabels(await win.webContents.executeJavaScript("__polish.measureDialog()"));
