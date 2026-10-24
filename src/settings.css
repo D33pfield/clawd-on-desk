@@ -1952,6 +1952,7 @@ html, body {
   display: none;
 }
 .row-desc-toggle {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1963,16 +1964,80 @@ html, body {
   border-radius: 50%;
   background: transparent;
   color: var(--text-tertiary);
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 9.5px;
-  font-style: italic;
-  line-height: 1;
-  vertical-align: 1px;
+  /* A serif italic "i" is never optically centred inside a 14px circle: the
+     glyph carries side bearings and an italic slant. The character therefore
+     stays in the DOM (tests and assistive text read it) but is not painted —
+     the dot and stem below are geometric and pixel-centred. */
+  font-size: 0;
+  line-height: 0;
+  vertical-align: middle;
   cursor: pointer;
+}
+.row-desc-toggle::before,
+.row-desc-toggle::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: currentColor;
+}
+.row-desc-toggle::before {
+  top: 2.5px;
+  height: 2px;
+  border-radius: 50%;
+}
+.row-desc-toggle::after {
+  top: 5.5px;
+  height: 4px;
+  border-radius: 1px;
 }
 .row-desc-toggle:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+.row-desc-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Shared in-page hover hint used by the row-description disclosures. */
+.settings-tooltip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1200;
+  max-width: 280px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(0, 0, 0, 0.08);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+  word-break: break-word;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(2px);
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease,
+    visibility 0s linear 0.12s;
+}
+.settings-tooltip.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  transition-delay: 0s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-tooltip {
+    transition: none;
+  }
 }
 .row-note {
   margin-right: 4px;
@@ -2846,6 +2911,12 @@ html, body {
 }
 .settings-button-label {
   min-width: 0;
+  flex-wrap: wrap;
+}
+/* Parenthetical label groups ("（推荐）" / "(recommended)") are moved to the
+   next line as a whole instead of being split between two characters. */
+.settings-button-label-keep {
+  white-space: nowrap;
 }
 .settings-button-compact {
   min-height: 28px;
@@ -5197,8 +5268,16 @@ html, body {
 .feishu-approval-id-type button {
   flex: 1 1 0;
   min-width: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  line-height: 1.2;
+  text-align: center;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
+}
+.feishu-approval-id-type .settings-segmented-radio-label {
+  text-align: center;
 }
 @media (max-width: 640px) {
   .feishu-approval-secrets-grid {
