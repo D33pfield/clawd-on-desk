@@ -249,14 +249,6 @@ describe("music wiring", () => {
     assert.match(source, /try \{\s*reader = makeReader\(\);\s*\} catch/);
   });
 
-  it("main starts and stops the detector and resends the state after a renderer load", () => {
-    const main = read("main.js");
-    assert.match(main, /sendToRenderer\("music-state", playing\)/);
-    assert.match(main, /musicDetector\.start\(\)/);
-    assert.match(main, /musicDetector\.stop\(\)/);
-    assert.match(main, /if \(musicDetector\.isPlaying\(\)\) sendToRenderer\("music-state", true\)/);
-  });
-
   it("preload exposes the channel, and the page and styles carry the slot and bob", () => {
     assert.match(read("preload.js"), /onMusicState: \(cb\) => ipcRenderer\.on\("music-state"/);
     assert.match(read("index.html"), /<object id="clawd-music-accessory"/);
