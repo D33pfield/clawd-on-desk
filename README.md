@@ -1,3 +1,5 @@
+> **Fork notice:** this is a personal fork of [Clawd on Desk](https://github.com/rullerzhou-afk/clawd-on-desk) with extra optional features (mood moments, music headphones, local-LLM chatter bubbles). See [FORK.md](FORK.md) for what it adds and how it differs. For the official app, releases and support, use the upstream project.
+
 <p align="center">
   <img src="assets/icon.png" width="128" alt="Clawd">
 </p>
