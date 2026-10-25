@@ -21,7 +21,8 @@ const MINUTE_MS = 60 * 1000;
 
 const DEFAULT_CONFIG = Object.freeze({
   baseUrl: "http://127.0.0.1:11434",
-  model: "baytout3/qwen3.5-uncensored:9b",
+  // Empty: use the first installed Ollama model (see resolveModel). A name here pins one.
+  model: "",
   // At least the longest timer gap, so the model stays loaded between lines.
   keepAlive: "30m",
   temperature: 0.8,
@@ -106,6 +107,8 @@ function triggerEnabled(settings, name) {
   return !(settings && settings.triggers && key && settings.triggers[key] === false);
 }
 const MAX_CUSTOM_PERSONALITY_CHARS = 300;
+// How long the looked-up default model is remembered.
+const MODEL_LOOKUP_MS = 60 * 1000;
 // A bubble line is a few words; one very long unbroken token would overflow the bubble.
 const MAX_LINE_CHARS = 140;
 
@@ -506,6 +509,8 @@ function createChatter(options = {}) {
   const recentFocus = [];
   const seedCache = new Map();
   let inFlight = false;
+  let autoModel = "";
+  let autoModelAt = 0;
   const warmedModels = new Set();
   let timer = null;
   let running = false;
@@ -628,7 +633,11 @@ function createChatter(options = {}) {
   // One reply (up to two bubbles) for a trigger name, or null. No timers or
   // cooldowns: used by the speak path below and by tools that drive it directly.
   async function generate(name, details = {}, settings = getSettings() || {}) {
-    const model = settings.model || config.model;
+    const model = await resolveModel(settings);
+    if (!model) {
+      log("chatter no model: none chosen and none installed (or Ollama is not reachable)");
+      return null;
+    }
     let personality = resolvePersonality(settings);
     if (personality.id === "custom") personality = await withSeeds(personality, model);
     const { factSheet, system, focusKey } = buildPrompt(name, details, settings, personality);
@@ -802,8 +811,8 @@ function createChatter(options = {}) {
 
   // Free the model's memory (used when chatter is switched off). Errors are ignored.
   async function unload() {
-    const settings = getSettings() || {};
-    const model = settings.model || config.model;
+    const model = await resolveModel(getSettings() || {});
+    if (!model) return false;
     warmedModels.delete(model);
     try {
       await post("/api/chat", { model, keep_alive: 0 }, config.requestTimeoutMs);
@@ -811,6 +820,25 @@ function createChatter(options = {}) {
     } catch {
       return false;
     }
+  }
+
+  // The model used when none is chosen: a pinned config.model, else the first installed
+  // model that can chat (alphabetical, so it matches the picker; embedding models cannot).
+  function pickDefaultModel(models) {
+    return config.model || models.find((name) => !/embed/i.test(name)) || "";
+  }
+
+  // The model for a request. A chosen model wins; otherwise the default is looked up
+  // from Ollama and remembered briefly, so a newly pulled model is picked up soon.
+  async function resolveModel(settings) {
+    if (settings && settings.model) return settings.model;
+    if (config.model) return config.model;
+    if (autoModel && now() - autoModelAt < MODEL_LOOKUP_MS) return autoModel;
+    const { ok, models } = await listModels();
+    if (!ok) return "";
+    autoModel = pickDefaultModel(models);
+    autoModelAt = now();
+    return autoModel;
   }
 
   // Installed Ollama models, for the model picker. { ok, models } or { ok: false, error }.
@@ -825,7 +853,7 @@ function createChatter(options = {}) {
         .map((entry) => (entry && typeof entry.name === "string" ? entry.name : ""))
         .filter(Boolean)
         .sort();
-      return { ok: true, models, defaultModel: config.model };
+      return { ok: true, models, defaultModel: pickDefaultModel(models) };
     } catch (err) {
       return { ok: false, models: [], defaultModel: config.model, error: err && err.name === "AbortError" ? "timeout" : (err && err.message) || "unreachable" };
     } finally {
@@ -839,7 +867,8 @@ function createChatter(options = {}) {
     if (settings.enabled === false) return false;
     try {
       // Same num_ctx as real requests: a different context makes Ollama reload the model.
-      const model = settings.model || config.model;
+      const model = await resolveModel(settings);
+      if (!model) return false;
       await post("/api/chat", {
         model,
         keep_alive: config.keepAlive,
