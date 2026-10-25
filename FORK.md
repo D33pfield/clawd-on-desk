@@ -122,7 +122,7 @@ New: `src/music.js`, `test/music.test.js`.
 
 ### Chatter (`feat(chatter)`)
 
-New: `src/chatter.js`, `src/chatter-personalities.js`, `src/chatter-fonts.js`, `src/desktop-awareness.js`, `src/desktop-capture.js`, `src/desktop-awareness-runtime.js`, `src/fork-runtime.js`, `src/chatter-bubble.js`, `src/chatter-bubble.html`, `src/preload-chatter-bubble.js`, `src/settings-tab-chatter.js`, and tests `test/chatter*.test.js`, `test/settings-tab-chatter.test.js`.
+New: `src/chatter.js`, `src/chatter-personalities.js`, `src/chatter-fonts.js`, `src/desktop-awareness.js`, `src/desktop-capture.js`, `src/desktop-awareness-runtime.js`, `src/chatter-limits.js`, `src/fork-runtime.js`, `src/chatter-bubble.js`, `src/chatter-bubble.html`, `src/preload-chatter-bubble.js`, `src/settings-tab-chatter.js`, and tests `test/chatter*.test.js`, `test/settings-tab-chatter.test.js`.
 
 | Upstream file | Why it is touched |
 |---|---|

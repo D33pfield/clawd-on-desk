@@ -254,7 +254,6 @@ function createChatterBubble(ctx = {}) {
       }
     },
     isVisible: () => live() && current !== null,
-    cleanup: destroy,
     dispose() {
       while (disposers.length) disposers.pop()();
       destroy();

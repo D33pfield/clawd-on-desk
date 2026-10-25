@@ -27,6 +27,7 @@ const {
 const { isPlainObject } = require("./theme-loader");
 const { CHATTER_FONT_IDS, DEFAULT_CHATTER_FONT } = require("./chatter-fonts");
 const { PERSONALITY_IDS } = require("./chatter-personalities");
+const { isValidChatterModel, isValidCustomPersonality } = require("./chatter-limits");
 const { normalizeShortcuts, getDefaultShortcuts } = require("./shortcut-actions");
 const {
   DEFAULT_TIMEOUT_MS: PERMISSION_REVIEW_DEFAULT_TIMEOUT_MS,
@@ -353,7 +354,7 @@ const SCHEMA = {
   chatterModel: {
     type: "string",
     default: "",
-    validate: (v) => typeof v === "string" && v.length <= 120 && /^[A-Za-z0-9._:\/-]*$/.test(v) && !v.includes("..") && !v.startsWith("/"),
+    validate: isValidChatterModel,
   },
   chatterPersonality: {
     type: "string",
@@ -363,7 +364,7 @@ const SCHEMA = {
   chatterCustomPersonality: {
     type: "string",
     default: "",
-    validate: (v) => typeof v === "string" && v.length <= 300,
+    validate: isValidCustomPersonality,
   },
   // Average minutes between random check-in lines (the timer spreads +-30%).
   chatterCheckinMinutes: {
