@@ -17,9 +17,9 @@ const DEFAULT_CONFIG = Object.freeze({
   // Context-window pressure: the last seen fraction fades like a stale reading.
   context: Object.freeze({ halfLifeMs: 30 * MINUTE_MS, startFraction: 0.6, maxFatigue: 0.6 }),
   // Fatigue follows time awake. A gap this long counts as sleep and re-anchors.
-  fatigue: Object.freeze({ wakeGapMs: 5 * HOUR_MS, restMs: 4 * HOUR_MS, fullMs: 12 * HOUR_MS }),
+  fatigue: Object.freeze({ wakeGapMs: 5 * HOUR_MS, restMs: 5 * HOUR_MS, fullMs: 14 * HOUR_MS }),
   // Boredom is derived from time since the last agent activity.
-  boredom: Object.freeze({ startMs: 5 * MINUTE_MS, fullMs: 35 * MINUTE_MS, maxIdleMs: 3 * HOUR_MS }),
+  boredom: Object.freeze({ startMs: 3 * MINUTE_MS, fullMs: 20 * MINUTE_MS, maxIdleMs: 3 * HOUR_MS }),
   // Bump sizes: v += k * (1 - v), so repeated events saturate instead of pinning.
   events: Object.freeze({
     "tool-failure": Object.freeze({ stress: 0.10 }),
