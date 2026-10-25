@@ -609,8 +609,8 @@ const SCHEMA = {
   },
   // Background update-check toggle. When true, the scheduler in updater.js
   // runs a quiet GitHub discovery on a 12-hour cycle (packaged builds only).
-  // Default on per #329.
-  autoUpdateCheck: { type: "boolean", default: true },
+  // Fork: default off so this build never polls upstream releases.
+  autoUpdateCheck: { type: "boolean", default: false },
   // Last version the scheduler discovered that is newer than the running
   // app. Empty string = none pending. Surfaced in the tray label and the
   // About version-row hint. Cleared on install or by
