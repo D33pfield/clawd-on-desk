@@ -27,6 +27,8 @@ const DEFAULT_CONFIG = Object.freeze({
   keepAlive: "30m",
   temperature: 0.8,
   numCtx: 2048,
+  // While desktop awareness is on, EVERY request uses this one (a different context makes Ollama reload the model).
+  numCtxAwareness: 4096,
   // Room for two short lines.
   numPredict: 120,
   requestTimeoutMs: 30 * 1000,
@@ -250,8 +252,11 @@ function backgroundFacts(fields = {}) {
   return factList(fields).map((fact) => fact.text);
 }
 
-function buildFactSheet({ trigger, focus = null, background = [] }) {
+function buildFactSheet({ trigger, focus = null, background = [], screen = "" }) {
   const lines = [`TRIGGER: ${trigger}`];
+  // Untrusted: written by a vision model from whatever was on screen. Context to
+  // react to, not a subject to describe back to the user (they can see it).
+  if (screen) lines.push(`SCREEN (what the user is looking at right now, roughly; a helper's description): ${screen}`);
   if (focus) lines.push(`FOCUS (your reply must be about this): ${focus}`);
   if (background.length > 0) {
     lines.push("Other facts (optional background):");
@@ -457,6 +462,8 @@ function triggerText(name, details, ctx) {
       return "Music just started playing.";
     case "hotkey":
       return "The user just asked what you make of whatever is going on right now.";
+    case "screen-share":
+      return "The user just chose to show you their screen, to see what you make of it.";
     default:
       if (ctx.working && ctx.activity) return `Claude has been busy for a while, ${ctx.activity}.`;
       if (ctx.working) return "Claude has been busy for a while.";
@@ -482,6 +489,8 @@ function createChatter(options = {}) {
   const random = options.random || Math.random;
   const log = typeof options.log === "function" ? options.log : () => {};
   const onLine = typeof options.onLine === "function" ? options.onLine : () => {};
+  // Optional desktop awareness: async (mode, triggerName) => a one-sentence description or "".
+  const getScreen = typeof options.getScreen === "function" ? options.getScreen : null;
   // { mood, musicPlaying } at call time; mood comes from the mood tracker.
   const getSnapshot = options.getSnapshot || (() => ({}));
   // { enabled, model, personality, customPersonality }; all optional.
@@ -508,6 +517,7 @@ function createChatter(options = {}) {
   let focusCursor = 0;
   const recentFocus = [];
   const seedCache = new Map();
+  const ctxFor = (settings) => (settings && settings.awareness ? config.numCtxAwareness : config.numCtx);
   let inFlight = false;
   let autoModel = "";
   let autoModelAt = 0;
@@ -530,6 +540,7 @@ function createChatter(options = {}) {
   // consecutive replies talk about different things.
   function pickFocus(name, facts) {
     if (facts.length === 0) return null;
+    // A capture was taken for this reply: what it shows is what the reply is about.
     let chosen = (FOCUS_FOR_TRIGGER[name] || []).map((key) => facts.find((f) => f.key === key)).find(Boolean);
     if (!chosen) {
       let ordered = FOCUS_ORDER.map((key) => facts.find((f) => f.key === key)).filter(Boolean);
@@ -546,6 +557,7 @@ function createChatter(options = {}) {
   }
 
   function buildPrompt(name, details, settings, personality) {
+    const screen = details && typeof details.screen === "string" ? details.screen : "";
     const t = now();
     const snapshot = getSnapshot() || {};
     const claude = claudeStatus(t);
@@ -567,6 +579,7 @@ function createChatter(options = {}) {
       contextPercent,
       idleMs: working || lastActivityAt == null ? 0 : t - lastActivityAt,
       awayMs: details && details.awayMs,
+      screen,
     };
     const facts = factList(fields);
     const focus = pickFocus(name, facts);
@@ -574,14 +587,14 @@ function createChatter(options = {}) {
     const background = shuffled(others, random).slice(0, config.backgroundCount);
     return {
       focusKey: focus ? focus.key : null,
-      factSheet: buildFactSheet({ trigger, focus: focus && focus.text, background }),
+      factSheet: buildFactSheet({ trigger, focus: focus && focus.text, background, screen }),
       system: buildSystemPrompt(personality, random, overusedWords(recentFor(personality.id)), focus ? focus.key : null),
     };
   }
 
   // A custom personality has no hand-written examples, so the model writes a few
   // lines in that voice once; they become its example pool (cached per text and model).
-  async function withSeeds(personality, model) {
+  async function withSeeds(personality, model, settings) {
     const key = `${model}|${personality.persona}`;
     if (!seedCache.has(key)) {
       seedCache.set(key, []); // also marks the attempt, so a failure is not retried every reply
@@ -591,7 +604,7 @@ function createChatter(options = {}) {
           stream: false,
           think: false,
           keep_alive: config.keepAlive,
-          options: { temperature: 1, num_predict: 200, num_ctx: config.numCtx },
+          options: { temperature: 1, num_predict: 200, num_ctx: ctxFor(settings) },
           messages: [
             { role: "system", content: `Your personality (this decides HOW you talk; stay in this character all the way, whatever it is): ${personality.custom}\n${CAST_CUSTOM}` },
             { role: "user", content: `Write ${config.seedExamples} different things this character would say while watching a developer work with an AI coding assistant. Cover different situations: tests failing, tests passing, a long session, late at night, music playing, an error, a quiet moment, a big pile of edits. One per line, at most 14 words each, always in character. No numbering, no quotation marks, no emoji.` },
@@ -639,9 +652,16 @@ function createChatter(options = {}) {
       return null;
     }
     let personality = resolvePersonality(settings);
-    if (personality.id === "custom") personality = await withSeeds(personality, model);
+    if (personality.id === "custom") personality = await withSeeds(personality, model, settings);
     const { factSheet, system, focusKey } = buildPrompt(name, details, settings, personality);
     const recent = recentFor(personality.id);
+    // With a screen line the reply should weave a reaction to it into the rest,
+    // in character, instead of narrating the screen back to the user.
+    const ask = details && details.screen
+      ? "Write your reply: two short lines, one per line. Treat the SCREEN line as what you can see over the user's shoulder: "
+        + "react to it in your own voice and tie it to the other facts (what Claude is doing, the session, the music). "
+        + "Never just describe or summarise the screen; the user can see it."
+      : "Write your reply: two short lines, one per line.";
     for (let attempt = 1; attempt <= config.maxTries; attempt++) {
       // Switched off while an earlier request was running: do not ask the model again.
       if (attempt > 1 && (getSettings() || {}).enabled === false) return null;
@@ -650,10 +670,10 @@ function createChatter(options = {}) {
         stream: false,
         think: false,
         keep_alive: config.keepAlive,
-        options: { temperature: config.temperature, num_predict: config.numPredict, num_ctx: config.numCtx },
+        options: { temperature: config.temperature, num_predict: config.numPredict, num_ctx: ctxFor(settings) },
         messages: [
           { role: "system", content: system },
-          { role: "user", content: `${factSheet}\n\nWrite your reply: two short lines, one per line.` },
+          { role: "user", content: `${factSheet}\n\n${ask}` },
         ],
       }, warmedModels.has(model) ? config.requestTimeoutMs : config.warmTimeoutMs);
       warmedModels.add(model);
@@ -676,7 +696,7 @@ function createChatter(options = {}) {
 
   // `force` is for a line the user asked for: no trigger switch, minimum gap or
   // staleness rule applies (the master switch and a single request at a time do).
-  async function speak(name, details = {}, { force = false } = {}) {
+  async function speak(name, details = {}, { force = false, screenMode = "auto" } = {}) {
     const settings = getSettings() || {};
     if (settings.enabled === false || (!force && !triggerEnabled(settings, name)) || inFlight) return null;
     const t = now();
@@ -684,7 +704,14 @@ function createChatter(options = {}) {
     if (!canSpeak()) return null;
     inFlight = true;
     try {
-      const result = await generate(name, details, settings);
+      // Desktop awareness: a capture (if allowed) is described in one sentence, and only
+      // that sentence goes on. A refused capture just means a reply without it.
+      let screen = "";
+      if (getScreen) {
+        try { screen = (await getScreen(screenMode, name)) || ""; } catch { screen = ""; }
+      }
+      if (name === "screen-share" && !screen) return null;
+      const result = await generate(name, screen ? { ...details, screen } : details, settings);
       if (!result) return null;
       // The request can take a while: it may have been switched off, or the pet put
       // to sleep or a permission bubble opened, since it started.
@@ -701,7 +728,12 @@ function createChatter(options = {}) {
       const recent = recentFor(result.personality);
       recent.push(...result.parts);
       while (recent.length > config.recentLines * config.maxParts) recent.shift();
-      log(`chatter trigger=${name} persona=${result.personality} try=${result.attempt} focus=${result.focus || "none"} line=${result.parts.join(" / ")} facts=${result.factSheet.replace(/\n/g, " | ")}`);
+      // What the screen showed is never logged; the spoken line only if the user allows it.
+      const logged = {
+        line: screen && settings.logScreenLines !== true ? "[withheld: made from a screen capture]" : result.parts.join(" / "),
+        facts: screen ? result.factSheet.split(screen).join("[screen withheld]") : result.factSheet,
+      };
+      log(`chatter trigger=${name} persona=${result.personality} try=${result.attempt} focus=${result.focus || "none"} line=${logged.line} facts=${logged.facts.replace(/\n/g, " | ")}`);
       onLine({ text: result.text, parts: result.parts, trigger: name, personality: result.personality });
       return result;
     } catch (err) {
@@ -872,7 +904,7 @@ function createChatter(options = {}) {
       await post("/api/chat", {
         model,
         keep_alive: config.keepAlive,
-        options: { num_ctx: config.numCtx },
+        options: { num_ctx: ctxFor(settings) },
       }, config.warmTimeoutMs);
       warmedModels.add(model);
       return true;
@@ -903,7 +935,10 @@ function createChatter(options = {}) {
     unload,
     // A line the user asked for (hotkey). Resolves to the line, or null.
     sayNow: () => speak("hotkey", {}, { force: true }),
+    // The share-screen hotkey: a capture now (even when not armed), then a reply about it.
+    shareScreen: () => speak("screen-share", {}, { force: true, screenMode: "hotkey" }),
     listModels,
+    resolveModel,
     observe,
     notify,
     generate,

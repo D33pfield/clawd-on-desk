@@ -5354,3 +5354,31 @@ html, body {
   opacity: 0.55;
   cursor: default;
 }
+
+/* Desktop awareness: the warning that sits between the two toggles. Dim until the
+   first toggle is on, then it lights up and pulses once. */
+.awareness-warning {
+  margin: 4px 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border, rgba(128, 128, 128, 0.3));
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  opacity: 0.7;
+}
+.awareness-warning-hot {
+  opacity: 1;
+  color: var(--text-primary);
+  border-color: var(--warning-action);
+  background: rgba(208, 93, 20, 0.12);
+  font-weight: 500;
+  animation: awareness-warning-pulse 1.2s ease-out 1;
+}
+@keyframes awareness-warning-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(208, 93, 20, 0.6); }
+  100% { box-shadow: 0 0 0 12px rgba(208, 93, 20, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .awareness-warning-hot { animation: none; }
+}

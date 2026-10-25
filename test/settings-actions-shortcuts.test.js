@@ -35,6 +35,7 @@ function makeDeps(overrides = {}) {
         togglePet: () => {},
         quickSelectSession: () => {},
         chatterNow: () => {},
+        shareScreen: () => {},
       },
     },
     calls,

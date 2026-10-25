@@ -667,6 +667,74 @@ describe("createChatter", () => {
     assert.match(bad.error, /500/);
   });
 
+  describe("desktop awareness hook", () => {
+    const SCREEN = "The person is editing a spreadsheet.";
+
+    it("gives the screen as context to react to, on its own line, and not as the thing to describe", async () => {
+      const { chatter, requests } = setup(["Spreadsheets again, huh."], { getScreen: async () => SCREEN });
+      await chatter.sayNow();
+      const sheet = requests[0].body.messages[1].content;
+      assert.match(sheet, /SCREEN \(what the user is looking at right now, roughly; a helper's description\): The person is editing a spreadsheet\./);
+      assert.doesNotMatch(sheet, /FOCUS \(your reply must be about this\): [^\n]*spreadsheet/, "the screen is not the required subject");
+      assert.match(sheet, /FOCUS \(your reply must be about this\)/, "the usual session fact still is");
+      assert.match(sheet, /react to it in your own voice and tie it to the other facts/);
+      assert.match(sheet, /Never just describe or summarise the screen/);
+    });
+
+    it("without a capture the prompt is the same as before", async () => {
+      const { chatter, requests } = setup(["Fine, I suppose."], { getScreen: async () => "" });
+      await chatter.sayNow();
+      const sheet = requests[0].body.messages[1].content;
+      assert.doesNotMatch(sheet, /SCREEN/);
+      assert.match(sheet, /Write your reply: two short lines, one per line\.$/);
+    });
+
+    it("never logs what the screen showed, and withholds the spoken line unless allowed", async () => {
+      const hidden = setup(["Spreadsheets again, huh."], { getScreen: async () => SCREEN });
+      await hidden.chatter.sayNow();
+      const entry = hidden.logs.find((m) => m.startsWith("chatter trigger=hotkey"));
+      assert.ok(!entry.includes("spreadsheet") && !entry.includes("Spreadsheets again"), entry);
+      assert.match(entry, /\[screen withheld\]/);
+      const shown = setup(["Spreadsheets again, huh."], { getScreen: async () => SCREEN, getSettings: () => ({ logScreenLines: true }) });
+      await shown.chatter.sayNow();
+      const allowed = shown.logs.find((m) => m.startsWith("chatter trigger=hotkey"));
+      assert.match(allowed, /line=Spreadsheets again, huh\./);
+      assert.ok(!allowed.includes("editing a spreadsheet"), "the description itself is still withheld");
+    });
+
+    it("the share-screen hotkey asks for a capture with mode hotkey, other triggers with auto", async () => {
+      const modes = [];
+      const { chatter } = setup(["Nice spreadsheet."], { getScreen: async (mode, name) => { modes.push([mode, name]); return SCREEN; } });
+      await chatter.shareScreen();
+      await chatter.sayNow();
+      assert.deepStrictEqual(modes, [["hotkey", "screen-share"], ["auto", "hotkey"]]);
+    });
+
+    it("says nothing when a share-screen capture is refused, but other triggers carry on without it", async () => {
+      const { chatter, lines, requests } = setup(["Fine, I suppose."], { getScreen: async () => "" });
+      assert.strictEqual(await chatter.shareScreen(), null);
+      assert.strictEqual(requests.length, 0, "no model call for a share that did not happen");
+      await chatter.sayNow();
+      assert.strictEqual(lines.length, 1);
+    });
+
+    it("a failing capture never stops a reply", async () => {
+      const { chatter, lines } = setup(["Fine, I suppose."], { getScreen: async () => { throw new Error("boom"); } });
+      await chatter.sayNow();
+      assert.strictEqual(lines.length, 1);
+    });
+
+    it("uses the larger context for every request while awareness is on, and the small one otherwise", async () => {
+      const on = setup(["Fine, I suppose."], { getSettings: () => ({ awareness: true }) });
+      await on.chatter.sayNow();
+      await on.chatter.warm();
+      assert.deepStrictEqual(on.requests.map((r) => r.body.options.num_ctx), [4096, 4096]);
+      const off = setup(["Fine, I suppose."]);
+      await off.chatter.sayNow();
+      assert.strictEqual(off.requests[0].body.options.num_ctx, 2048);
+    });
+  });
+
   describe("default model", () => {
     function ollama(models, extra = {}) {
       const chats = [];

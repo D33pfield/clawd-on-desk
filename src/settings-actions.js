@@ -356,6 +356,11 @@ const updateRegistry = {
       : { status: "error", message: "chatterCustomPersonality must be a string of at most 300 characters" }
   ),
   chatterCheckinMinutes: requireIntegerInRange("chatterCheckinMinutes", 2, 180),
+  desktopAwareness: requireBoolean("desktopAwareness"),
+  desktopAwarenessArmed: requireBoolean("desktopAwarenessArmed"),
+  desktopAwarenessScope: requireEnum("desktopAwarenessScope", ["window", "screen"]),
+  desktopAwarenessMonitor: requireEnum("desktopAwarenessMonitor", ["pet", "primary", "all"]),
+  desktopAwarenessLogLines: requireBoolean("desktopAwarenessLogLines"),
   chatterBubbleFont: requireEnum("chatterBubbleFont", CHATTER_FONT_IDS),
   chatterBubbleSeconds: requireIntegerInRange("chatterBubbleSeconds", 3, 60),
   chatterTriggerCheckin: requireBoolean("chatterTriggerCheckin"),
