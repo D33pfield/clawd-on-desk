@@ -87,10 +87,10 @@ function awakeFor(hours) {
 
 describe("fatigue", () => {
   it("rises with time awake from the first activity", () => {
-    assert.strictEqual(read(awakeFor(7), T0 + 7 * HOUR).fatigue, 0);
-    const mid = read(awakeFor(13), T0 + 13 * HOUR).fatigue;
+    assert.strictEqual(read(awakeFor(3), T0 + 3 * HOUR).fatigue, 0);
+    const mid = read(awakeFor(8), T0 + 8 * HOUR).fatigue;
     assert.ok(mid > 0.4 && mid < 0.6, `mid=${mid}`);
-    assert.strictEqual(read(awakeFor(18), T0 + 18 * HOUR).fatigue, 1);
+    assert.strictEqual(read(awakeFor(12), T0 + 12 * HOUR).fatigue, 1);
   });
 
   it("re-anchors the wake time after a long gap", () => {
