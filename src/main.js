@@ -200,13 +200,7 @@ const { describeGeometrySync } = require("./pet-accessory-state");
 const { createDisplayedVisualProjection } = require("./displayed-visual-projection");
 const { getRightSideMirrorFiles, isVisualMirrored, resolveMirroredFile } = require("./mirrored-files");
 const { createTestReactionHandler } = require("./test-reaction");
-const { createMoodTracker, createMoodEventHandler } = require("./mood");
-const { createMoodStore, loadMoodState } = require("./mood-store");
-const { createMoodWindow } = require("./mood-window");
-const { createMusicDetector } = require("./music");
-const { createAwarenessRuntime } = require("./desktop-awareness-runtime");
-const { createChatter } = require("./chatter");
-const { createChatterBubble, resolveChatterAnchor } = require("./chatter-bubble");
+const { createForkRuntime } = require("./fork-runtime");
 const createMacHideController = require("./mac-hide");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
@@ -526,14 +520,9 @@ let slackNotifyClient = null;
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
   quickSelectSession: () => showQuickSelect(),
-  // A line on demand; a no-op while chatter is switched off.
-  chatterNow: () => {
-    if (_settingsController.get("chatterEnabled") === true) void chatter.sayNow();
-  },
-  // One capture on request; ignored unless Desktop awareness is switched on.
-  shareScreen: () => {
-    if (_settingsController.get("chatterEnabled") === true && _settingsController.get("desktopAwareness") === true) void chatter.shareScreen();
-  },
+  // The fork's two hotkeys (see src/fork-runtime.js); forkRuntime exists by the time they fire.
+  chatterNow: () => forkRuntime.shortcuts.chatterNow(),
+  shareScreen: () => forkRuntime.shortcuts.shareScreen(),
 };
 const _settingsController = createSettingsController({
   prefsPath: PREFS_PATH,
@@ -5546,7 +5535,7 @@ function createWindow() {
   });
   win.webContents.on("did-finish-load", () => {
     deliverRendererThemeConfig();
-    if (musicDetector.isPlaying()) sendToRenderer("music-state", true);
+    forkRuntime.resendRendererState();
     petWindowRuntime.resendViewportOffsets();
     if (themeRuntime.isReloadInProgress()) return;
     syncRendererStateAfterLoad();
@@ -5734,185 +5723,32 @@ const handleTestResult = createTestReactionHandler({
   sendToRenderer,
 });
 
-// Mood: leaky channels fed by hook events, persisted under ~/.clawd. The idle
-// roll in tick.js asks chooseMood() whether to play a moment (see FORK.md).
-const moodTracker = createMoodTracker({
-  initialState: loadMoodState(),
-  log: (msg) => sessionLog(msg),
-  onChange: () => moodStore.scheduleSave(),
-});
-const moodStore = createMoodStore({
-  getState: () => moodTracker.serialize(),
-  log: (msg) => sessionLog(msg),
-});
-const handleMoodEvent = createMoodEventHandler({
-  tracker: moodTracker,
-  getEnabled: () => _settingsController.get("moodEnabled") === true,
-});
-const _moodWindow = createMoodWindow({
-  getValues: () => moodTracker.read(),
-  iconPath: settingsWindowRuntime.getIconPath(),
-});
-
-// Music: the pet wears headphones while Spotify plays (Windows only; see
-// src/music.js). The renderer remembers the state across theme reloads; a full
-// renderer reload gets it resent from did-finish-load.
-const appStartedAt = Date.now();
-const musicDetector = createMusicDetector({
-  log: (msg) => sessionLog(msg),
-  onChange: (playing) => {
-    sendToRenderer("music-state", playing);
-    // Music already playing when the app starts is not "just started".
-    if (playing && Date.now() - appStartedAt > 60 * 1000) chatter.notify("music-started");
-  },
-});
-
-// Chatter: a local Ollama model writes an occasional speech-bubble line (see
-// src/chatter.js). The code picks the moment and the facts; the bubble is a
-// small click-through window above the pet. Its own pref gates it, and the
-// model only ever sees a coarse activity category, never hook payloads.
-function canChatterSpeak() {
-  if (petWindowRuntime.isPetEffectivelyHidden() || _mini.getMiniMode()) return false;
-  if (["dozing", "collapsing", "sleeping"].includes(_state.getCurrentState())) return false;
-  if (pendingPermissions.length > 0) return false;
-  const updateWin = _updateBubble.getBubbleWindow();
-  return !(updateWin && !updateWin.isDestroyed() && updateWin.isVisible());
-}
-const _chatterBubble = createChatterBubble({
+// The fork's features (mood, music headphones, chatter, desktop awareness) are built
+// in src/fork-runtime.js; main.js only supplies what they need from the app.
+const forkRuntime = createForkRuntime({
   ipcMain,
-  getPetBounds: () => getPetWindowBounds(),
-  // The tight hit box (accessory-aware) or the top of the artwork actually drawn,
-  // whichever is higher; the update bubble's "stable" anchor leaves headroom for
-  // tall poses and put the bubble far above the pet.
-  getAnchorRect: (bounds) => getChatterAnchorRect(bounds),
-  getClearance: () => (musicDetector.isPlaying() ? 24 : 6),
-  getWorkArea: (bounds) => getNearestWorkArea(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2),
+  electron: require("electron"),
+  settings: _settingsController,
+  log: (msg) => sessionLog(msg),
+  sendToRenderer,
+  iconPath: settingsWindowRuntime.getIconPath(),
+  getWin: () => win,
+  getPetWindowBounds,
+  getHitRectScreen,
+  getUpdateBubbleAnchorRect,
+  getNearestWorkArea,
   guardAlwaysOnTop,
   keepOutOfTaskbar,
-  log: (msg) => sessionLog(msg),
+  isPetHidden: () => petWindowRuntime.isPetEffectivelyHidden(),
+  isMiniMode: () => _mini.getMiniMode(),
+  getState: () => _state.getCurrentState(),
+  hasPendingPermissions: () => pendingPermissions.length > 0,
+  getUpdateBubbleWindow: () => _updateBubble.getBubbleWindow(),
 });
-// Where the top of the pet's current artwork is, as pixels below the pet window's
-// top edge (null when unknown). The renderer measures it, so the bubble clears
-// whatever the current animation draws above the head (thought bubbles, a laptop
-// screen) without a per-animation table.
-let chatterContentTopOffset = null;
-async function refreshChatterContentTop() {
-  try {
-    if (!win || win.isDestroyed()) return;
-    const top = await win.webContents.executeJavaScript(
-      'typeof getDisplayedContentTop === "function" ? getDisplayedContentTop() : null'
-    );
-    chatterContentTopOffset = Number.isFinite(top) ? top : null;
-  } catch {
-    chatterContentTopOffset = null;
-  }
-}
-// The animation can change while a line is up (thinking starts), so look again
-// now and then and move the bubble.
-let chatterWatchTimer = null;
-function watchChatterAnchor() {
-  if (chatterWatchTimer) return;
-  chatterWatchTimer = setInterval(() => {
-    if (!_chatterBubble.isVisible()) {
-      clearInterval(chatterWatchTimer);
-      chatterWatchTimer = null;
-      return;
-    }
-    void refreshChatterContentTop().then(() => repositionChatterBubble());
-  }, 1500);
-  if (typeof chatterWatchTimer.unref === "function") chatterWatchTimer.unref();
-}
-function getChatterAnchorRect(bounds) {
-  return resolveChatterAnchor({
-    hit: getHitRectScreen(bounds),
-    stable: getUpdateBubbleAnchorRect(bounds),
-    contentTopY: chatterContentTopOffset == null ? null : bounds.y + chatterContentTopOffset,
-  });
-}
-function repositionChatterBubble() {
-  if (!_chatterBubble.isVisible()) return;
-  // A permission or update bubble appearing while a line is up would overlap it.
-  if (!canChatterSpeak()) _chatterBubble.hide();
-  else _chatterBubble.reposition();
-}
-// Read on every use, so a change in Settings or the menu applies to the next line.
-function getChatterSettings() {
-  const get = (key) => _settingsController.get(key);
-  return {
-    enabled: get("chatterEnabled") === true,
-    model: get("chatterModel") || "",
-    personality: get("chatterPersonality"),
-    customPersonality: get("chatterCustomPersonality"),
-    checkinMinutes: get("chatterCheckinMinutes"),
-    shareSong: get("chatterShareSong") !== false,
-    // Desktop awareness widens the context for every request (see chatter.js numCtxAwareness).
-    awareness: get("desktopAwareness") === true,
-    logScreenLines: get("desktopAwarenessLogLines") === true,
-    triggers: {
-      checkin: get("chatterTriggerCheckin") !== false,
-      tests: get("chatterTriggerTests") !== false,
-      error: get("chatterTriggerError") !== false,
-      return: get("chatterTriggerReturn") !== false,
-      music: get("chatterTriggerMusic") !== false,
-    },
-  };
-}
-// Desktop awareness: opt-in screen captures described to chatter (src/desktop-awareness.js).
-const awarenessRuntime = createAwarenessRuntime({
-  settings: _settingsController,
-  electron: require("electron"),
-  getChatter: () => chatter,
-  getChatterSettings,
-  canSpeak: canChatterSpeak,
-  getPetCenter: () => {
-    const b = getPetWindowBounds();
-    return b ? { x: b.x + b.width / 2, y: b.y + b.height / 2 } : null;
-  },
-  log: (msg) => sessionLog(msg),
-});
-const chatter = createChatter({
-  log: (msg) => sessionLog(msg),
-  getSettings: getChatterSettings,
-  getScreen: awarenessRuntime.getScreen,
-  getSnapshot: () => ({
-    mood: _settingsController.get("moodEnabled") === true ? moodTracker.read() : null,
-    musicPlaying: musicDetector.isPlaying(),
-    song: musicDetector.getSong(),
-  }),
-  canSpeak: canChatterSpeak,
-  onLine: async ({ text, parts }) => {
-    // With bubbles off the line was still written and logged, just not shown.
-    if (_settingsController.get("chatterShowBubbles") === false) return;
-    try {
-      await refreshChatterContentTop();
-      sessionLog(`chatter anchor content-top=${chatterContentTopOffset == null ? "unmeasured" : Math.round(chatterContentTopOffset)}px state=${_state.getCurrentState()}`);
-      _chatterBubble.show(parts && parts.length > 0 ? parts : text, {
-        durationMs: (_settingsController.get("chatterBubbleSeconds") || 12) * 1000,
-        font: _settingsController.get("chatterBubbleFont"),
-      });
-      watchChatterAnchor();
-    } catch (err) {
-      sessionLog(`chatter bubble failed error=${err && err.message}`);
-    }
-  },
-});
-// Pref changes take effect at once: turning chatter on loads the model, turning
-// it off hides the bubble, a new model is loaded ahead of its first line, and a
-// new interval replaces the pending timer.
-_settingsController.subscribeKey("chatterEnabled", (enabled) => {
-  if (enabled === true) {
-    void chatter.warm();
-  } else {
-    // Off means off: hide the bubble and free the model's memory.
-    _chatterBubble.hide();
-    void chatter.unload();
-  }
-});
-_settingsController.subscribeKey("chatterModel", () => { void chatter.warm(); });
-_settingsController.subscribeKey("chatterCheckinMinutes", () => chatter.reschedule());
-function handleChatterEvent(input) {
-  chatter.observe(input);
-}
+const {
+  moodTracker, moodStore, handleMoodEvent, moodWindow: _moodWindow, musicDetector,
+  chatter, chatterBubble: _chatterBubble, awarenessRuntime, repositionChatterBubble, handleChatterEvent,
+} = forkRuntime;
 const { enterMiniMode, exitMiniMode, enterMiniViaMenu, miniPeekIn, miniPeekOut,
         checkMiniModeSnap, cancelMiniTransition, animateWindowX, animateWindowParabola } = _mini;
 
@@ -6393,10 +6229,7 @@ if (!gotTheLock) {
     }
     trayBalloonOwner.dispose();
     holidayAccessoryRuntime.dispose();
-    musicDetector.stop();
-    chatter.stop();
-    if (chatterWatchTimer) clearInterval(chatterWatchTimer);
-    _chatterBubble.dispose();
+    forkRuntime.dispose();
     if (systemWakeRecovery) systemWakeRecovery.dispose();
     // #525: release the IVirtualDesktopManager COM ref and pay back our own
     // CoInitializeEx count (see win-cloak-recovery.js dispose()).

@@ -4008,3 +4008,55 @@ describe("state route mood tap", () => {
     assert.strictEqual(res.statusCode, 200);
   });
 });
+
+describe("state route chatter tap", () => {
+  const post = (extra = {}, overrides = {}) => callStatePost(JSON.stringify({
+    state: "working",
+    session_id: "chatter-session",
+    event: "PostToolUse",
+    tool_name: "Bash",
+    agent_id: "claude-code",
+    ...extra,
+  }), overrides);
+
+  function withChatterCalls() {
+    const calls = [];
+    return { calls, ctx: { handleChatterEvent: (input) => calls.push(input) } };
+  }
+
+  it("reports the event, the test result, the failure kind, the tool name and the context percent, nothing else", async () => {
+    const { calls, ctx } = withChatterCalls();
+    const res = await post({
+      state: "attention",
+      event: "Stop",
+      failure_kind: "api_error",
+      context_usage: { used: 90, limit: 100 },
+      cwd: "/some/private/project",
+      prompt: "a private prompt",
+    }, { ctx });
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(calls.length, 1);
+    assert.deepStrictEqual(Object.keys(calls[0]).sort(), ["contextPercent", "event", "failureKind", "testResult", "toolName"]);
+    assert.strictEqual(calls[0].event, "Stop");
+    assert.strictEqual(calls[0].failureKind, "api_error");
+    assert.strictEqual(calls[0].contextPercent, 90);
+    assert.ok(!JSON.stringify(calls[0]).includes("private"));
+  });
+
+  it("skips headless sessions and rejected updates", async () => {
+    const headless = withChatterCalls();
+    await post({ headless: true }, { ctx: headless.ctx });
+    assert.deepStrictEqual(headless.calls, []);
+    const rejected = withChatterCalls();
+    const res = await post({}, { ctx: { ...rejected.ctx, updateSession: () => false } });
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(rejected.calls, []);
+  });
+
+  it("keeps a chatter failure from failing the state POST, and works with no handler", async () => {
+    const failing = await post({}, { ctx: { handleChatterEvent: () => { throw new Error("chatter gone"); } } });
+    assert.strictEqual(failing.statusCode, 200);
+    assert.strictEqual(failing.calls.updateSession.length, 1);
+    assert.strictEqual((await post({})).statusCode, 200);
+  });
+});

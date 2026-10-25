@@ -219,6 +219,8 @@ function createHarness(overrides = {}) {
     path: overrides.path || path,
     settingsController,
     recapRuntime: overrides.recapRuntime,
+    listChatterModels: overrides.listChatterModels,
+    getAwarenessStatus: overrides.getAwarenessStatus,
     themeLoader,
     codexPetMain,
     officialThemeMain: overrides.officialThemeMain,
@@ -1768,4 +1770,23 @@ test("official theme uninstall reports unpacked space and labels archive-only fa
   assert.doesNotMatch(dialogs[2].detail, /\?\s*MB|frees about/i);
 
   harness.runtime.dispose();
+});
+
+test("the chatter model list and the awareness status answer only the trusted settings window", async () => {
+  const harness = createHarness({
+    listChatterModels: async () => ({ ok: true, models: ["a:1b"], defaultModel: "a:1b" }),
+    getAwarenessStatus: async () => ({ ok: true, model: "a:1b", vision: true, lastSeen: "" }),
+  });
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:chatter-models"), { ok: true, models: ["a:1b"], defaultModel: "a:1b" });
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:awareness-status"), { ok: true, model: "a:1b", vision: true, lastSeen: "" });
+
+  harness.ipcMain.invokeEvent = { sender: {}, senderFrame: null };
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:chatter-models"), { ok: false, models: [], error: "untrusted" });
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:awareness-status"), { ok: false, error: "untrusted" });
+});
+
+test("without a host the chatter model list and awareness status report unavailable", async () => {
+  const harness = createHarness();
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:chatter-models"), { ok: false, models: [], error: "unavailable" });
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:awareness-status"), { ok: false, error: "unavailable" });
 });

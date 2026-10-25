@@ -100,7 +100,7 @@ New: `src/mood.js`, `src/mood-store.js`, `src/mood-window.js`, `src/mood.html`, 
 
 | Upstream file | Why it is touched |
 |---|---|
-| `src/main.js` | create the tracker, store and window; flush on quit; feed the idle roll |
+| `src/main.js` | builds the fork runtime once (`createForkRuntime` in `src/fork-runtime.js`, which creates the tracker, store and window); flushes the store on quit; feeds the idle roll |
 | `src/server-route-state.js` | tap hook events (tool failures, test results, stops) into the tracker |
 | `src/permission.js` | tap allow/deny clicks |
 | `src/tick.js` | the idle roll that may play a mood moment |
@@ -114,7 +114,7 @@ New: `src/music.js`, `test/music.test.js`.
 
 | Upstream file | Why it is touched |
 |---|---|
-| `src/main.js` | create and start the detector; send its state to the renderer; resend after a renderer reload |
+| `src/main.js` | starts the detector the fork runtime built; the runtime sends its state to the renderer and resends it after a renderer load |
 | `src/renderer.js` | the renderer-only `music` slot and the nod toggle |
 | `src/index.html`, `src/styles.css` | the slot's layer (behind the pet) and the 60 bpm nod |
 | `src/preload.js` | the `music-state` channel |
@@ -122,11 +122,11 @@ New: `src/music.js`, `test/music.test.js`.
 
 ### Chatter (`feat(chatter)`)
 
-New: `src/chatter.js`, `src/chatter-personalities.js`, `src/chatter-fonts.js`, `src/desktop-awareness.js`, `src/desktop-capture.js`, `src/desktop-awareness-runtime.js`, `src/chatter-bubble.js`, `src/chatter-bubble.html`, `src/preload-chatter-bubble.js`, `src/settings-tab-chatter.js`, and tests `test/chatter*.test.js`, `test/settings-tab-chatter.test.js`.
+New: `src/chatter.js`, `src/chatter-personalities.js`, `src/chatter-fonts.js`, `src/desktop-awareness.js`, `src/desktop-capture.js`, `src/desktop-awareness-runtime.js`, `src/fork-runtime.js`, `src/chatter-bubble.js`, `src/chatter-bubble.html`, `src/preload-chatter-bubble.js`, `src/settings-tab-chatter.js`, and tests `test/chatter*.test.js`, `test/settings-tab-chatter.test.js`.
 
 | Upstream file | Why it is touched |
 |---|---|
-| `src/main.js` | create the chatter and its bubble; read prefs; the hotkey handler; pref-change reactions; the music hook |
+| `src/main.js` | supplies the fork runtime with what it needs from the app (windows, state, permissions) and maps the two hotkeys onto it; everything else is in `src/fork-runtime.js` |
 | `src/server-route-state.js` | a separate tap for chatter (its own flag; skips headless sessions; passes the context percentage) |
 | `src/prefs.js`, `src/settings-actions.js` | the fourteen `chatter*` prefs and validators |
 | `src/settings-ui-core.js` | repaint shortcut recording on the Chatter tab as well as the Shortcuts tab |

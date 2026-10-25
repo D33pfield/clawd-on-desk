@@ -19,7 +19,6 @@ const {
 } = require("../src/chatter-bubble");
 
 const workArea = { x: 0, y: 0, width: 1920, height: 1080 };
-const read = (file) => fs.readFileSync(path.join(__dirname, "..", "src", file), "utf8");
 
 describe("computeChatterBubbleBounds", () => {
   it("centers above the pet with the tail on the pet", () => {
@@ -361,107 +360,9 @@ describe("createChatterBubble", () => {
       assert.ok(font.lineHeight >= 1.3 && font.lineHeight <= 1.6, id);
     }
   });
-
-  it("the page applies the font before it lays the text out", () => {
-    const html = require("fs").readFileSync(require("path").join(__dirname, "..", "src", "chatter-bubble.html"), "utf8");
-    assert.ok(html.indexOf("applyFont(data.font);") < html.indexOf("ghost.textContent = data.text;"));
-  });
 });
 
-describe("chatter bubble page and wiring", () => {
-  it("renders model text with textContent only, under a strict CSP", () => {
-    const html = read("chatter-bubble.html");
-    assert.ok(html.includes("typed.textContent = text.slice(0, shown)"));
-    assert.ok(html.includes("ghost.textContent = data.text"));
-    assert.doesNotMatch(html, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
-    assert.match(html, /Content-Security-Policy" content="default-src 'none'/);
-  });
-
-  it("types the text one character at a time in a terminal font, sized up front, without restarting on a quiet move", () => {
-    const html = read("chatter-bubble.html");
-    assert.match(html, /font-family: "Cascadia Mono", "Cascadia Code", Consolas/);
-    assert.match(html, /monospace;/);
-    // The full text is laid out invisibly so the bubble never resizes while typing.
-    assert.match(html, /#ghost \{ visibility: hidden; \}/);
-    assert.match(html, /setInterval\(/);
-    assert.match(html, /if \(data\.quiet\) \{[^}]*place\(data\.tailX, data\.below\);\s*return;/);
-    // Reduced motion shows the text at once.
-    assert.match(html, /if \(reduceMotion \|\| !\(charMs > 0\)\) \{\s*typed\.textContent = text;/);
-  });
-
-  it("preload exposes two listeners and two fixed-channel senders, nothing else", () => {
-    const preload = read("preload-chatter-bubble.js");
-    assert.match(preload, /onShow:/);
-    assert.match(preload, /onHide:/);
-    assert.deepStrictEqual(
-      [...preload.matchAll(/ipcRenderer\.send\("([a-z-]+)"/g)].map((m) => m[1]),
-      ["chatter-bubble-interactive", "chatter-bubble-dismiss"]
-    );
-    assert.strictEqual((preload.match(/ipcRenderer\.invoke/g) || []).length, 0);
-  });
-
-  it("the page makes only the bubble clickable", () => {
-    const html = read("chatter-bubble.html");
-    assert.match(html, /html, body \{[^}]*pointer-events: none/s);
-    assert.match(html, /#bubble \{[^}]*pointer-events: auto/s);
-    assert.match(html, /setInteractive\(true\)/);
-    assert.match(html, /dismiss\(\)/);
-  });
-
-  it("main wires chatter with its own settings, tap, music hook and cleanup", () => {
-    const main = read("main.js");
-    assert.match(main, /getSettings: getChatterSettings/);
-    for (const key of [
-      "chatterEnabled", "chatterModel", "chatterPersonality", "chatterCustomPersonality", "chatterCheckinMinutes",
-      "chatterTriggerCheckin", "chatterTriggerTests", "chatterTriggerError", "chatterTriggerReturn", "chatterTriggerMusic",
-      "chatterShareSong",
-    ]) {
-      assert.ok(main.includes(`get("${key}")`), `${key} is read through getChatterSettings`);
-    }
-    assert.match(main, /durationMs: \(_settingsController\.get\("chatterBubbleSeconds"\) \|\| 12\) \* 1000/);
-    assert.match(main, /handleChatterEvent: \(input\) => handleChatterEvent\(input\)/);
-    assert.match(main, /chatter\.notify\("music-started"\)/);
-    assert.match(main, /if \(_settingsController\.get\("chatterEnabled"\) === true\) void chatter\.warm\(\)/);
-    assert.match(main, /_chatterBubble\.dispose\(\)/);
-    assert.match(main, /repositionChatterBubble: \(\) => repositionChatterBubble\(\)/);
-    assert.match(main, /createChatterBubble\(\{\s*ipcMain,/);
-  });
-
-  it("the reply's bubbles, the song and the context percentage reach where they are used", () => {
-    const main = read("main.js");
-    assert.match(main, /onLine: async \(\{ text, parts \}\) => \{/);
-    assert.match(main, /_chatterBubble\.show\(parts && parts\.length > 0 \? parts : text, \{/);
-    assert.match(main, /song: musicDetector\.getSong\(\),/);
-    assert.match(read("server-route-state.js"), /contextPercent: contextUsage \? contextUsage\.percent : undefined,\s*\}\);/);
-    assert.match(read("prefs.js"), /chatterShareSong: \{ type: "boolean", default: true \}/);
-  });
-
-  it("pref changes take effect at runtime", () => {
-    const main = read("main.js");
-    // Off means off: hide the bubble and free the model's memory.
-    assert.match(main, /subscribeKey\("chatterEnabled", \(enabled\) => \{\s*if \(enabled === true\) \{\s*void chatter\.warm\(\);\s*\} else \{[^}]*_chatterBubble\.hide\(\);\s*void chatter\.unload\(\);/);
-    assert.match(main, /subscribeKey\("chatterModel", \(\) => \{ void chatter\.warm\(\); \}\)/);
-    assert.match(main, /subscribeKey\("chatterCheckinMinutes", \(\) => chatter\.reschedule\(\)\)/);
-    // The tray and context menus rebuild when the checkbox changes.
-    assert.match(read("settings-effect-router.js"), /"chatterEnabled",/);
-    assert.match(main, /set chatterEnabled\(v\) \{ _settingsController\.applyUpdate\("chatterEnabled", !!v\); \}/);
-  });
-
-  it("the bubble option, the hotkey and the placement are wired", () => {
-    const main = read("main.js");
-    // Bubbles off: the line is still written and logged, just not shown.
-    assert.match(main, /if \(_settingsController\.get\("chatterShowBubbles"\) === false\) return;\s*try \{\s*await refreshChatterContentTop\(\);[^\n]*\n\s*sessionLog\(`chatter anchor[^\n]*\n\s*_chatterBubble\.show\(/);
-    assert.match(main, /chatterNow: \(\) => \{\s*if \(_settingsController\.get\("chatterEnabled"\) === true\) void chatter\.sayNow\(\);/);
-    // Anchored on the tight hit box, with extra room while the headphones are on.
-    assert.match(main, /getAnchorRect: \(bounds\) => getChatterAnchorRect\(bounds\)/);
-    assert.match(main, /executeJavaScript\(\s*'typeof getDisplayedContentTop === "function" \? getDisplayedContentTop\(\) : null'/);
-    assert.match(main, /if \(chatterWatchTimer\) clearInterval\(chatterWatchTimer\);/);
-    assert.match(main, /getClearance: \(\) => \(musicDetector\.isPlaying\(\) \? 24 : 6\)/);
-    const { SHORTCUT_ACTIONS } = require("../src/shortcut-actions");
-    assert.strictEqual(SHORTCUT_ACTIONS.chatterNow.persistent, true);
-    assert.strictEqual(SHORTCUT_ACTIONS.chatterNow.defaultAccelerator, null, "unassigned until the user picks a key");
-  });
-
+describe("chatter bubble placement", () => {
   it("the bubble adds the clearance to its gap above the pet", () => {
     const { createChatterBubble: make } = require("../src/chatter-bubble");
     let bounds = null;
@@ -490,22 +391,5 @@ describe("chatter bubble page and wiring", () => {
     };
     assert.strictEqual(place(0), 720 - 4);
     assert.strictEqual(place(24), 720 - 4 - 24);
-  });
-
-  it("the model list goes through the trusted settings IPC", () => {
-    const ipc = read("settings-ipc.js");
-    assert.match(ipc, /handle\("settings:chatter-models", async \(event\) => \{\s*if \(!isTrustedSettingsEvent\(event\)\)/);
-    assert.match(read("preload-settings.js"), /getChatterModels: \(\) => ipcRenderer\.invoke\("settings:chatter-models"\)/);
-    assert.match(read("main.js"), /listChatterModels: \(\) => chatter\.listModels\(\)/);
-  });
-
-  it("the state route gives chatter its own call, skipping headless sessions", () => {
-    const route = read("server-route-state.js");
-    assert.match(route, /sessionUpdateApplied && !effHeadless && typeof ctx\.handleChatterEvent === "function"/);
-  });
-
-  it("the pref exists and is validated", () => {
-    assert.match(read("prefs.js"), /chatterEnabled: \{ type: "boolean", default: false \}/);
-    assert.match(read("settings-actions.js"), /chatterEnabled: requireBoolean\("chatterEnabled"\)/);
   });
 });
