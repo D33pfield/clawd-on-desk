@@ -353,6 +353,50 @@ describe("createChatter", () => {
 
   const flush = () => new Promise((resolve) => setImmediate(resolve));
 
+  describe("hardening", () => {
+    it("treats a non-string model reply as empty, never as text", async () => {
+      const { chatter, lines } = setup([{ not: "text" }, ["array"], "A real reply here."]);
+      await chatter.sayNow();
+      assert.deepStrictEqual(lines[0].parts, ["A real reply here."]);
+    });
+
+    it("strips control and direction characters and rejects one endless word", async () => {
+      assert.strictEqual(cleanLine("Hello\u202Eworld\u2028there\u0007 friend.").text, "Hello world there friend.");
+      assert.strictEqual(cleanLine("x".repeat(400)).reason, "too-long");
+      assert.strictEqual(cleanLine("A perfectly normal line.").reason, null);
+    });
+
+    it("says nothing, and asks the model no more, if chatter is switched off while a reply is being written", async () => {
+      let enabled = true;
+      const { chatter, lines, requests, logs } = setup(["Too similar line here.", "Second try line here."], {
+        getSettings: () => ({ enabled }),
+        // Switch off during the first request.
+        fetch: async (url, init) => {
+          requests.push(JSON.parse(init.body));
+          enabled = false;
+          return { ok: true, status: 200, json: async () => ({ message: { content: "As an AI I cannot say." } }) };
+        },
+      });
+      await chatter.sayNow();
+      assert.strictEqual(requests.length, 1, "no retry after switching off");
+      assert.strictEqual(lines.length, 0);
+    });
+
+    it("drops a finished line if the pet can no longer speak", async () => {
+      let speaking = true;
+      const { chatter, lines, logs } = setup(["Hello there, friend."], {
+        canSpeak: () => speaking,
+        fetch: async () => {
+          speaking = false;
+          return { ok: true, status: 200, json: async () => ({ message: { content: "Hello there, friend." } }) };
+        },
+      });
+      await chatter.sayNow();
+      assert.strictEqual(lines.length, 0);
+      assert.ok(logs.some((m) => m.includes("chatter dropped")));
+    });
+  });
+
   it("sends a stateless, thinking-off chat with the configured model and a small context", async () => {
     const { chatter, requests } = setup(["Hello there, friend."]);
     const result = await chatter.generate("idle-check");

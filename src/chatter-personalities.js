@@ -5,7 +5,7 @@
 // (see FOCUS_ORDER in chatter.js); an empty list fits any situation. The model
 // copies the voice from the examples, so each one shows a reaction to a real
 // kind of fact. Examples stay short, digit-free and quote-free (the reply
-// filter rejects those) and the first one of each pair reacts to a concrete fact.
+// filter rejects those).
 
 const DEFINITIONS = {
   deadpan: {

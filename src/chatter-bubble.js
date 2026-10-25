@@ -18,7 +18,7 @@ const isWin = process.platform === "win32";
 const WIN_TOPMOST_LEVEL = "pop-up-menu";
 const LINUX_WINDOW_TYPE = "toolbar";
 
-// Monospace text is wider than the old proportional font, so the window is larger.
+// Sized for monospace text at the sizes in chatter-fonts.js.
 const WIDTH = 340;
 const HEIGHT = 150;
 const GAP = 4;
