@@ -13,6 +13,7 @@ describe("chatter prefs", () => {
     const defaults = prefs.getDefaults();
     assert.strictEqual(defaults.chatterEnabled, false);
     assert.strictEqual(defaults.chatterShowBubbles, true);
+    assert.strictEqual(defaults.chatterShareSong, true);
     assert.strictEqual(defaults.chatterModel, "");
     assert.strictEqual(defaults.chatterPersonality, "deadpan");
     assert.strictEqual(defaults.chatterCustomPersonality, "");
@@ -25,7 +26,7 @@ describe("chatter prefs", () => {
 
   it("every chatter pref has an update validator", () => {
     const chatterKeys = prefs.SCHEMA_KEYS.filter((key) => key.startsWith("chatter"));
-    assert.strictEqual(chatterKeys.length, 12);
+    assert.strictEqual(chatterKeys.length, 13);
     for (const key of chatterKeys) assert.strictEqual(typeof updateRegistry[key], "function", key);
   });
 
@@ -40,6 +41,7 @@ describe("chatter prefs", () => {
     assert.ok(!ok("chatterCustomPersonality", "x".repeat(301)) && !ok("chatterCustomPersonality", 5));
     assert.ok(ok("chatterTriggerMusic", false) && !ok("chatterTriggerMusic", "no"));
     assert.ok(ok("chatterShowBubbles", false) && !ok("chatterShowBubbles", 0));
+    assert.ok(ok("chatterShareSong", false) && !ok("chatterShareSong", "yes"));
   });
 
   it("only take plain model names, since the name goes to Ollama", () => {

@@ -222,6 +222,10 @@
       switchRow("chatterTriggerMusic", "rowChatterTriggerMusic", "rowChatterTriggerMusicDesc", off),
     ]));
 
+    parent.appendChild(helpers.buildSection(t("sectionChatterContext"), [
+      switchRow("chatterShareSong", "rowChatterShareSong", "rowChatterShareSongDesc", off),
+    ]));
+
     // One key to ask for a line right now. The row and its key recording are the
     // Shortcuts tab's own, so the two tabs always agree.
     const shortcuts = tabs && tabs.shortcuts;

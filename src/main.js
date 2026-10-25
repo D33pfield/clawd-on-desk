@@ -5839,6 +5839,7 @@ function getChatterSettings() {
     personality: get("chatterPersonality"),
     customPersonality: get("chatterCustomPersonality"),
     checkinMinutes: get("chatterCheckinMinutes"),
+    shareSong: get("chatterShareSong") !== false,
     triggers: {
       checkin: get("chatterTriggerCheckin") !== false,
       tests: get("chatterTriggerTests") !== false,
@@ -5851,15 +5852,19 @@ function getChatterSettings() {
 const chatter = createChatter({
   log: (msg) => sessionLog(msg),
   getSettings: getChatterSettings,
-  getSnapshot: () => ({ mood: moodTracker.read(), musicPlaying: musicDetector.isPlaying() }),
+  getSnapshot: () => ({
+    mood: moodTracker.read(),
+    musicPlaying: musicDetector.isPlaying(),
+    song: musicDetector.getSong(),
+  }),
   canSpeak: canChatterSpeak,
-  onLine: async ({ text }) => {
+  onLine: async ({ text, parts }) => {
     // With bubbles off the line was still written and logged, just not shown.
     if (_settingsController.get("chatterShowBubbles") === false) return;
     try {
       await refreshChatterContentTop();
       sessionLog(`chatter anchor content-top=${chatterContentTopOffset == null ? "unmeasured" : Math.round(chatterContentTopOffset)}px state=${_state.getCurrentState()}`);
-      _chatterBubble.show(text, {
+      _chatterBubble.show(parts && parts.length > 0 ? parts : text, {
         durationMs: (_settingsController.get("chatterBubbleSeconds") || 12) * 1000,
       });
       watchChatterAnchor();

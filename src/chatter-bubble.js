@@ -1,12 +1,13 @@
 "use strict";
 
 // The pet's speech bubble: a small, click-through, non-focusable window that
-// shows one line of chatter above (or, if there is no room, below) the pet and
-// fades out on its own. Created per line and destroyed after it hides, so it
-// holds no renderer process between lines. The text comes from a language
-// model and is rendered with textContent only (see chatter-bubble.html).
-// The window ignores the mouse (forwarding moves) until the pointer is over the
-// bubble itself; a click there dismisses the line.
+// shows a reply above (or, if there is no room, below) the pet, one short bubble
+// after another with typewriter text, and fades out on its own. Created per
+// reply and destroyed after it hides, so it holds no renderer process between
+// replies. The text comes from a language model and is rendered with textContent
+// only (see chatter-bubble.html). The window ignores the mouse (forwarding moves)
+// until the pointer is over the bubble itself; a click there skips to the next
+// bubble, or dismisses the reply on the last one.
 
 const path = require("path");
 
@@ -16,13 +17,24 @@ const isWin = process.platform === "win32";
 const WIN_TOPMOST_LEVEL = "pop-up-menu";
 const LINUX_WINDOW_TYPE = "toolbar";
 
-const WIDTH = 300;
-const HEIGHT = 120;
+// Monospace text is wider than the old proportional font, so the window is larger.
+const WIDTH = 340;
+const HEIGHT = 150;
 const GAP = 4;
 const EDGE_MARGIN = 8;
-// How long a line stays up when the caller does not say (the setting overrides it).
+// How long a whole reply stays up when the caller does not say (the setting
+// overrides it). The page types the text, so each bubble's hold starts after it.
 const DEFAULT_SHOW_MS = 12 * 1000;
 const FADE_MS = 300;
+const TYPE_CHAR_MS = 32;
+const MIN_HOLD_MS = 2500;
+
+// Hold time for each bubble: the total shared out by length, never below a floor.
+function holdTimes(parts, totalMs) {
+  const counts = parts.map((part) => Math.max(1, part.split(/\s+/).length));
+  const sum = counts.reduce((a, b) => a + b, 0);
+  return counts.map((n) => Math.max(MIN_HOLD_MS, Math.round((totalMs * n) / sum)));
+}
 
 function isFiniteRect(rect) {
   return !!rect && ["left", "top", "right", "bottom"].every((key) => Number.isFinite(rect[key]));
@@ -68,8 +80,9 @@ function createChatterBubble(ctx = {}) {
   let win = null;
   let loaded = false;
   let pending = null;
-  let showTimer = null;
+  let partTimer = null;
   let fadeTimer = null;
+  // The reply being shown: its bubbles, which one is up, and the show parameters.
   let current = null;
 
   function live() {
@@ -90,9 +103,9 @@ function createChatterBubble(ctx = {}) {
   }
 
   function clearTimers() {
-    if (showTimer) timers.clearTimeout(showTimer);
+    if (partTimer) timers.clearTimeout(partTimer);
     if (fadeTimer) timers.clearTimeout(fadeTimer);
-    showTimer = fadeTimer = null;
+    partTimer = fadeTimer = null;
   }
 
   function destroy() {
@@ -160,8 +173,11 @@ function createChatterBubble(ctx = {}) {
       if (interactive === true) win.setIgnoreMouseEvents(false);
       else win.setIgnoreMouseEvents(true, { forward: true });
     });
+    // A click: on to the next bubble, or away on the last one.
     on("chatter-bubble-dismiss", (event) => {
-      if (fromBubble(event)) destroy();
+      if (!fromBubble(event)) return;
+      if (current && current.index < current.parts.length - 1) playPart(current.index + 1);
+      else destroy();
     });
   }
 
@@ -170,44 +186,71 @@ function createChatterBubble(ctx = {}) {
   }
 
   function payloadFor(text, box) {
-    return { text, below: box.below, tailX: box.tailX };
+    return { text, below: box.below, tailX: box.tailX, charMs: TYPE_CHAR_MS };
+  }
+
+  function send(payload) {
+    if (loaded) win.webContents.send("chatter-bubble-show", payload);
+    else pending = payload; // the page is still loading; it gets the latest bubble
+  }
+
+  // Show bubble `index`; after its typing and its hold, go on to the next, or fade out.
+  function playPart(index) {
+    if (!live() || !current) return;
+    if (partTimer) timers.clearTimeout(partTimer);
+    partTimer = null;
+    const box = placement();
+    if (!box) { destroy(); return; }
+    current.index = index;
+    place(box);
+    send(payloadFor(current.parts[index], box));
+    const wait = current.parts[index].length * TYPE_CHAR_MS + current.holds[index];
+    partTimer = timers.setTimeout(() => {
+      partTimer = null;
+      if (!live() || !current) return;
+      if (index < current.parts.length - 1) {
+        playPart(index + 1);
+        return;
+      }
+      if (loaded) win.webContents.send("chatter-bubble-hide");
+      fadeTimer = timers.setTimeout(destroy, FADE_MS);
+    }, wait);
   }
 
   return {
-    // Show one line. Returns false when there is nowhere sensible to put it.
-    show(text, options = {}) {
-      const line = typeof text === "string" ? text.trim() : "";
-      if (!line) return false;
+    // Show a reply: one string, or an array of short strings shown as successive
+    // bubbles. durationMs is how long the whole reply stays up in total. Returns
+    // false when there is nowhere sensible to put it.
+    show(textOrParts, options = {}) {
+      const parts = (Array.isArray(textOrParts) ? textOrParts : [textOrParts])
+        .map((part) => (typeof part === "string" ? part.trim() : ""))
+        .filter(Boolean);
+      if (parts.length === 0) return false;
       const box = placement();
       if (!box) return false;
       clearTimers();
       if (!live()) create();
-      place(box);
-      current = { text: line };
-      const payload = payloadFor(line, box);
-      if (loaded) win.webContents.send("chatter-bubble-show", payload);
-      else pending = payload;
+      const ms = Number.isFinite(options.durationMs) && options.durationMs > 0 ? options.durationMs : DEFAULT_SHOW_MS;
+      current = { parts, holds: holdTimes(parts, ms), index: 0 };
       win.showInactive();
       if (typeof ctx.keepOutOfTaskbar === "function") ctx.keepOutOfTaskbar(win);
-      const ms = Number.isFinite(options.durationMs) && options.durationMs > 0 ? options.durationMs : DEFAULT_SHOW_MS;
-      showTimer = timers.setTimeout(() => {
-        showTimer = null;
-        if (live() && loaded) win.webContents.send("chatter-bubble-hide");
-        fadeTimer = timers.setTimeout(destroy, FADE_MS);
-      }, ms);
-      log(`chatter bubble shown ms=${ms} below=${box.below}`);
+      playPart(0);
+      log(`chatter bubble shown parts=${parts.length} ms=${ms} below=${box.below}`);
       return true;
     },
     hide() {
       if (live()) destroy();
     },
     // Follow the pet while a line is up.
+    // Only moves the bubble: a quiet update never restarts the typing.
     reposition() {
       if (!live() || !current) return;
       const box = placement();
       if (!box) return;
       place(box);
-      if (loaded) win.webContents.send("chatter-bubble-show", { ...payloadFor(current.text, box), quiet: true });
+      if (loaded) {
+        win.webContents.send("chatter-bubble-show", { ...payloadFor(current.parts[current.index], box), quiet: true });
+      }
     },
     isVisible: () => live() && current !== null,
     cleanup: destroy,
@@ -222,6 +265,9 @@ module.exports = {
   WIDTH,
   HEIGHT,
   DEFAULT_SHOW_MS,
+  TYPE_CHAR_MS,
+  MIN_HOLD_MS,
+  holdTimes,
   computeChatterBubbleBounds,
   resolveChatterAnchor,
   createChatterBubble,
