@@ -196,7 +196,6 @@ function createDesktopAwareness(options = {}) {
     getLastSeen: () => lastSeen,
     // Disarmed or switched off: forget what it last saw.
     clearLastSeen: () => setLastSeen(""),
-    isBusy: () => busy,
   };
 }
 

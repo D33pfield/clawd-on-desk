@@ -6,6 +6,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
+const { PERSONALITY_IDS } = require("../src/chatter-personalities");
+const { CHATTER_FONT_IDS } = require("../src/chatter-fonts");
+const { MAX_CUSTOM_PERSONALITY_CHARS } = require("../src/chatter-limits");
+
 const TAB_SOURCE = fs.readFileSync(path.join(__dirname, "..", "src", "settings-tab-chatter.js"), "utf8");
 
 class FakeNode {
@@ -156,7 +160,7 @@ describe("chatter settings tab", () => {
     const harness = load({ snapshot: { chatterPersonality: "anxious" } });
     harness.render();
     const personality = harness.built.selects[0];
-    assert.deepEqual(plain(personality.options.map((o) => o.value)), ["deadpan", "wholesome", "anxious", "noir", "sportscaster", "wizard", "engineer", "custom"]);
+    assert.deepEqual(plain(personality.options.map((o) => o.value)), [...PERSONALITY_IDS, "custom"]);
     assert.equal(personality.value, "anxious");
     assert.equal(await personality.onChange("wholesome"), true);
     assert.deepEqual(plain(harness.updates), [{ key: "chatterPersonality", value: "wholesome" }]);
@@ -266,7 +270,7 @@ describe("chatter settings tab registration", () => {
       ...[...source.matchAll(/"((?:row|section)[A-Za-z]+)"/g)].map((m) => m[1]),
     ]);
     keys.add("sidebarChatter");
-    for (const id of ["deadpan", "wholesome", "anxious", "noir", "sportscaster", "wizard", "engineer", "custom"]) keys.add(`chatterPersonality_${id}`);
+    for (const id of [...PERSONALITY_IDS, "custom"]) keys.add(`chatterPersonality_${id}`);
     const i18n = read("settings-i18n.js");
     const blocks = (i18n.match(/^      sidebarChatter:/gm) || []).length;
     assert.equal(blocks, 7);
@@ -283,7 +287,7 @@ describe("chatter settings tab: bubble font", () => {
     const harness = load({ snapshot: { chatterEnabled: true, chatterBubbleFont: "lucida" } });
     harness.render();
     const font = harness.built.selects[2];
-    assert.deepEqual(plain(font.options.map((o) => o.value)), ["cascadia", "consolas", "lucida", "courier"]);
+    assert.deepEqual(plain(font.options.map((o) => o.value)), [...CHATTER_FONT_IDS]);
     assert.equal(font.value, "lucida");
     await font.onChange("consolas");
     assert.deepEqual(plain(harness.updates.at(-1)), { key: "chatterBubbleFont", value: "consolas" });
@@ -360,5 +364,18 @@ describe("chatter settings tab: desktop awareness", () => {
     assert.ok(texts.some((t) => t === "m:9b: awarenessCannotSee"), texts.join(" | "));
     assert.ok(texts.some((t) => t === "awarenessLastSeen A spreadsheet."), texts.join(" | "));
     assert.equal(section.children.at(-1).actionId, "shareScreen");
+  });
+});
+
+describe("chatter settings tab: the page's copies match the real lists", () => {
+  it("offers exactly the personalities and fonts the app knows, and the same custom-text limit", () => {
+    // The Settings page is a browser script and cannot require these modules, so it keeps
+    // its own copies. Rendering it and comparing here is what stops them drifting.
+    const harness = load({ snapshot: { chatterEnabled: true } });
+    harness.render();
+    const [personality, , font] = harness.built.selects;
+    assert.deepEqual(plain(personality.options.map((o) => o.value)), [...PERSONALITY_IDS, "custom"]);
+    assert.deepEqual(plain(font.options.map((o) => o.value)), [...CHATTER_FONT_IDS]);
+    assert.equal(Number(TAB_SOURCE.match(/const CUSTOM_MAX = (\d+);/)[1]), MAX_CUSTOM_PERSONALITY_CHARS);
   });
 });

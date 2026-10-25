@@ -6,7 +6,7 @@
 // stateless chat built from a fact sheet with one required FOCUS fact (rotated
 // so consecutive replies are about different things) plus a few others.
 //
-//  - Facts are whitelisted named fields (see backgroundFacts). Hook payloads are
+//  - Facts are whitelisted named fields (see factList). Hook payloads are
 //    never passed through: observe() keeps only a coarse activity category, so
 //    command text, file names and prompts cannot reach the prompt.
 //  - A timer plus a few forced triggers (tests passing after failures, a stop
@@ -95,6 +95,7 @@ const CAST_CUSTOM = (
 );
 
 const { PERSONALITIES, DEFAULT_PERSONALITY } = require("./chatter-personalities");
+const { MAX_CUSTOM_PERSONALITY_CHARS } = require("./chatter-limits");
 // Which settings.triggers switch controls each kind of line.
 const TRIGGER_SWITCH = Object.freeze({
   "idle-check": "checkin",
@@ -108,7 +109,6 @@ function triggerEnabled(settings, name) {
   const key = TRIGGER_SWITCH[name];
   return !(settings && settings.triggers && key && settings.triggers[key] === false);
 }
-const MAX_CUSTOM_PERSONALITY_CHARS = 300;
 // How long the looked-up default model is remembered.
 const MODEL_LOOKUP_MS = 60 * 1000;
 // A bubble line is a few words; one very long unbroken token would overflow the bubble.
@@ -116,37 +116,38 @@ const MAX_LINE_CHARS = 140;
 
 // ── Pure helpers ──
 
-// Coarse category from a hook's tool name; the name itself is not kept.
-function activityFromTool(toolName) {
-  if (typeof toolName !== "string" || !toolName) return null;
-  switch (toolName) {
-    case "Read": case "Grep": case "Glob": case "LS":
-      return "reading and searching the code";
-    case "Edit": case "MultiEdit": case "Write": case "NotebookEdit":
-      return "editing files";
-    case "Bash": case "BashOutput":
-      return "running commands in the terminal";
-    case "Task": case "Agent":
-      return "waiting on a helper agent";
-    case "WebFetch": case "WebSearch":
-      return "looking things up online";
-    case "TodoWrite":
-      return "planning the next steps";
-    default:
-      return "using a tool";
-  }
+// A request that was cut off reads as a timeout; anything else keeps its own message.
+function errorText(err) {
+  return err && err.name === "AbortError" ? "timeout" : (err && err.message);
 }
 
-// Short key for the per-session counters; same grouping as activityFromTool.
+// "- item", "* item", "2. item" -> "item".
+function stripBullet(line) {
+  return line.replace(/^\s*(?:[-*\u2022]+|\d+[.)])\s*/, "");
+}
+
+// Tool names grouped the way chatter talks about them: a counter key for the session
+// facts and a phrase for what Claude is currently doing. The name itself is not kept.
+const TOOL_GROUPS = Object.freeze({
+  reads: { tools: ["Read", "Grep", "Glob", "LS"], activity: "reading and searching the code" },
+  edits: { tools: ["Edit", "MultiEdit", "Write", "NotebookEdit"], activity: "editing files" },
+  commands: { tools: ["Bash", "BashOutput"], activity: "running commands in the terminal" },
+  helpers: { tools: ["Task", "Agent"], activity: "waiting on a helper agent" },
+  lookups: { tools: ["WebFetch", "WebSearch"], activity: "looking things up online" },
+});
+const TOOL_GROUP_OF = new Map(Object.entries(TOOL_GROUPS).flatMap(([key, group]) => group.tools.map((tool) => [tool, key])));
+
+// Coarse category from a hook's tool name: a phrase for what is going on, or null.
+function activityFromTool(toolName) {
+  if (typeof toolName !== "string" || !toolName) return null;
+  const key = TOOL_GROUP_OF.get(toolName);
+  if (key) return TOOL_GROUPS[key].activity;
+  return toolName === "TodoWrite" ? "planning the next steps" : "using a tool";
+}
+
+// Short key for the per-session counters, or null for tools that are only counted in total.
 function categoryKey(toolName) {
-  switch (toolName) {
-    case "Read": case "Grep": case "Glob": case "LS": return "reads";
-    case "Edit": case "MultiEdit": case "Write": case "NotebookEdit": return "edits";
-    case "Bash": case "BashOutput": return "commands";
-    case "Task": case "Agent": return "helpers";
-    case "WebFetch": case "WebSearch": return "lookups";
-    default: return typeof toolName === "string" && toolName ? "other" : null;
-  }
+  return TOOL_GROUP_OF.get(toolName) || null;
 }
 
 function timeBucket(date) {
@@ -247,10 +248,6 @@ function factList(fields = {}) {
   return out;
 }
 
-// Same facts as plain strings (what the prompt shows).
-function backgroundFacts(fields = {}) {
-  return factList(fields).map((fact) => fact.text);
-}
 
 function buildFactSheet({ trigger, focus = null, background = [], screen = "" }) {
   const lines = [`TRIGGER: ${trigger}`];
@@ -375,7 +372,7 @@ function cleanReply(raw, options = {}) {
   const maxTotal = options.maxTotalWords || DEFAULT_CONFIG.maxTotalWords;
   const text = (typeof raw === "string" ? raw : "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
   let pieces = text.split(/\r?\n+/)
-    .map((piece) => piece.replace(/^\s*(?:[-*\u2022]+|\d+[.)])\s*/, "").trim())
+    .map((piece) => stripBullet(piece).trim())
     .filter(Boolean);
   // One run-on paragraph: split it into sentences instead.
   if (pieces.length === 1) {
@@ -508,8 +505,8 @@ function createChatter(options = {}) {
   let testFails = 0;
   // Counters since the session began (reset when the user comes back after a long gap).
   const freshSession = (t) => ({
-    startedAt: t, toolCalls: 0, edits: 0, commands: 0, reads: 0, helpers: 0, lookups: 0, other: 0,
-    failures: 0, testsPassed: 0, testsFailed: 0, turns: 0, prompts: 0,
+    startedAt: t, toolCalls: 0, edits: 0, commands: 0, reads: 0, helpers: 0, lookups: 0,
+    failures: 0, testsPassed: 0, testsFailed: 0, turns: 0,
   });
   let session = freshSession(now());
   let contextPercent = null;
@@ -614,13 +611,13 @@ function createChatter(options = {}) {
         const lines = [];
         const seedText = data && data.message && data.message.content;
         for (const piece of (typeof seedText === "string" ? seedText : "").split(/\r?\n+/)) {
-          const { text, reason } = cleanLine(piece.replace(/^\s*(?:[-*\u2022]+|\d+[.)])\s*/, ""), { maxWords: 14, recent: lines });
+          const { text, reason } = cleanLine(stripBullet(piece), { maxWords: 14, recent: lines });
           if (!reason) lines.push(text);
         }
         if (lines.length >= 3) seedCache.set(key, lines.slice(0, config.seedExamples));
         log(`chatter seeded examples=${lines.length >= 3 ? Math.min(lines.length, config.seedExamples) : 0} model=${model}`);
       } catch (err) {
-        log(`chatter seeding failed error=${err && err.name === "AbortError" ? "timeout" : (err && err.message)}`);
+        log(`chatter seeding failed error=${errorText(err)}`);
       }
     }
     return { ...personality, examples: seedCache.get(key) };
@@ -737,7 +734,7 @@ function createChatter(options = {}) {
       onLine({ text: result.text, parts: result.parts, trigger: name, personality: result.personality });
       return result;
     } catch (err) {
-      log(`chatter failed trigger=${name} error=${err && err.name === "AbortError" ? "timeout" : (err && err.message)}`);
+      log(`chatter failed trigger=${name} error=${errorText(err)}`);
       return null;
     } finally {
       inFlight = false;
@@ -778,8 +775,6 @@ function createChatter(options = {}) {
       const key = categoryKey(toolName);
       if (key) session[key] += 1;
       if (event === "PostToolUseFailure") session.failures += 1;
-    } else if (event === "UserPromptSubmit") {
-      session.prompts += 1;
     }
 
     const category = activityFromTool(toolName);
@@ -887,7 +882,7 @@ function createChatter(options = {}) {
         .sort();
       return { ok: true, models, defaultModel: pickDefaultModel(models) };
     } catch (err) {
-      return { ok: false, models: [], defaultModel: config.model, error: err && err.name === "AbortError" ? "timeout" : (err && err.message) || "unreachable" };
+      return { ok: false, models: [], defaultModel: config.model, error: errorText(err) || "unreachable" };
     } finally {
       timers.clearTimeout(abort);
     }
@@ -942,19 +937,16 @@ function createChatter(options = {}) {
     observe,
     notify,
     generate,
-    isBusy: () => inFlight,
   };
 }
 
 module.exports = {
   DEFAULT_CONFIG,
   PERSONALITIES,
-  CAST,
   RULES,
   activityFromTool,
   timeBucket,
   moodWords,
-  backgroundFacts,
   buildFactSheet,
   cleanLine,
   cleanReply,
@@ -964,6 +956,5 @@ module.exports = {
   FOCUS_ORDER,
   resolvePersonality,
   buildSystemPrompt,
-  TRIGGER_SWITCH,
   createChatter,
 };

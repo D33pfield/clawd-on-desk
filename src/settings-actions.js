@@ -101,6 +101,7 @@ const {
 const { listIdleVisualOptions } = require("./idle-visual");
 const { CHATTER_FONT_IDS } = require("./chatter-fonts");
 const { PERSONALITY_IDS } = require("./chatter-personalities");
+const { isValidChatterModel, isValidCustomPersonality } = require("./chatter-limits");
 const {
   registerShortcut,
   resetShortcut,
@@ -344,14 +345,13 @@ const updateRegistry = {
   chatterShowBubbles: requireBoolean("chatterShowBubbles"),
   chatterShareSong: requireBoolean("chatterShareSong"),
   chatterModel: (value) => (
-    typeof value === "string" && value.length <= 120 && /^[A-Za-z0-9._:/-]*$/.test(value)
-      && !value.includes("..") && !value.startsWith("/")
+    isValidChatterModel(value)
       ? { status: "ok" }
       : { status: "error", message: "chatterModel must be a model name of at most 120 characters" }
   ),
   chatterPersonality: requireEnum("chatterPersonality", [...PERSONALITY_IDS, "custom"]),
   chatterCustomPersonality: (value) => (
-    typeof value === "string" && value.length <= 300
+    isValidCustomPersonality(value)
       ? { status: "ok" }
       : { status: "error", message: "chatterCustomPersonality must be a string of at most 300 characters" }
   ),

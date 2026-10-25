@@ -11,7 +11,6 @@ const {
   activityFromTool,
   timeBucket,
   moodWords,
-  backgroundFacts,
   buildFactSheet,
   cleanLine,
   cleanReply,
@@ -61,10 +60,10 @@ describe("fact sheet", () => {
   const keys = (fields) => factList(fields).map((f) => f.key);
 
   it("only formats whitelisted fields", () => {
-    const lines = backgroundFacts({
+    const lines = factList({
       mood: "bored", claude: "working", activity: "editing files", time: "morning", music: true,
       command: "SENTINEL_COMMAND", filePath: "SENTINEL_PATH", prompt: "SENTINEL_PROMPT",
-    });
+    }).map((fact) => fact.text);
     assert.deepStrictEqual(lines, [
       "The pet itself feels: bored",
       "Claude is working, currently editing files",
@@ -493,7 +492,6 @@ describe("createChatter", () => {
     const { chatter, lines, clock } = setup(["First line here.", "Second line here."]);
     chatter.notify("music-started");
     chatter.notify("stop-failure");
-    assert.strictEqual(chatter.isBusy(), true);
     await flush();
     assert.strictEqual(lines.length, 1);
     clock.advance(10 * 1000);
@@ -552,7 +550,6 @@ describe("createChatter", () => {
     down.chatter.notify("music-started");
     await flush();
     assert.strictEqual(down.lines.length, 0);
-    assert.strictEqual(down.chatter.isBusy(), false);
     assert.ok(down.logs.some((m) => m.startsWith("chatter failed")));
   });
 

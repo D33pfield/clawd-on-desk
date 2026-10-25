@@ -66,7 +66,6 @@ function createMoodStore(options = {}) {
 }
 
 module.exports = {
-  DEFAULT_SAVE_DELAY_MS,
   defaultMoodFilePath,
   loadMoodState,
   createMoodStore,
