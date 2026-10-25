@@ -281,6 +281,12 @@ module.exports = function initMenu(ctx) {
           if (typeof ctx.openDashboard === "function") ctx.openDashboard();
         },
       },
+      {
+        label: t("openMood"),
+        click: () => {
+          if (typeof ctx.openMood === "function") ctx.openMood();
+        },
+      },
       buildPermissionAutomationMenuItem(),
     ];
 
@@ -509,6 +515,12 @@ module.exports = function initMenu(ctx) {
       {
         label: t("openRecap"),
         click: () => ctx.openSettingsWindow({ tab: "recap" }),
+      },
+      {
+        label: t("openMood"),
+        click: () => {
+          if (typeof ctx.openMood === "function") ctx.openMood();
+        },
       },
       {
         label: t("newSession"),

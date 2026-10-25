@@ -71,7 +71,8 @@ describe("built-in accessory capability contracts", () => {
     const usages = projectThemeVisualUsages(raw);
     const files = collectRequiredAssetFiles(raw);
 
-    assert.strictEqual(usages.length, 52);
+    // 52 upstream usages + 4 idleMoods entries (they reuse existing files).
+    assert.strictEqual(usages.length, 56);
     assert.strictEqual(files.length, 50);
     assert.deepStrictEqual(
       new Set(files),

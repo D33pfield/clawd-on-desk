@@ -200,6 +200,9 @@ const { describeGeometrySync } = require("./pet-accessory-state");
 const { createDisplayedVisualProjection } = require("./displayed-visual-projection");
 const { getRightSideMirrorFiles, isVisualMirrored, resolveMirroredFile } = require("./mirrored-files");
 const { createTestReactionHandler } = require("./test-reaction");
+const { createMoodTracker, createMoodEventHandler } = require("./mood");
+const { createMoodStore, loadMoodState } = require("./mood-store");
+const { createMoodWindow } = require("./mood-window");
 const createMacHideController = require("./mac-hide");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
@@ -2079,6 +2082,7 @@ const _runtimeAgentGate = createRuntimeAgentGate({
   isAuthoritative: () => !_initialPrefsRecovered && !_settingsController.hasReadFailure(),
 });
 const _permCtx = {
+  handleMoodEvent: (input, context) => handleMoodEvent(input, context),
   get win() { return win; },
   get lang() { return lang; },
   get sessions() { return sessions; },
@@ -2679,6 +2683,10 @@ const _tickCtx = {
   applyState,
   getIdleVisualChoice,
   getEffectiveAccessoryIds: getEffectivePetAccessoryIds,
+  chooseMood: (available) => (
+    _settingsController.get("moodEnabled") === true ? moodTracker.chooseMoment(available) : null
+  ),
+  markMoodPlayed: (mood) => moodTracker.markMomentPlayed(mood),
   miniPeekIn: (mode) => miniPeekIn(mode),
   miniPeekOut: () => miniPeekOut(),
   getObjRect,
@@ -2833,6 +2841,7 @@ sendDashboardI18n = () => {
 // the quit path runs. Kept as its own listener so the quick-host teardown below
 // stays a single, directly testable line.
 app.on("before-quit", () => stopActivePermissionReviews());
+app.on("before-quit", () => moodStore.flush());
 app.on("before-quit", () => _dashboard.quick.dispose());
 app.on("will-quit", () => _dashboard.quick.dispose());
 
@@ -3008,6 +3017,7 @@ agentRuntime = createAgentRuntimeMain({
 
 // ── HTTP server — delegated to src/server.js ──
 const _serverCtx = {
+  handleMoodEvent: (input, context) => handleMoodEvent(input, context),
   get manageClaudeHooksAutomatically() { return manageClaudeHooksAutomatically; },
   get autoStartWithClaude() { return autoStartWithClaude; },
   get claudeQuotaCollectionEnabled() { return claudeQuotaCollectionEnabled; },
@@ -4650,6 +4660,7 @@ const _menuCtx = {
   checkForUpdates: (...args) => checkForUpdates(...args),
   getUpdateMenuItem: () => getUpdateMenuItem(),
   openDashboard: () => showDashboard(),
+  openMood: () => _moodWindow.open(),
   launchClaudeSession: (mode, cwd, sessionId) => launchClaudeSession(mode, cwd, sessionId),
   newSessionWithFolder: async (t) => {
     const parent = win && !win.isDestroyed() ? win : null;
@@ -5702,6 +5713,28 @@ const handleTestResult = createTestReactionHandler({
   hasPetWindow: () => !!(win && !win.isDestroyed()),
   sendToRenderer,
 });
+
+// Mood: leaky channels fed by hook events, persisted under ~/.clawd. The idle
+// roll in tick.js asks chooseMood() whether to play a moment (see
+// docs/mood-design.md in the clawd-pet notes).
+const moodTracker = createMoodTracker({
+  initialState: loadMoodState(),
+  log: (msg) => sessionLog(msg),
+  onChange: () => moodStore.scheduleSave(),
+});
+const moodStore = createMoodStore({
+  getState: () => moodTracker.serialize(),
+  log: (msg) => sessionLog(msg),
+});
+const handleMoodEvent = createMoodEventHandler({
+  tracker: moodTracker,
+  getEnabled: () => _settingsController.get("moodEnabled") === true,
+});
+const _moodWindow = createMoodWindow({
+  getValues: () => moodTracker.read(),
+  iconPath: settingsWindowRuntime.getIconPath(),
+});
+
 const { enterMiniMode, exitMiniMode, enterMiniViaMenu, miniPeekIn, miniPeekOut,
         checkMiniModeSnap, cancelMiniTransition, animateWindowX, animateWindowParabola } = _mini;
 

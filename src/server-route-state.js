@@ -1198,6 +1198,17 @@ function handleStatePost(req, res, options) {
             });
           } catch {}
         }
+        // Decorative as well: mood bookkeeping must not fail a valid hook POST.
+        if (sessionUpdateApplied && typeof ctx.handleMoodEvent === "function") {
+          try {
+            ctx.handleMoodEvent({
+              event,
+              testResult,
+              failureKind: data.failure_kind,
+              contextPercent: contextUsage ? contextUsage.percent : undefined,
+            }, { headless: effHeadless });
+          } catch {}
+        }
         res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
         res.end("ok");
       } else {

@@ -1,5 +1,7 @@
 "use strict";
 
+const { MOODS } = require("./mood");
+
 // Defaults used when theme.json omits optional fields.
 
 const DEFAULT_SOUNDS = {
@@ -250,6 +252,9 @@ function validateTheme(cfg) {
   const idleEasterEggResult = normalizeIdleEasterEggs(cfg.idleEasterEggs);
   errors.push(...idleEasterEggResult.errors);
 
+  const idleMoodResult = normalizeIdleMoods(cfg.idleMoods);
+  errors.push(...idleMoodResult.errors);
+
   if (cfg.customization !== undefined) {
     if (!isPlainObject(cfg.customization)) {
       errors.push("customization must be an object when present");
@@ -479,6 +484,46 @@ function normalizeIdleEasterEggs(value) {
   return { value: errors.length === 0 ? normalized : [], errors };
 }
 
+// Mood moments: short idle animations the mood system may play (src/mood.js
+// decides when). Several entries may share a mood; one is picked at random.
+function normalizeIdleMoods(value) {
+  const errors = [];
+  if (value === undefined || value === null) return { value: [], errors };
+  if (!Array.isArray(value)) {
+    return { value: [], errors: ["idleMoods must be an array when present"] };
+  }
+
+  const normalized = [];
+  for (let index = 0; index < value.length; index++) {
+    const entry = value[index];
+    const pathName = `idleMoods[${index}]`;
+    if (!isPlainObject(entry)) {
+      errors.push(`${pathName} must be an object`);
+      continue;
+    }
+    hasOnlyKeys(entry, new Set(["mood", "file", "duration"]), pathName, errors);
+
+    const safeMood = MOODS.includes(entry.mood);
+    if (!safeMood) errors.push(`${pathName}.mood must be one of ${MOODS.join(", ")}`);
+    const file = basenameOnly(entry.file);
+    const safeFile = typeof entry.file === "string"
+      && entry.file === file
+      && SAFE_THEME_ASSET_BASENAME.test(file);
+    if (!safeFile) errors.push(`${pathName}.file must be a safe basename`);
+    const safeDuration = Number.isFinite(entry.duration)
+      && entry.duration >= 100
+      && entry.duration <= IDLE_EASTER_EGG_MAX_DURATION_MS;
+    if (!safeDuration) {
+      errors.push(`${pathName}.duration must be between 100 and ${IDLE_EASTER_EGG_MAX_DURATION_MS}`);
+    }
+
+    if (safeMood && safeFile && safeDuration) {
+      normalized.push({ mood: entry.mood, file, duration: entry.duration });
+    }
+  }
+  return { value: errors.length === 0 ? normalized : [], errors };
+}
+
 function getStateBindingEntry(entry) {
   if (Array.isArray(entry)) {
     return { files: [...entry], fallbackTo: null };
@@ -672,6 +717,7 @@ function projectThemeVisualUsages(cfg) {
     ["idleAnimations", cfg && cfg.idleAnimations],
     ["idleVisualOptions", cfg && cfg.idleVisualOptions],
     ["idleEasterEggs", cfg && cfg.idleEasterEggs],
+    ["idleMoods", cfg && cfg.idleMoods],
   ]) {
     for (const entry of Array.isArray(group) ? group : []) {
       if (entry && typeof entry.file === "string") {
@@ -1750,6 +1796,7 @@ function mergeDefaults(raw, themeId, isBuiltin) {
     theme.idleVisualOptions = normalizeIdleVisualOptions(raw.idleVisualOptions);
   }
   theme.idleEasterEggs = normalizeIdleEasterEggs(raw.idleEasterEggs).value;
+  theme.idleMoods = normalizeIdleMoods(raw.idleMoods).value;
 
   // updater-specific visual bindings
   theme.updateVisuals = isPlainObject(raw.updateVisuals) ? { ...raw.updateVisuals } : {};

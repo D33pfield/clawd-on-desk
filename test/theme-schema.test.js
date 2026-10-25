@@ -942,3 +942,50 @@ describe("multi-file working / juggling tiers", () => {
     ]);
   });
 });
+
+describe("theme schema idle moods", () => {
+  const entry = { mood: "stress", file: "nervous.svg", duration: 6000 };
+
+  it("accepts bounded mood entries and normalizes them on load", () => {
+    const raw = validThemeJson({
+      idleMoods: [entry, { mood: "stress", file: "../nervous-b.svg", duration: 5000 }],
+    });
+    // A path traversal in the second entry is rejected by validation...
+    assert.ok(schema.validateTheme(raw).some((error) => error.includes("idleMoods[1].file must be a safe basename")));
+
+    const valid = validThemeJson({ idleMoods: [entry, { ...entry, mood: "boredom", file: "bored.svg" }] });
+    assert.deepStrictEqual(schema.validateTheme(valid), []);
+    const theme = schema.mergeDefaults(valid, "demo", true);
+    assert.deepStrictEqual(theme.idleMoods, [
+      { mood: "stress", file: "nervous.svg", duration: 6000 },
+      { mood: "boredom", file: "bored.svg", duration: 6000 },
+    ]);
+  });
+
+  it("is optional and defaults to no moods", () => {
+    assert.deepStrictEqual(schema.validateTheme(validThemeJson()), []);
+    assert.deepStrictEqual(schema.mergeDefaults(validThemeJson(), "demo", true).idleMoods, []);
+  });
+
+  it("rejects unknown moods, unsafe files, bad durations and extra keys", () => {
+    const cases = [
+      [{ ...entry, mood: "angry" }, ".mood must be one of"],
+      [{ ...entry, file: "a/b.svg" }, ".file must be a safe basename"],
+      [{ ...entry, duration: 0 }, ".duration must be between"],
+      [{ ...entry, chance: 0.5 }, "chance"],
+    ];
+    for (const [bad, expected] of cases) {
+      const errors = schema.validateTheme(validThemeJson({ idleMoods: [bad] }));
+      assert.ok(errors.some((error) => error.includes(expected)), JSON.stringify(errors));
+    }
+    assert.ok(schema.validateTheme(validThemeJson({ idleMoods: "stress" }))
+      .includes("idleMoods must be an array when present"));
+  });
+
+  it("drops every mood when any entry is invalid instead of half-loading", () => {
+    const theme = schema.mergeDefaults(
+      validThemeJson({ idleMoods: [entry, { ...entry, mood: "angry" }] }), "demo", true
+    );
+    assert.deepStrictEqual(theme.idleMoods, []);
+  });
+});
