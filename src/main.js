@@ -203,6 +203,7 @@ const { createTestReactionHandler } = require("./test-reaction");
 const { createMoodTracker, createMoodEventHandler } = require("./mood");
 const { createMoodStore, loadMoodState } = require("./mood-store");
 const { createMoodWindow } = require("./mood-window");
+const { createMusicDetector } = require("./music");
 const createMacHideController = require("./mac-hide");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
@@ -5527,6 +5528,7 @@ function createWindow() {
   });
   win.webContents.on("did-finish-load", () => {
     deliverRendererThemeConfig();
+    if (musicDetector.isPlaying()) sendToRenderer("music-state", true);
     petWindowRuntime.resendViewportOffsets();
     if (themeRuntime.isReloadInProgress()) return;
     syncRendererStateAfterLoad();
@@ -5733,6 +5735,14 @@ const handleMoodEvent = createMoodEventHandler({
 const _moodWindow = createMoodWindow({
   getValues: () => moodTracker.read(),
   iconPath: settingsWindowRuntime.getIconPath(),
+});
+
+// Music: the pet wears headphones while Spotify plays (Windows only; see
+// src/music.js). The renderer remembers the state across theme reloads; a full
+// renderer reload gets it resent from did-finish-load.
+const musicDetector = createMusicDetector({
+  log: (msg) => sessionLog(msg),
+  onChange: (playing) => sendToRenderer("music-state", playing),
 });
 
 const { enterMiniMode, exitMiniMode, enterMiniViaMenu, miniPeekIn, miniPeekOut,
@@ -6093,6 +6103,7 @@ if (!gotTheLock) {
       console.warn("Clawd: Telegram migration startup nudge failed:", err && err.message);
     });
     holidayAccessoryRuntime.start();
+    musicDetector.start();
     // WSL agent detection is NOT started here: scanning runs a command inside
     // every installed distro, which boots each stopped VM — too aggressive for
     // app launch. The first Settings→Agents visit triggers the scan instead
@@ -6211,6 +6222,7 @@ if (!gotTheLock) {
     }
     trayBalloonOwner.dispose();
     holidayAccessoryRuntime.dispose();
+    musicDetector.stop();
     if (systemWakeRecovery) systemWakeRecovery.dispose();
     // #525: release the IVirtualDesktopManager COM ref and pay back our own
     // CoInitializeEx count (see win-cloak-recovery.js dispose()).

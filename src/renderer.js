@@ -12,6 +12,7 @@ const accessoryLayer = document.getElementById("pet-accessory-layer") || contain
 const particleLayer = document.getElementById("pet-particle-layer") || container;
 const accessoryEl = document.getElementById("clawd-accessory");
 const mouthAccessoryEl = document.getElementById("clawd-mouth-accessory");
+const musicAccessoryEl = document.getElementById("clawd-music-accessory");
 const accessoryLayout = globalThis.petAccessoryLayout || null;
 const accessoryDescriptor = globalThis.petAccessoryDescriptor || null;
 const visualSwapPolicy = globalThis.petVisualSwapPolicy || {};
@@ -67,7 +68,22 @@ let queuedSystemWakeReplayTimer = null;
 let _lowPowerStaticImageOverrides = {};
 let _petTintPayload = { id: "none", filter: "" };
 let _petTintSupported = false;
-const ACCESSORY_SLOT_NAMES = Object.freeze(["head", "mouth"]);
+const ACCESSORY_SLOT_NAMES = Object.freeze(["head", "mouth", "music"]);
+// Headphones worn while music plays. A renderer-only slot: it borrows the head
+// slot's attachments (so it follows the torso and hides wherever hats hide),
+// is not part of accessory snapshots or settings, and loads its art from the
+// active theme's assets. Themes without the file simply show nothing.
+// Art box in the Clawd rig: x -6..21, y 0.5..10.2 on a head frame at
+// cx 7.5, baseY 6.5, width 16.
+const MUSIC_SLOT = "music";
+const MUSIC_PAYLOAD = Object.freeze({
+  id: "headphones",
+  assetFile: "music-headphones.svg",
+  aspect: 27 / 9.7,
+  widthScale: 27 / 16,
+  offsetY: 3.7,
+});
+let _musicPlaying = false;
 function createAccessorySlotRuntime(element) {
   return {
     element,
@@ -90,6 +106,7 @@ function createAccessorySlotRuntime(element) {
 const _accessorySlots = {
   head: createAccessorySlotRuntime(accessoryEl),
   mouth: createAccessorySlotRuntime(mouthAccessoryEl),
+  music: createAccessorySlotRuntime(musicAccessoryEl),
 };
 let _accessoryThemeId = null;
 let _lastAccessoryGeneration = 0;
@@ -140,6 +157,7 @@ function initWithConfig(cfg) {
     ? configuredSlots.accessoryGeneration
     : 0;
   for (const slotName of ACCESSORY_SLOT_NAMES) {
+    if (slotName === MUSIC_SLOT) continue;
     const slot = _accessorySlots[slotName];
     const configured = configuredSlots && configuredSlots[slotName];
     const legacyHead = slotName === "head" && !configuredSlots;
@@ -153,6 +171,7 @@ function initWithConfig(cfg) {
       (configured && configured.payload) || (legacyHead && tc.accessoryPayload)
     );
   }
+  syncMusicSlotFromHead();
   _imgCacheBustSeq = 0;
   _miniViewBox = tc.miniModeViewBox || null;
   _fileViewBoxes = tc.fileViewBoxes || {};
@@ -802,6 +821,7 @@ function hideAccessory(slotName) {
   slot.lastLayout = null;
   if (!slot.element) return;
   slot.element.style.visibility = "hidden";
+  if (slotName === MUSIC_SLOT) container.classList.remove("music-bob");
   // A document-backed accessory that is still loading must stay mounted;
   // otherwise a fast state change to a hidden pose can abort its first load
   // and leave the slot unable to recover when a visible pose returns.
@@ -941,7 +961,7 @@ function ensureAccessoryAsset(slotName) {
     flushAccessoryAssetWaiters(slotName);
   }, ACCESSORY_SETTLE_TIMEOUT_MS);
   slot.assetLoadTimer = loadTimer;
-  const assetUrl = `../assets/accessories/${file}`;
+  const assetUrl = slotName === MUSIC_SLOT ? getAssetUrl(file) : `../assets/accessories/${file}`;
   // The mouth slot uses a document-backed <object> so low-power mode can pause
   // and resume its bounded SMIL timeline through contentDocument. The static
   // head slot remains a cheaper <img>.
@@ -1073,6 +1093,7 @@ function applyAccessoryLayout(context, layout) {
   setAccessorySvgLowPowerPaused(context.slotName, lowPowerSvgPaused);
   slot.element.style.visibility = "visible";
   slot.element.style.display = "block";
+  if (context.slotName === MUSIC_SLOT) container.classList.add("music-bob");
   return true;
 }
 
@@ -1173,12 +1194,34 @@ function setAccessorySlotsSnapshot(snapshot) {
   if (!snapshot.payloads || typeof snapshot.payloads !== "object") return false;
   _lastAccessoryGeneration = snapshot.accessoryGeneration;
   for (const slotName of ACCESSORY_SLOT_NAMES) {
+    if (slotName === MUSIC_SLOT) continue;
     applyAccessorySlotPayload(slotName, snapshot.payloads[slotName]);
   }
   refreshAccessoryMediaChannel();
   return true;
 }
 
+// The music slot mirrors the head slot's theme support and attachments. Called
+// on every config (re)load, which also resets the head slot.
+function syncMusicSlotFromHead() {
+  const head = _accessorySlots.head;
+  const music = _accessorySlots[MUSIC_SLOT];
+  music.supported = head.supported;
+  music.attachments = head.attachments;
+  music.payload = normalizeAccessoryPayload(_musicPlaying ? MUSIC_PAYLOAD : null);
+}
+
+function setMusicPlaying(playing) {
+  const next = playing === true;
+  if (next === _musicPlaying) return;
+  _musicPlaying = next;
+  applyAccessorySlotPayload(MUSIC_SLOT, next ? MUSIC_PAYLOAD : null);
+  refreshAccessoryMediaChannel();
+}
+
+if (window.electronAPI && typeof window.electronAPI.onMusicState === "function") {
+  window.electronAPI.onMusicState(setMusicPlaying);
+}
 if (window.electronAPI && typeof window.electronAPI.onPetAccessoryChange === "function") {
   window.electronAPI.onPetAccessoryChange((payload) => {
     applyAccessorySlotPayload("head", payload);

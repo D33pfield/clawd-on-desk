@@ -240,6 +240,11 @@ function createRendererHarness(options = {}) {
   const mouthAccessory = new FakeElement("object");
   mouthAccessory.id = "clawd-mouth-accessory";
   mouthAccessory.className = "clawd-accessory";
+  const musicAccessoryLayer = new FakeElement("div");
+  musicAccessoryLayer.id = "pet-music-accessory-layer";
+  const musicAccessory = new FakeElement("object");
+  musicAccessory.id = "clawd-music-accessory";
+  musicAccessory.className = "clawd-accessory";
   const effectStage = new FakeElement("div");
   effectStage.id = "pet-effect-stage";
   const particleLayer = new FakeElement("div");
@@ -265,9 +270,11 @@ function createRendererHarness(options = {}) {
   assetDirectionStage.appendChild(mediaLayer);
   assetDirectionStage.appendChild(accessoryLayer);
   assetDirectionStage.appendChild(mouthAccessoryLayer);
+  assetDirectionStage.appendChild(musicAccessoryLayer);
   mediaLayer.appendChild(clawd);
   accessoryLayer.appendChild(accessory);
   mouthAccessoryLayer.appendChild(mouthAccessory);
+  musicAccessoryLayer.appendChild(musicAccessory);
   container.appendChild(effectStage);
   effectStage.appendChild(particleLayer);
 
@@ -284,6 +291,8 @@ function createRendererHarness(options = {}) {
     ["clawd", clawd],
     ["clawd-accessory", accessory],
     ["clawd-mouth-accessory", mouthAccessory],
+    ["pet-music-accessory-layer", musicAccessoryLayer],
+    ["clawd-music-accessory", musicAccessory],
   ]);
   const documentListeners = new Map();
 
@@ -423,6 +432,7 @@ globalThis.__rendererTest = {
     assetDirectionStage,
     accessory,
     mouthAccessory,
+    musicAccessory,
     particleLayer,
     clawd,
     timers,
@@ -2736,6 +2746,69 @@ describe("renderer pet accessory wardrobe", () => {
     assert.strictEqual(harness.accessory.src, "../assets/accessories/cowboy-hat.svg");
     assert.strictEqual(harness.mouthAccessory.tagName, "OBJECT");
     assert.strictEqual(harness.mouthAccessory.data, "../assets/accessories/cigarette.svg");
+  });
+
+  describe("music headphones", () => {
+    function settledHeadOnly(overrides = {}) {
+      const config = dualSlotConfig(overrides);
+      delete config.accessorySlots.mouth;
+      const harness = createRendererHarness({ initialObjectData: "", themeConfig: config });
+      harness.api.pendingNext.listeners.get("load")();
+      harness.accessory.onload();
+      assert.strictEqual(harness.api.pendingNext, null);
+      return { harness, config };
+    }
+
+    it("loads the headphones from the theme assets while music plays, with a bob", () => {
+      const { harness } = settledHeadOnly();
+      assert.strictEqual(harness.musicAccessory.data, "");
+
+      harness.electronHandlers.onMusicState(true);
+      assert.strictEqual(harness.musicAccessory.data, "../assets/svg/music-headphones.svg");
+      assert.strictEqual(harness.musicAccessory.style.visibility, "hidden", "hidden until loaded");
+      assert.ok(!harness.container.classList.contains("music-bob"));
+
+      harness.musicAccessory.onload();
+      assert.strictEqual(harness.musicAccessory.style.visibility, "visible");
+      assert.strictEqual(harness.musicAccessory.style.display, "block");
+      assert.ok(harness.container.classList.contains("music-bob"));
+
+      harness.electronHandlers.onMusicState(false);
+      assert.strictEqual(harness.musicAccessory.data, "");
+      assert.strictEqual(harness.musicAccessory.style.display, "none");
+      assert.ok(!harness.container.classList.contains("music-bob"));
+    });
+
+    it("survives accessory snapshots and theme reloads while music plays", () => {
+      const { harness, config } = settledHeadOnly();
+      harness.electronHandlers.onMusicState(true);
+      harness.musicAccessory.onload();
+
+      const none = { id: "none", assetFile: null, aspect: 1, widthScale: 1, offsetY: 0 };
+      harness.electronHandlers.onPetAccessorySlotsChange({
+        themeId: "clawd",
+        accessoryGeneration: 6,
+        payloads: { head: none, mouth: none },
+      });
+      assert.strictEqual(harness.api.accessorySlots.head.payload.id, "none");
+      assert.strictEqual(harness.api.accessorySlots.music.payload.id, "headphones");
+      assert.strictEqual(harness.musicAccessory.data, "../assets/svg/music-headphones.svg");
+
+      harness.electronHandlers.onThemeConfig(dualSlotConfig({ accessorySlots: { ...config.accessorySlots, accessoryGeneration: 7 } }));
+      assert.strictEqual(harness.api.accessorySlots.music.supported, true);
+      assert.strictEqual(harness.api.accessorySlots.music.payload.id, "headphones");
+      assert.strictEqual(harness.musicAccessory.data, "../assets/svg/music-headphones.svg");
+    });
+
+    it("shows nothing when the theme has no accessory support", () => {
+      const config = dualSlotConfig();
+      config.accessorySlots.head.supported = false;
+      delete config.accessorySlots.mouth;
+      const harness = createRendererHarness({ initialObjectData: "", themeConfig: config });
+      harness.electronHandlers.onMusicState(true);
+      assert.strictEqual(harness.musicAccessory.data, "");
+      assert.ok(!harness.container.classList.contains("music-bob"));
+    });
   });
 
   it("keeps a hot-selected mouth object mounted but invisible until its SVG loads", () => {
