@@ -342,6 +342,7 @@ function registerSettingsIpc(options = {}) {
   const refreshWslDetection = typeof options.refreshWslDetection === "function"
     ? options.refreshWslDetection
     : require("./agent-installation-detector").refreshWslDetection;
+  const listChatterModels = options.listChatterModels || (async () => ({ ok: false, models: [], error: "unavailable" }));
   const getHookServerPort = options.getHookServerPort || (() => null);
   const getRecentHookEvents = options.getRecentHookEvents || (() => []);
   const checkForUpdates = options.checkForUpdates || (() => {});
@@ -564,6 +565,10 @@ function registerSettingsIpc(options = {}) {
       : { status: "error", reason: "runtime-unavailable" };
   });
   handle("settings:get-pet-tint-options", () => listPetTintOptions());
+  handle("settings:chatter-models", async (event) => {
+    if (!isTrustedSettingsEvent(event)) return { ok: false, models: [], error: "untrusted" };
+    return listChatterModels();
+  });
   handle("settings:get-pet-accessory-options", () => listPetAccessoryOptions());
   handle("settings:get-pet-mouth-accessory-options", () => listPetMouthAccessoryOptions());
   handle("settings:get-roam-fence", (event) => {

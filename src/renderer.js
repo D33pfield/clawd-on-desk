@@ -919,6 +919,30 @@ function getMediaLayoutBox(media) {
   return { x, y, width, height };
 }
 
+// Top edge, in window pixels, of everything the displayed animation draws
+// (thought bubbles, a laptop screen and so on, even parts currently faded out),
+// or null when it cannot be measured. The main process reads it by name through
+// executeJavaScript so the chatter bubble can sit just above the real artwork.
+function getDisplayedContentTop() {
+  try {
+    if (!clawdEl || clawdEl.tagName !== "OBJECT" || !currentDisplayedSvg) return null;
+    const doc = clawdEl.contentDocument;
+    const root = doc && doc.documentElement;
+    if (!root || typeof root.getBBox !== "function") return null;
+    const box = root.getBBox();
+    const viewBox = resolveViewBox(currentDisplayedState, currentDisplayedSvg);
+    const media = getMediaLayoutBox(clawdEl);
+    if (!box || !viewBox || !media || !Number.isFinite(box.y) || box.height <= 0) return null;
+    // The SVG is fitted into its element with preserveAspectRatio "meet".
+    const scale = Math.min(media.width / viewBox.width, media.height / viewBox.height);
+    if (!Number.isFinite(scale) || scale <= 0) return null;
+    const top = media.y + (media.height - viewBox.height * scale) / 2 + (box.y - viewBox.y) * scale;
+    return Number.isFinite(top) ? top : null;
+  } catch {
+    return null;
+  }
+}
+
 function ensureAccessoryAsset(slotName) {
   const slot = getAccessorySlot(slotName);
   if (!slot || !slot.element || !slot.payload.assetFile) return false;

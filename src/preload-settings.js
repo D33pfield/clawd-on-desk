@@ -8,6 +8,7 @@
 //                                       hardcoded (maintainer-shipped)
 //   getSnapshot()                       Promise<snapshot>
 //   getPetTintOptions()                 Promise<Array<{id, labelKey}>>
+//   getChatterModels()                  Promise<{ok, models, error?}> installed Ollama models
 //   getPetAccessoryOptions()            Promise<Array<{id, labelKey}>>
 //   getPetMouthAccessoryOptions()       Promise<Array<{id, labelKey}>>
 //   update(key, value)                  Promise<{ status, message? }>
@@ -151,6 +152,7 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   disconnectKimiQuota: () => ipcRenderer.invoke("settings:kimi-quota-disconnect"),
   forgetKimiQuotaCredential: () => ipcRenderer.invoke("settings:kimi-quota-forget"),
   getPetTintOptions: () => ipcRenderer.invoke("settings:get-pet-tint-options"),
+  getChatterModels: () => ipcRenderer.invoke("settings:chatter-models"),
   getPetAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-accessory-options"),
   getPetMouthAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-mouth-accessory-options"),
   getRoamFence: () => ipcRenderer.invoke("settings:get-roam-fence"),

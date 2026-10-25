@@ -16,6 +16,8 @@ function createFloatingWindowRuntime(options = {}) {
   const keepOutOfTaskbar = options.keepOutOfTaskbar || noop;
   const repositionPermissionBubbles = options.repositionPermissionBubbles || noop;
   const repositionUpdateBubble = options.repositionUpdateBubble || noop;
+  const repositionChatterBubble = options.repositionChatterBubble || noop;
+  const hideChatterBubble = options.hideChatterBubble || noop;
   const repositionSessionHud = options.repositionSessionHud || noop;
   const repositionQuotaRing = options.repositionQuotaRing || noop;
   const syncSessionHudVisibility = options.syncSessionHudVisibility || noop;
@@ -30,6 +32,7 @@ function createFloatingWindowRuntime(options = {}) {
   function repositionFloatingBubbles() {
     if (getPendingList(getPendingPermissions).length) repositionPermissionBubbles();
     repositionUpdateBubble();
+    repositionChatterBubble();
     // Orbit reads both permission and update-bubble bounds. Reposition it last
     // so it never avoids the previous update-bubble position.
     repositionQuotaRing();
@@ -75,13 +78,18 @@ function createFloatingWindowRuntime(options = {}) {
       }
     }
     suspendUpdateBubbleForPet();
+    hideChatterBubble();
   }
 
   function setFullscreenSuppressedForPet(suppressed) {
     const target = suppressed === true;
     setPermissionSurfacesFullscreenSuppressed(target);
-    if (target) suspendUpdateBubbleForFullscreen();
-    else resumeUpdateBubbleFromFullscreen();
+    if (target) {
+      suspendUpdateBubbleForFullscreen();
+      hideChatterBubble();
+    } else {
+      resumeUpdateBubbleFromFullscreen();
+    }
   }
 
   return {

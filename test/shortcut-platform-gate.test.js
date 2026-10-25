@@ -152,6 +152,7 @@ function runtimeHarness(platform, shortcuts) {
     shortcutHandlers: {
       togglePet: () => {},
       quickSelectSession: () => {},
+      chatterNow: () => {},
     },
   });
   return { runtime, registered, unregistered };
@@ -196,6 +197,7 @@ function commandDeps(platform, shortcuts, registered = []) {
     shortcutHandlers: {
       togglePet: () => {},
       quickSelectSession: () => {},
+      chatterNow: () => {},
     },
   };
 }
@@ -253,6 +255,7 @@ test("reset all on linux leaves the gated binding untouched", () => {
     commandDeps("linux", {
       quickSelectSession: LEFTOVER,
       togglePet: "CommandOrControl+Shift+K",
+      chatterNow: null,
       permissionAllow: null,
       permissionDeny: null,
     })
