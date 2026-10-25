@@ -1,6 +1,7 @@
 "use strict";
 
 const { describe, it } = require("node:test");
+const { CHATTER_FONTS, CHATTER_FONT_IDS, resolveChatterFont } = require("../src/chatter-fonts");
 const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -147,6 +148,7 @@ describe("createChatterBubble", () => {
     assert.strictEqual(win.sent[0].channel, "chatter-bubble-show");
     assert.strictEqual(win.sent[0].payload.text, "Hello there, friend.");
     assert.strictEqual(win.sent[0].payload.below, false);
+    assert.strictEqual(win.sent[0].payload.font.size, 14, "no font chosen: the default face");
     assert.ok(bubble.isVisible());
   });
 
@@ -336,6 +338,33 @@ describe("createChatterBubble", () => {
     const lost = setup({ getAnchorRect: () => null });
     assert.strictEqual(lost.bubble.show("Hello there."), false);
     assert.strictEqual(lost.windows.length, 0);
+  });
+
+  it("the chosen font reaches the page, an unknown one falls back to the default", () => {
+    const { bubble, windows } = setup();
+    bubble.show("Hello there, friend.", { font: "courier" });
+    windows[0].finishLoad();
+    assert.deepStrictEqual(windows[0].sent[0].payload.font, CHATTER_FONTS.courier);
+    bubble.hide();
+
+    const second = setup();
+    second.bubble.show("Hello there, friend.", { font: "<script>" });
+    second.windows[0].finishLoad();
+    assert.deepStrictEqual(second.windows[0].sent[0].payload.font, CHATTER_FONTS.cascadia);
+  });
+
+  it("every preset ends in monospace and has a usable size", () => {
+    for (const id of CHATTER_FONT_IDS) {
+      const font = resolveChatterFont(id);
+      assert.match(font.family, /monospace$/, id);
+      assert.ok(font.size >= 12 && font.size <= 16, id);
+      assert.ok(font.lineHeight >= 1.3 && font.lineHeight <= 1.6, id);
+    }
+  });
+
+  it("the page applies the font before it lays the text out", () => {
+    const html = require("fs").readFileSync(require("path").join(__dirname, "..", "src", "chatter-bubble.html"), "utf8");
+    assert.ok(html.indexOf("applyFont(data.font);") < html.indexOf("ghost.textContent = data.text;"));
   });
 });
 

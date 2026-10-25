@@ -127,6 +127,15 @@ function place(tailX, below) {
   puff2.style.left = Math.round(anchor - 2) + "px";
 }
 
+// The font comes from the main process's fixed list. Set before the text, so the
+// bubble is measured and placed in its final face.
+function applyFont(font) {
+  if (!font || typeof font.family !== "string" || !(font.size > 0)) return;
+  bubble.style.fontFamily = font.family;
+  bubble.style.fontSize = font.size + "px";
+  bubble.style.lineHeight = String(font.lineHeight);
+}
+
 // Model output is untrusted: textContent only, never markup.
 window.chatterBubbleAPI.onShow((data) => {
   if (!data || typeof data.text !== "string") return;
@@ -135,6 +144,7 @@ window.chatterBubbleAPI.onShow((data) => {
     place(data.tailX, data.below);
     return;
   }
+  applyFont(data.font);
   ghost.textContent = data.text;
   place(data.tailX, data.below);
   typeText(data.text, data.charMs);

@@ -19,6 +19,7 @@ describe("chatter prefs", () => {
     assert.strictEqual(defaults.chatterCustomPersonality, "");
     assert.strictEqual(defaults.chatterCheckinMinutes, 12);
     assert.strictEqual(defaults.chatterBubbleSeconds, 12);
+    assert.strictEqual(defaults.chatterBubbleFont, "cascadia");
     for (const key of ["Checkin", "Tests", "Error", "Return", "Music"]) {
       assert.strictEqual(defaults[`chatterTrigger${key}`], true, key);
     }
@@ -26,7 +27,7 @@ describe("chatter prefs", () => {
 
   it("every chatter pref has an update validator", () => {
     const chatterKeys = prefs.SCHEMA_KEYS.filter((key) => key.startsWith("chatter"));
-    assert.strictEqual(chatterKeys.length, 13);
+    assert.strictEqual(chatterKeys.length, 14);
     for (const key of chatterKeys) assert.strictEqual(typeof updateRegistry[key], "function", key);
   });
 
@@ -37,6 +38,8 @@ describe("chatter prefs", () => {
     assert.ok(!ok("chatterBubbleSeconds", 2) && !ok("chatterBubbleSeconds", 61) && !ok("chatterBubbleSeconds", "12"));
     for (const id of ["deadpan", "wholesome", "anxious", "custom"]) assert.ok(ok("chatterPersonality", id), id);
     assert.ok(!ok("chatterPersonality", "grumpy") && !ok("chatterPersonality", ""));
+    for (const id of ["cascadia", "consolas", "lucida", "courier"]) assert.ok(ok("chatterBubbleFont", id), id);
+    assert.ok(!ok("chatterBubbleFont", "Comic Sans MS") && !ok("chatterBubbleFont", ""));
     assert.ok(ok("chatterCustomPersonality", "") && ok("chatterCustomPersonality", "x".repeat(300)));
     assert.ok(!ok("chatterCustomPersonality", "x".repeat(301)) && !ok("chatterCustomPersonality", 5));
     assert.ok(ok("chatterTriggerMusic", false) && !ok("chatterTriggerMusic", "no"));
