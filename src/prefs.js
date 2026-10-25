@@ -337,6 +337,8 @@ const SCHEMA = {
   // Opt-in decorative feedback for recognized Claude Code Bash test runs.
   // The hook sends only pass/fail, never the command or full test output.
   testReactionsEnabled: { type: "boolean", default: false },
+  // Fork: occasional idle "mood moments" driven by hook events (src/mood.js).
+  moodEnabled: { type: "boolean", default: true },
   lowPowerIdleMode: { type: "boolean", default: false },
   mobilePreviewEnabled: { type: "boolean", default: false },
   // Separate, explicit consent for the broader permission-summary disclosure.

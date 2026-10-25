@@ -337,6 +337,7 @@ const updateRegistry = {
   flashIntervalMs: requireNumberInRange("flashIntervalMs", 200, 2000),
   flashDurationMs: requireNumberInRange("flashDurationMs", 0, 60000),
   testReactionsEnabled: requireBoolean("testReactionsEnabled"),
+  moodEnabled: requireBoolean("moodEnabled"),
   codexHookHealthNotifyEnabled: requireBoolean("codexHookHealthNotifyEnabled"),
   codexHookHealthLastNotified: requireString("codexHookHealthLastNotified", { allowEmpty: true }),
   telegramMigrationLastNotified: requireString("telegramMigrationLastNotified", { allowEmpty: true }),

@@ -1249,6 +1249,12 @@
       }
     }
   ],
+  "idleMoods": [
+    { "mood": "stress", "file": "clawd-dizzy.svg", "duration": 6000 },
+    { "mood": "satisfaction", "file": "clawd-heart-eyes.svg", "duration": 4000 },
+    { "mood": "fatigue", "file": "clawd-idle-yawn.svg", "duration": 3000 },
+    { "mood": "boredom", "file": "clawd-idle-reading.svg", "duration": 14000 }
+  ],
   "displayHintMap": {
     "claude-design": "clawd-designing.svg",
     "clawd-working-building.svg": "clawd-working-building.svg",

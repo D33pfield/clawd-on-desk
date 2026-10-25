@@ -3953,3 +3953,58 @@ describe("issue #1125 AI session title end to end", () => {
     }
   });
 });
+
+describe("state route mood tap", () => {
+  const post = (extra = {}, overrides = {}) => callStatePost(JSON.stringify({
+    state: "working",
+    session_id: "mood-session",
+    event: "PostToolUse",
+    agent_id: "claude-code",
+    ...extra,
+  }), overrides);
+
+  function withMoodCalls() {
+    const moodCalls = [];
+    return { moodCalls, ctx: { handleMoodEvent: (...args) => moodCalls.push(args) } };
+  }
+
+  it("reports the lifecycle event with test result, failure kind and context percent", async () => {
+    const { moodCalls, ctx } = withMoodCalls();
+    const res = await post({
+      state: "attention",
+      event: "Stop",
+      failure_kind: "api_error",
+      context_usage: { used: 90, limit: 100 },
+    }, { ctx });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(moodCalls, [[
+      { event: "Stop", testResult: null, failureKind: "api_error", contextPercent: 90 },
+      { headless: false },
+    ]]);
+  });
+
+  it("passes the parsed test result through", async () => {
+    const { moodCalls, ctx } = withMoodCalls();
+    await post({ tool_name: "Bash", test_result: "pass" }, { ctx });
+    assert.strictEqual(moodCalls[0][0].testResult, "pass");
+  });
+
+  it("does not report an update the session layer rejected", async () => {
+    const { moodCalls, ctx } = withMoodCalls();
+    const res = await post({}, { ctx: { ...ctx, updateSession: () => false } });
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(moodCalls, []);
+  });
+
+  it("keeps a mood handler failure from failing the state POST", async () => {
+    const res = await post({}, { ctx: { handleMoodEvent: () => { throw new Error("tracker gone"); } } });
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession.length, 1);
+  });
+
+  it("works when the host provides no mood handler", async () => {
+    const res = await post({});
+    assert.strictEqual(res.statusCode, 200);
+  });
+});

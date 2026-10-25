@@ -1565,3 +1565,146 @@ describe("tick conditional idle easter eggs", () => {
     assert.deepStrictEqual(idleFiles(), ["clawd-outlaw-bender.svg"]);
   });
 });
+
+describe("tick idle mood moments", () => {
+  let cursor;
+  let loader;
+  let tickApi;
+  let ctx;
+  let rendererCalls;
+  let moodCalls;
+  let playedMoods;
+  let nextMood;
+
+  const MOODS = [
+    { mood: "stress", file: "stress-a.svg", duration: 4000 },
+    { mood: "boredom", file: "bored.svg", duration: 3000 },
+  ];
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    cursor = { x: 40, y: 40 };
+    loader = loadTickWithScreen(() => ({ ...cursor }));
+    rendererCalls = [];
+    moodCalls = [];
+    playedMoods = [];
+    nextMood = null;
+  });
+
+  afterEach(() => {
+    if (tickApi) tickApi.cleanup();
+    if (loader) loader.restore();
+    mock.timers.reset();
+    tickApi = null;
+    ctx = null;
+  });
+
+  function start({ moods = MOODS, idleAnimations = [], configure = () => {} } = {}) {
+    const theme = cloneTheme(_defaultTheme);
+    theme.timings.mouseIdleTimeout = 60;
+    theme.timings.mouseSleepTimeout = 100000000;
+    theme.idleAnimations = idleAnimations;
+    theme.idleEasterEggs = [];
+    theme.idleMoods = moods;
+    ctx = makeCtx(theme, []);
+    let visualGeneration = 0;
+    ctx.random = () => 0;
+    ctx.now = () => Date.now();
+    ctx.chooseMood = (available) => {
+      moodCalls.push(available);
+      return nextMood;
+    };
+    ctx.markMoodPlayed = (mood) => playedMoods.push(mood);
+    ctx.sendToRenderer = (channel, ...args) => {
+      rendererCalls.push([channel, ...args]);
+      if (channel === "state-change") {
+        const request = { visualGeneration: ++visualGeneration };
+        const options = args[2];
+        if (options && typeof options.onLogicalSettlement === "function") {
+          options.onLogicalSettlement({ status: "committed", visualGeneration: request.visualGeneration });
+        }
+        return request;
+      }
+      return undefined;
+    };
+    configure(ctx);
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+  }
+
+  function idleFiles() {
+    return rendererCalls
+      .filter(([channel, state]) => channel === "state-change" && state === "idle")
+      .map(([, , file]) => file);
+  }
+
+  function advanceUntil(predicate, { step = 25, limit = 2000 } = {}) {
+    for (let elapsed = 0; elapsed < limit && !predicate(); elapsed += step) {
+      mock.timers.tick(step);
+    }
+    assert.ok(predicate(), `condition was not reached within ${limit} ms`);
+  }
+
+  it("plays the chosen mood's animation, marks it played, then returns to rest", () => {
+    nextMood = "boredom";
+    start({ idleAnimations: [{ file: "clawd-idle-look.svg", duration: 500 }] });
+
+    advanceUntil(() => idleFiles().length === 1);
+    assert.deepStrictEqual(idleFiles(), ["bored.svg"], "the mood replaces the ordinary pool pick");
+    assert.deepStrictEqual(playedMoods, ["boredom"]);
+
+    mock.timers.tick(3000);
+    assert.strictEqual(idleFiles().length, 2);
+    assert.notStrictEqual(idleFiles()[1], "bored.svg");
+  });
+
+  it("offers only the moods the theme can play, once per idle period", () => {
+    start();
+    advanceUntil(() => moodCalls.length >= 1);
+    mock.timers.tick(1000);
+    assert.deepStrictEqual(moodCalls, [["stress", "boredom"]]);
+  });
+
+  it("falls through to the ordinary pool when no mood is chosen", () => {
+    nextMood = null;
+    start({ idleAnimations: [{ file: "clawd-idle-look.svg", duration: 500 }] });
+    advanceUntil(() => idleFiles().length === 1);
+    assert.deepStrictEqual(idleFiles(), ["clawd-idle-look.svg"]);
+    assert.deepStrictEqual(playedMoods, []);
+  });
+
+  it("does nothing special for themes without moods or contexts without a mood hook", () => {
+    nextMood = "stress";
+    start({ moods: [], idleAnimations: [{ file: "clawd-idle-look.svg", duration: 500 }] });
+    advanceUntil(() => idleFiles().length === 1);
+    assert.deepStrictEqual(moodCalls, []);
+    assert.deepStrictEqual(idleFiles(), ["clawd-idle-look.svg"]);
+  });
+
+  it("works when the context has no chooseMood", () => {
+    start({
+      idleAnimations: [{ file: "clawd-idle-look.svg", duration: 500 }],
+      configure: (c) => { delete c.chooseMood; },
+    });
+    advanceUntil(() => idleFiles().length === 1);
+    assert.deepStrictEqual(idleFiles(), ["clawd-idle-look.svg"]);
+  });
+
+  it("does not ask for a mood while the pet is in mini mode", () => {
+    nextMood = "stress";
+    start({ configure: (c) => { c.miniMode = true; } });
+    mock.timers.tick(1000);
+    assert.deepStrictEqual(moodCalls, []);
+    assert.deepStrictEqual(idleFiles(), []);
+  });
+
+  it("does not mark a mood played when the swap-delay recheck fails", () => {
+    nextMood = "stress";
+    start();
+    advanceUntil(() => moodCalls.length === 1);
+    ctx.miniMode = true;
+    mock.timers.tick(350);
+    assert.deepStrictEqual(idleFiles(), []);
+    assert.deepStrictEqual(playedMoods, []);
+  });
+});

@@ -5136,12 +5136,27 @@ function handleBubbleRendererGone(bubble) {
   if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
 }
 
+// Mood only cares about a real allow/deny the user chose in a bubble, not
+// passive notifications or question prompts.
+function reportMoodDecision(perm, behavior) {
+  if (typeof ctx.handleMoodEvent !== "function") return;
+  if (perm.isCodexUserInputNotify || perm.isFamilyQuestion || perm.isCodexNotify || perm.isKimiNotify) return;
+  if (behavior !== "allow" && behavior !== "deny" && behavior !== "deny-and-focus") return;
+  try {
+    ctx.handleMoodEvent(
+      { permissionDecision: behavior === "allow" ? "allow" : "deny" },
+      { headless: isPermissionEntryHeadless(perm) }
+    );
+  } catch {}
+}
+
 function handleDecide(event, behavior) {
   // Identify which permission this bubble belongs to via sender webContents
   const senderWin = BrowserWindow.fromWebContents(event.sender);
   const perm = pendingPermissions.find(p => p.bubble === senderWin);
   permLog(`IPC permission-decide: behavior=${behavior} matched=${!!perm}`);
   if (!perm) return;
+  reportMoodDecision(perm, behavior);
   const resolvedDecisionOptions = resolutionOptions("resolved", true);
   const unsupportedActionOptions = behavior === "deny-and-focus"
     ? resolutionOptions("handed_to_terminal", false)

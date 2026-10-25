@@ -59,6 +59,7 @@ let MOUSE_SLEEP_TIMEOUT = 0;
 let SVG_IDLE_FOLLOW = null;
 let IDLE_ANIMS = [];
 let IDLE_EASTER_EGGS = [];
+let IDLE_MOODS = [];
 const idleEasterEggLastPlayedAt = new Map();
 let SLEEP_MODE = "full";
 let THEME_SUPPORTS_DIZZY = false;
@@ -75,6 +76,11 @@ function refreshTheme() {
     chance: egg.chance,
     cooldownMs: egg.cooldownMs,
     requiresAccessories: { ...egg.requiresAccessories },
+  }));
+  IDLE_MOODS = (theme.idleMoods || []).map((entry) => ({
+    mood: entry.mood,
+    svg: entry.file,
+    duration: entry.duration,
   }));
   SLEEP_MODE = theme.sleepSequence && theme.sleepSequence.mode === "direct" ? "direct" : "full";
   // Precompute dizzy support so the per-tick spin detector can gate cheaply and skip all
@@ -134,6 +140,19 @@ function chooseIdleEasterEgg() {
     if (roll < upperBound) return egg;
   }
   return null;
+}
+
+// A mood moment replaces this idle period's ordinary random animation. The
+// main process owns the mood channels, thresholds and cooldowns (src/mood.js);
+// here we only offer the moods the theme can actually play.
+function chooseIdleMood() {
+  if (IDLE_MOODS.length === 0 || typeof ctx.chooseMood !== "function") return null;
+  if (!isIdleEasterEggEnvironmentEligible()) return null;
+  const available = [...new Set(IDLE_MOODS.map((entry) => entry.mood))];
+  const mood = ctx.chooseMood(available);
+  if (!mood) return null;
+  const options = IDLE_MOODS.filter((entry) => entry.mood === mood);
+  return options[Math.floor(random() * options.length)] || null;
 }
 
 function finishIdleVisualPlayback(attempt) {
@@ -436,7 +455,7 @@ function runMainTickOnce() {
       // once-per-idle-period slot. With no choice set the pool is untouched:
       // a theme may deliberately list its follow sprite as a stay-at-rest beat.
       if (
-        (IDLE_ANIMS.length > 0 || IDLE_EASTER_EGGS.length > 0)
+        (IDLE_ANIMS.length > 0 || IDLE_EASTER_EGGS.length > 0 || IDLE_MOODS.length > 0)
         && !isMouseIdle
         && !hasTriggeredYawn
         && !idleLookPlayed
@@ -444,18 +463,22 @@ function runMainTickOnce() {
       ) {
         const choice = typeof ctx.getIdleVisualChoice === "function" ? ctx.getIdleVisualChoice() : null;
         const pool = choice ? IDLE_ANIMS.filter((a) => a.svg !== choice) : IDLE_ANIMS;
-        const easterEgg = chooseIdleEasterEgg();
-        if (!easterEgg && pool.length === 0) {
+        const moodPick = chooseIdleMood();
+        const easterEgg = moodPick ? null : chooseIdleEasterEgg();
+        if (!moodPick && !easterEgg && pool.length === 0) {
           idleLookPlayed = true;
           return nextDelay();
         }
         isMouseIdle = true;
         idleLookPlayed = true;
-        const pick = easterEgg || pool[Math.floor(random() * pool.length)];
+        const pick = moodPick || easterEgg || pool[Math.floor(random() * pool.length)];
         if (!shouldSuppressPassiveIpc()) ctx.sendToRenderer("eye-move", 0, 0);
         yawnDelayTimer = setTimeout(() => {
           yawnDelayTimer = null;
-          if (easterEgg && !isIdleEasterEggEligible(easterEgg)) {
+          if (
+            (easterEgg && !isIdleEasterEggEligible(easterEgg))
+            || (moodPick && !isIdleEasterEggEnvironmentEligible())
+          ) {
             isMouseIdle = false;
             idleLookPlayed = false;
             idleLookVisualGeneration = null;
@@ -489,6 +512,9 @@ function runMainTickOnce() {
               idleLookVisualGeneration = settlement.visualGeneration;
               if (easterEgg) {
                 idleEasterEggLastPlayedAt.set(idleEasterEggKey(easterEgg), now());
+              }
+              if (moodPick && typeof ctx.markMoodPlayed === "function") {
+                ctx.markMoodPlayed(moodPick.mood);
               }
               idleLookReturnTimer = setTimeout(
                 () => finishIdleVisualPlayback(attempt),
