@@ -1,6 +1,6 @@
 "use strict";
 
-// Pet chatter: a local LLM (Ollama) writes a short reply of one to three lines,
+// Pet chatter: a local LLM (Ollama) writes a short reply of up to two lines,
 // shown as back-to-back speech bubbles. The code decides WHEN to speak and WHAT
 // the model may know; the model only writes the words. Each reply is a fresh,
 // stateless chat built from a fact sheet with one required FOCUS fact (rotated
@@ -106,6 +106,8 @@ function triggerEnabled(settings, name) {
   return !(settings && settings.triggers && key && settings.triggers[key] === false);
 }
 const MAX_CUSTOM_PERSONALITY_CHARS = 300;
+// A bubble line is a few words; one very long unbroken token would overflow the bubble.
+const MAX_LINE_CHARS = 140;
 
 // ── Pure helpers ──
 
@@ -305,13 +307,16 @@ function tooSimilar(text, others, threshold) {
 function cleanLine(raw, options = {}) {
   const maxWords = options.maxWords || DEFAULT_CONFIG.maxWords;
   const threshold = options.similarity || DEFAULT_CONFIG.similarity;
-  let text = String(raw || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+  let text = (typeof raw === "string" ? raw : "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
   text = (text.split(/\r?\n/)[0] || "")
     .replace(/[\u{1F000}-\u{1FAFF}☀-➿]/gu, "")
+    // Control and invisible direction characters never belong in a bubble or the log.
+    .replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u2028\u2029\u202A-\u202E\u2066-\u2069\uFEFF]/g, " ")
+    .replace(/\s{2,}/g, " ")
     .replace(/^["'`*_\s]+|["'`*_\s]+$/g, "")
     .trim();
   if (!text) return { text: "", reason: "empty" };
-  if (text.split(/\s+/).length > maxWords) return { text, reason: "too-long" };
+  if (text.split(/\s+/).length > maxWords || text.length > MAX_LINE_CHARS) return { text, reason: "too-long" };
   // Digits are fine when the fact sheet itself contains that number; invented
   // numbers ("three hours of silence") are not. Spelled-out numbers are not checked.
   const known = new Set(String(options.factSheet || "").match(/\d+(?:\.\d+)?/g) || []);
@@ -360,7 +365,7 @@ function cleanReply(raw, options = {}) {
   const maxParts = options.maxParts || DEFAULT_CONFIG.maxParts;
   const maxPerPart = options.maxWordsPerPart || DEFAULT_CONFIG.maxWordsPerPart;
   const maxTotal = options.maxTotalWords || DEFAULT_CONFIG.maxTotalWords;
-  const text = String(raw || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+  const text = (typeof raw === "string" ? raw : "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
   let pieces = text.split(/\r?\n+/)
     .map((piece) => piece.replace(/^\s*(?:[-*\u2022]+|\d+[.)])\s*/, "").trim())
     .filter(Boolean);
@@ -589,7 +594,8 @@ function createChatter(options = {}) {
         }, warmedModels.has(model) ? config.requestTimeoutMs : config.warmTimeoutMs);
         warmedModels.add(model);
         const lines = [];
-        for (const piece of String(data && data.message && data.message.content || "").split(/\r?\n+/)) {
+        const seedText = data && data.message && data.message.content;
+        for (const piece of (typeof seedText === "string" ? seedText : "").split(/\r?\n+/)) {
           const { text, reason } = cleanLine(piece.replace(/^\s*(?:[-*\u2022]+|\d+[.)])\s*/, ""), { maxWords: 14, recent: lines });
           if (!reason) lines.push(text);
         }
@@ -619,8 +625,8 @@ function createChatter(options = {}) {
     }
   }
 
-  // One reply (one to three bubbles) for a trigger name, or null. No timers or
-  // cooldowns: used by the speak path below and directly by the node probe.
+  // One reply (up to two bubbles) for a trigger name, or null. No timers or
+  // cooldowns: used by the speak path below and by tools that drive it directly.
   async function generate(name, details = {}, settings = getSettings() || {}) {
     const model = settings.model || config.model;
     let personality = resolvePersonality(settings);
@@ -628,6 +634,8 @@ function createChatter(options = {}) {
     const { factSheet, system, focusKey } = buildPrompt(name, details, settings, personality);
     const recent = recentFor(personality.id);
     for (let attempt = 1; attempt <= config.maxTries; attempt++) {
+      // Switched off while an earlier request was running: do not ask the model again.
+      if (attempt > 1 && (getSettings() || {}).enabled === false) return null;
       const data = await post("/api/chat", {
         model,
         stream: false,
@@ -669,6 +677,12 @@ function createChatter(options = {}) {
     try {
       const result = await generate(name, details, settings);
       if (!result) return null;
+      // The request can take a while: it may have been switched off, or the pet put
+      // to sleep or a permission bubble opened, since it started.
+      if ((getSettings() || {}).enabled === false || !canSpeak()) {
+        log(`chatter dropped trigger=${name} reason=not-speaking-now`);
+        return null;
+      }
       // A line about something that just happened must still be about now.
       if (!force && name !== "idle-check" && now() - t > config.staleMs) {
         log(`chatter stale trigger=${name}`);

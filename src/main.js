@@ -5729,8 +5729,7 @@ const handleTestResult = createTestReactionHandler({
 });
 
 // Mood: leaky channels fed by hook events, persisted under ~/.clawd. The idle
-// roll in tick.js asks chooseMood() whether to play a moment (see
-// docs/mood-design.md in the clawd-pet notes).
+// roll in tick.js asks chooseMood() whether to play a moment (see FORK.md).
 const moodTracker = createMoodTracker({
   initialState: loadMoodState(),
   log: (msg) => sessionLog(msg),
@@ -5853,7 +5852,7 @@ const chatter = createChatter({
   log: (msg) => sessionLog(msg),
   getSettings: getChatterSettings,
   getSnapshot: () => ({
-    mood: moodTracker.read(),
+    mood: _settingsController.get("moodEnabled") === true ? moodTracker.read() : null,
     musicPlaying: musicDetector.isPlaying(),
     song: musicDetector.getSong(),
   }),
