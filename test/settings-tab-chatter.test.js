@@ -146,11 +146,11 @@ describe("chatter settings tab", () => {
     assert.equal(byKey.chatterCheckinMinutes.toDisplay(12), 12);
   });
 
-  it("offers the four personalities and saves the choice", async () => {
+  it("offers every personality and saves the choice", async () => {
     const harness = load({ snapshot: { chatterPersonality: "anxious" } });
     harness.render();
     const personality = harness.built.selects[0];
-    assert.deepEqual(plain(personality.options.map((o) => o.value)), ["deadpan", "wholesome", "anxious", "custom"]);
+    assert.deepEqual(plain(personality.options.map((o) => o.value)), ["deadpan", "wholesome", "anxious", "noir", "sportscaster", "wizard", "engineer", "custom"]);
     assert.equal(personality.value, "anxious");
     assert.equal(await personality.onChange("wholesome"), true);
     assert.deepEqual(plain(harness.updates), [{ key: "chatterPersonality", value: "wholesome" }]);
@@ -260,7 +260,7 @@ describe("chatter settings tab registration", () => {
       ...[...source.matchAll(/"((?:row|section)[A-Za-z]+)"/g)].map((m) => m[1]),
     ]);
     keys.add("sidebarChatter");
-    for (const id of ["deadpan", "wholesome", "anxious", "custom"]) keys.add(`chatterPersonality_${id}`);
+    for (const id of ["deadpan", "wholesome", "anxious", "noir", "sportscaster", "wizard", "engineer", "custom"]) keys.add(`chatterPersonality_${id}`);
     const i18n = read("settings-i18n.js");
     const blocks = (i18n.match(/^      sidebarChatter:/gm) || []).length;
     assert.equal(blocks, 7);

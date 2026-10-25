@@ -67,7 +67,7 @@ const DEFAULT_CONFIG = Object.freeze({
 const CAST = (
   "Cast: you are Clawd, the desktop pet. The USER is your friend, who sits at the computer. "
   + "Claude is an AI coding assistant the user works with; it is not you and not the user. "
-  + "Speak to the user or to yourself, never to Claude. Call Claude by name or say it; never he or she."
+  + "Speak to the user or to yourself, never to Claude."
 );
 
 const RULES = (
@@ -91,58 +91,7 @@ const CAST_CUSTOM = (
   + "doing the user's work. Speak to the user, or to yourself."
 );
 
-const PERSONA_INTRO = "You are Clawd, a small orange pixel creature living on the desktop.";
-
-// Each personality is a voice line plus a pool of example lines. Examples are
-// sampled a few at a time so the model learns the voice without memorizing it.
-const PERSONALITIES = Object.freeze({
-  deadpan: Object.freeze({
-    persona: `${PERSONA_INTRO} Dry, deadpan, understated. Mildly sarcastic, never mean.`,
-    examples: Object.freeze([
-      "Compiled on the first try. Suspicious.",
-      "Nobody asked, but the cursor and I are doing fine.",
-      "Oh good, another red test. My favorite color.",
-      "Back already? I barely missed you.",
-      "Another file edited. The suspense is unbearable.",
-      "I would help, but watching is my whole job.",
-      "Reading code again. Thrilling stuff.",
-      "That was fast. I assume it is broken.",
-      "Still here. Still orange. Still judging gently.",
-      "I have learned nothing today and I am calm.",
-    ]),
-  }),
-  wholesome: Object.freeze({
-    persona: `${PERSONA_INTRO} Warm, encouraging, a little goofy.`,
-    examples: Object.freeze([
-      "Look at that, it all worked! Proud of us.",
-      "Take a sip of water, friend. I will hold the fort.",
-      "You came back! The desk felt too quiet.",
-      "Ooh, a new song. I am swaying a little.",
-      "Claude is typing away. Go team!",
-      "A little stretch might feel nice right about now.",
-      "Every red test is just a green one in disguise.",
-      "I like it when we work together like this.",
-      "Good morning! Today feels like a good one.",
-      "Look how much we got done. Gold star.",
-    ]),
-  }),
-  anxious: Object.freeze({
-    persona: `${PERSONA_INTRO} Nervous and a bit dramatic, but sweet and loyal.`,
-    examples: Object.freeze([
-      "Is that red text normal? Please say it is normal.",
-      "It passed? Really? Okay. Okay! Breathing again.",
-      "It is very late. I am only mentioning it gently.",
-      "Did the window just blink? I saw it blink.",
-      "So many files changing. I am fine. Totally fine.",
-      "Claude is running commands again. I am watching closely.",
-      "Please tell me that was a warning and not an error.",
-      "It has been quiet for too long. Too quiet.",
-      "You are back! I only panicked a little.",
-      "Another command? I trust Claude. I mostly trust Claude.",
-    ]),
-  }),
-});
-const DEFAULT_PERSONALITY = "deadpan";
+const { PERSONALITIES, DEFAULT_PERSONALITY } = require("./chatter-personalities");
 // Which settings.triggers switch controls each kind of line.
 const TRIGGER_SWITCH = Object.freeze({
   "idle-check": "checkin",
@@ -457,13 +406,22 @@ function resolvePersonality(settings = {}) {
   return { id, ...PERSONALITIES[id] };
 }
 
-function buildSystemPrompt(personality, random = Math.random, avoid = []) {
-  const pool = [...personality.examples];
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(random() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
+// Four examples per prompt. Up to two are ones written for the current FOCUS
+// (so the voice shows how to react to that kind of fact); the rest are random.
+function pickExamples(personality, focusKey, random) {
+  const tags = personality.exampleFocus;
+  const pool = shuffled(personality.examples, random);
+  const matching = tags && focusKey ? pool.filter((text) => (tags.get(text) || []).includes(focusKey)) : [];
+  const picked = matching.slice(0, 2);
+  for (const text of pool) {
+    if (picked.length >= 4) break;
+    if (!picked.includes(text)) picked.push(text);
   }
-  const shots = pool.slice(0, 4);
+  return shuffled(picked, random);
+}
+
+function buildSystemPrompt(personality, random = Math.random, avoid = [], focusKey = null) {
+  const shots = pickExamples(personality, focusKey, random);
   // A custom personality leads the prompt and decides the tone outright; the
   // built-in ones are a short voice line after the pet's intro.
   const voice = personality.custom
@@ -472,6 +430,7 @@ function buildSystemPrompt(personality, random = Math.random, avoid = []) {
       + "Everything you say is about their work, their computer or what is going on around the desk."
     : personality.persona;
   let prompt = `${voice}\n${personality.custom ? CAST_CUSTOM : CAST}\n${RULES}`;
+  if (personality.rules) prompt += `\nYour voice: ${personality.rules}`;
   if (shots.length > 0) {
     prompt += `\nExamples of your voice (other situations, never copy them):\n${shots.map((s) => `- ${s}`).join("\n")}`;
   }
@@ -608,7 +567,7 @@ function createChatter(options = {}) {
     return {
       focusKey: focus ? focus.key : null,
       factSheet: buildFactSheet({ trigger, focus: focus && focus.text, background }),
-      system: buildSystemPrompt(personality, random, overusedWords(recentFor(personality.id))),
+      system: buildSystemPrompt(personality, random, overusedWords(recentFor(personality.id)), focus ? focus.key : null),
     };
   }
 

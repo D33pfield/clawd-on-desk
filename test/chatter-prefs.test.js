@@ -36,7 +36,7 @@ describe("chatter prefs", () => {
     assert.ok(!ok("chatterCheckinMinutes", 1) && !ok("chatterCheckinMinutes", 181) && !ok("chatterCheckinMinutes", 12.5));
     assert.ok(ok("chatterBubbleSeconds", 3) && ok("chatterBubbleSeconds", 60));
     assert.ok(!ok("chatterBubbleSeconds", 2) && !ok("chatterBubbleSeconds", 61) && !ok("chatterBubbleSeconds", "12"));
-    for (const id of ["deadpan", "wholesome", "anxious", "custom"]) assert.ok(ok("chatterPersonality", id), id);
+    for (const id of ["deadpan", "wholesome", "anxious", "noir", "sportscaster", "wizard", "engineer", "custom"]) assert.ok(ok("chatterPersonality", id), id);
     assert.ok(!ok("chatterPersonality", "grumpy") && !ok("chatterPersonality", ""));
     for (const id of ["cascadia", "consolas", "lucida", "courier"]) assert.ok(ok("chatterBubbleFont", id), id);
     assert.ok(!ok("chatterBubbleFont", "Comic Sans MS") && !ok("chatterBubbleFont", ""));

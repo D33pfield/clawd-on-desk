@@ -10,7 +10,7 @@
   let ops = null;
   let tabs = null;
 
-  const PERSONALITIES = ["deadpan", "wholesome", "anxious", "custom"];
+  const PERSONALITIES = ["deadpan", "wholesome", "anxious", "noir", "sportscaster", "wizard", "engineer", "custom"];
   const BUBBLE_FONTS = ["cascadia", "consolas", "lucida", "courier"];
   const CUSTOM_MAX = 300;
 

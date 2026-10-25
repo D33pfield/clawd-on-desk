@@ -100,6 +100,7 @@ const {
 } = require("./settings-validators");
 const { listIdleVisualOptions } = require("./idle-visual");
 const { CHATTER_FONT_IDS } = require("./chatter-fonts");
+const { PERSONALITY_IDS } = require("./chatter-personalities");
 const {
   registerShortcut,
   resetShortcut,
@@ -348,7 +349,7 @@ const updateRegistry = {
       ? { status: "ok" }
       : { status: "error", message: "chatterModel must be a model name of at most 120 characters" }
   ),
-  chatterPersonality: requireEnum("chatterPersonality", ["deadpan", "wholesome", "anxious", "custom"]),
+  chatterPersonality: requireEnum("chatterPersonality", [...PERSONALITY_IDS, "custom"]),
   chatterCustomPersonality: (value) => (
     typeof value === "string" && value.length <= 300
       ? { status: "ok" }

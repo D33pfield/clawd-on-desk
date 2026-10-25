@@ -138,7 +138,7 @@ describe("cleanLine", () => {
     assert.strictEqual(cleanLine("Claude is busy and I am fine.").reason, null);
     assert.strictEqual(cleanLine("Fine, I suppose.", { recent: ["Fine, I suppose."] }).reason, "repeat");
     assert.strictEqual(
-      cleanLine("Another file edited. The suspense is huge.", { examples: PERSONALITIES.deadpan.examples }).reason,
+      cleanLine("Another error, third in a row. The terminal has opinions today.", { examples: PERSONALITIES.deadpan.examples }).reason,
       "repeat"
     );
   });
@@ -273,6 +273,38 @@ describe("personality", () => {
   it("samples four examples per prompt", () => {
     const prompt = buildSystemPrompt(resolvePersonality({}));
     assert.strictEqual(prompt.split("\n- ").length - 1, 4);
+  });
+
+  it("prefers examples written for the current focus, and adds the voice's own rules", () => {
+    const personality = resolvePersonality({ personality: "noir" });
+    const musicLines = personality.examples.filter((text) => personality.exampleFocus.get(text).includes("music"));
+    assert.ok(musicLines.length >= 2);
+    for (let i = 0; i < 20; i++) {
+      const prompt = buildSystemPrompt(personality, Math.random, [], "music");
+      assert.strictEqual(prompt.split("\n- ").length - 1, 4);
+      assert.ok(musicLines.filter((text) => prompt.includes(text)).length >= 2, "two music examples every time");
+    }
+    assert.ok(buildSystemPrompt(personality).includes(`Your voice: ${personality.rules}`));
+    // A focus nobody wrote an example for still gets four.
+    assert.strictEqual(buildSystemPrompt(personality, Math.random, [], "nonsense").split("\n- ").length - 1, 4);
+  });
+
+  it("does not say anything about pronouns", () => {
+    for (const id of Object.keys(PERSONALITIES)) {
+      const prompt = buildSystemPrompt(resolvePersonality({ personality: id }));
+      assert.doesNotMatch(prompt, /pronoun|never he or she/i, id);
+    }
+  });
+
+  it("every built-in example passes the reply filter and has valid focus tags", () => {
+    const { FOCUS_ORDER } = require("../src/chatter");
+    for (const [id, personality] of Object.entries(PERSONALITIES)) {
+      assert.strictEqual(personality.examples.length, 16, id);
+      for (const text of personality.examples) {
+        assert.strictEqual(cleanLine(text).reason, null, `${id}: ${text}`);
+        for (const key of personality.exampleFocus.get(text)) assert.ok(FOCUS_ORDER.includes(key), `${id}: ${key}`);
+      }
+    }
   });
 });
 

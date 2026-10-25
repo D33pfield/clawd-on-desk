@@ -26,6 +26,7 @@ const {
 } = require("./custom-applications");
 const { isPlainObject } = require("./theme-loader");
 const { CHATTER_FONT_IDS, DEFAULT_CHATTER_FONT } = require("./chatter-fonts");
+const { PERSONALITY_IDS } = require("./chatter-personalities");
 const { normalizeShortcuts, getDefaultShortcuts } = require("./shortcut-actions");
 const {
   DEFAULT_TIMEOUT_MS: PERMISSION_REVIEW_DEFAULT_TIMEOUT_MS,
@@ -357,7 +358,7 @@ const SCHEMA = {
   chatterPersonality: {
     type: "string",
     default: "deadpan",
-    validate: (v) => ["deadpan", "wholesome", "anxious", "custom"].includes(v),
+    validate: (v) => v === "custom" || PERSONALITY_IDS.includes(v),
   },
   chatterCustomPersonality: {
     type: "string",
