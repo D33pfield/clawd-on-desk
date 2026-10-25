@@ -87,10 +87,12 @@ function awakeFor(hours) {
 
 describe("fatigue", () => {
   it("rises with time awake from the first activity", () => {
-    assert.strictEqual(read(awakeFor(3), T0 + 3 * HOUR).fatigue, 0);
-    const mid = read(awakeFor(8), T0 + 8 * HOUR).fatigue;
+    assert.strictEqual(read(awakeFor(4), T0 + 4 * HOUR).fatigue, 0);
+    const mid = read(awakeFor(9.5), T0 + 9.5 * HOUR).fatigue;
     assert.ok(mid > 0.4 && mid < 0.6, `mid=${mid}`);
-    assert.strictEqual(read(awakeFor(12), T0 + 12 * HOUR).fatigue, 1);
+    const evening = read(awakeFor(11.5), T0 + 11.5 * HOUR).fatigue;
+    assert.ok(evening > 0.6 && evening < 0.8, `a long day is tired, not exhausted: ${evening}`);
+    assert.strictEqual(read(awakeFor(14), T0 + 14 * HOUR).fatigue, 1);
   });
 
   it("re-anchors the wake time after a long gap", () => {
@@ -127,10 +129,10 @@ describe("fatigue", () => {
 describe("boredom", () => {
   it("ramps with idle time after activity", () => {
     const state = apply(createState(), "activity", T0);
-    assert.strictEqual(read(state, T0 + 4 * MIN).boredom, 0);
-    const mid = read(state, T0 + 20 * MIN).boredom;
+    assert.strictEqual(read(state, T0 + 2 * MIN).boredom, 0);
+    const mid = read(state, T0 + 11.5 * MIN).boredom;
     assert.ok(mid > 0.4 && mid < 0.6, `mid=${mid}`);
-    assert.strictEqual(read(state, T0 + 40 * MIN).boredom, 1);
+    assert.strictEqual(read(state, T0 + 25 * MIN).boredom, 1);
   });
 
   it("goes quiet after a long absence and resets on activity", () => {
