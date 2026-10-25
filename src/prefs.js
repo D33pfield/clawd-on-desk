@@ -25,6 +25,7 @@ const {
   normalizeCustomApplications,
 } = require("./custom-applications");
 const { isPlainObject } = require("./theme-loader");
+const { CHATTER_FONT_IDS, DEFAULT_CHATTER_FONT } = require("./chatter-fonts");
 const { normalizeShortcuts, getDefaultShortcuts } = require("./shortcut-actions");
 const {
   DEFAULT_TIMEOUT_MS: PERMISSION_REVIEW_DEFAULT_TIMEOUT_MS,
@@ -368,6 +369,11 @@ const SCHEMA = {
     type: "number",
     default: 12,
     validate: (v) => Number.isInteger(v) && v >= 2 && v <= 180,
+  },
+  chatterBubbleFont: {
+    type: "string",
+    default: DEFAULT_CHATTER_FONT,
+    validate: (v) => CHATTER_FONT_IDS.includes(v),
   },
   chatterBubbleSeconds: {
     type: "number",

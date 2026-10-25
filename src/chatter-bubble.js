@@ -10,6 +10,7 @@
 // bubble, or dismisses the reply on the last one.
 
 const path = require("path");
+const { resolveChatterFont } = require("./chatter-fonts");
 
 const isLinux = process.platform === "linux";
 const isMac = process.platform === "darwin";
@@ -186,7 +187,7 @@ function createChatterBubble(ctx = {}) {
   }
 
   function payloadFor(text, box) {
-    return { text, below: box.below, tailX: box.tailX, charMs: TYPE_CHAR_MS };
+    return { text, below: box.below, tailX: box.tailX, charMs: TYPE_CHAR_MS, font: resolveChatterFont(current && current.font) };
   }
 
   function send(payload) {
@@ -231,7 +232,7 @@ function createChatterBubble(ctx = {}) {
       clearTimers();
       if (!live()) create();
       const ms = Number.isFinite(options.durationMs) && options.durationMs > 0 ? options.durationMs : DEFAULT_SHOW_MS;
-      current = { parts, holds: holdTimes(parts, ms), index: 0 };
+      current = { parts, holds: holdTimes(parts, ms), index: 0, font: options.font };
       win.showInactive();
       if (typeof ctx.keepOutOfTaskbar === "function") ctx.keepOutOfTaskbar(win);
       playPart(0);

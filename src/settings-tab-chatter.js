@@ -11,6 +11,7 @@
   let tabs = null;
 
   const PERSONALITIES = ["deadpan", "wholesome", "anxious", "custom"];
+  const BUBBLE_FONTS = ["cascadia", "consolas", "lucida", "courier"];
   const CUSTOM_MAX = 300;
 
   const view = {
@@ -83,6 +84,23 @@
       options: PERSONALITIES.map((id) => ({ value: id, label: t(`chatterPersonality_${id}`) })),
       ariaLabel: t("rowChatterPersonality"),
       onChange: (next) => (next === pref("chatterPersonality") ? true : save("chatterPersonality", next)),
+    });
+    control.setDisabled(!chatterOn());
+    parts.controlElement.appendChild(control.element);
+    return parts.element;
+  }
+
+  function buildFontRow() {
+    const parts = helpers.buildSettingRow({
+      labelKey: "rowChatterFont",
+      descriptionKey: "rowChatterFontDesc",
+    });
+    const current = BUBBLE_FONTS.includes(pref("chatterBubbleFont")) ? pref("chatterBubbleFont") : "cascadia";
+    const control = helpers.buildSettingsSelect({
+      value: current,
+      options: BUBBLE_FONTS.map((id) => ({ value: id, label: t(`chatterFont_${id}`) })),
+      ariaLabel: t("rowChatterFont"),
+      onChange: (next) => (next === pref("chatterBubbleFont") ? true : save("chatterBubbleFont", next)),
     });
     control.setDisabled(!chatterOn());
     parts.controlElement.appendChild(control.element);
@@ -212,6 +230,7 @@
       numberRow("chatterCheckinMinutes", "rowChatterCheckin", "rowChatterCheckinDesc", "unitMinutes", 2, 180),
       numberRow("chatterBubbleSeconds", "rowChatterBubbleTime", "rowChatterBubbleTimeDesc", "unitSeconds", 3, 60),
       switchRow("chatterShowBubbles", "rowChatterShowBubbles", "rowChatterShowBubblesDesc", off),
+      buildFontRow(),
     ]));
 
     parent.appendChild(helpers.buildSection(t("sectionChatterTriggers"), [

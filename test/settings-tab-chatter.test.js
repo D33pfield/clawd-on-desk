@@ -106,8 +106,9 @@ describe("chatter settings tab", () => {
     assert.equal(first[0].config.key, "chatterEnabled");
     assert.equal(first[0].config.labelKey, "rowChatterEnabled");
     const timing = sections[2].children.map((row) => row.config.key);
-    assert.deepEqual(plain(timing), ["chatterCheckinMinutes", "chatterBubbleSeconds", "chatterShowBubbles"]);
-    assert.equal(sections[2].children.at(-1).config.labelKey, "rowChatterShowBubbles");
+    assert.deepEqual(plain(timing), ["chatterCheckinMinutes", "chatterBubbleSeconds", "chatterShowBubbles", null]);
+    assert.equal(sections[2].children.at(-2).config.labelKey, "rowChatterShowBubbles");
+    assert.equal(sections[2].children.at(-1).config.labelKey, "rowChatterFont", "the font row closes Timing");
   });
 
   it("greys out everything that depends on the master switch while chatter is off", () => {
@@ -202,7 +203,7 @@ describe("chatter settings tab", () => {
     await harness.flush();
     assert.deepEqual(plain(harness.renders.at(-1)), { content: true });
     harness.render();
-    const model = harness.built.selects.at(-1);
+    const model = harness.built.selects.at(-2);
     assert.deepEqual(plain(model.options.map((o) => o.value)), ["", "beta:7b", "gone:3b"]);
     assert.equal(model.options[0].label, "chatterModelDefault (alpha:1b)");
     assert.equal(model.value, "gone:3b");
@@ -268,5 +269,21 @@ describe("chatter settings tab registration", () => {
       const count = (i18n.match(new RegExp(`^      ${key}:`, "gm")) || []).length;
       assert.equal(count, 7, `${key} should be defined once per locale`);
     }
+  });
+});
+
+describe("chatter settings tab: bubble font", () => {
+  it("offers the fixed font list, saves a pick, and greys out with the master switch", async () => {
+    const harness = load({ snapshot: { chatterEnabled: true, chatterBubbleFont: "lucida" } });
+    harness.render();
+    const font = harness.built.selects[2];
+    assert.deepEqual(plain(font.options.map((o) => o.value)), ["cascadia", "consolas", "lucida", "courier"]);
+    assert.equal(font.value, "lucida");
+    await font.onChange("consolas");
+    assert.deepEqual(plain(harness.updates.at(-1)), { key: "chatterBubbleFont", value: "consolas" });
+    const off = load({ snapshot: { chatterEnabled: false } });
+    off.render();
+    assert.equal(off.built.selects[2].disabled, true);
+    assert.equal(off.built.selects[2].value, "cascadia", "an unset font shows the default");
   });
 });

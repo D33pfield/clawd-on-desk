@@ -5866,6 +5866,7 @@ const chatter = createChatter({
       sessionLog(`chatter anchor content-top=${chatterContentTopOffset == null ? "unmeasured" : Math.round(chatterContentTopOffset)}px state=${_state.getCurrentState()}`);
       _chatterBubble.show(parts && parts.length > 0 ? parts : text, {
         durationMs: (_settingsController.get("chatterBubbleSeconds") || 12) * 1000,
+        font: _settingsController.get("chatterBubbleFont"),
       });
       watchChatterAnchor();
     } catch (err) {

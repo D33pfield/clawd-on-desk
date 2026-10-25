@@ -99,6 +99,7 @@ const {
   requireStringArray,
 } = require("./settings-validators");
 const { listIdleVisualOptions } = require("./idle-visual");
+const { CHATTER_FONT_IDS } = require("./chatter-fonts");
 const {
   registerShortcut,
   resetShortcut,
@@ -354,6 +355,7 @@ const updateRegistry = {
       : { status: "error", message: "chatterCustomPersonality must be a string of at most 300 characters" }
   ),
   chatterCheckinMinutes: requireIntegerInRange("chatterCheckinMinutes", 2, 180),
+  chatterBubbleFont: requireEnum("chatterBubbleFont", CHATTER_FONT_IDS),
   chatterBubbleSeconds: requireIntegerInRange("chatterBubbleSeconds", 3, 60),
   chatterTriggerCheckin: requireBoolean("chatterTriggerCheckin"),
   chatterTriggerTests: requireBoolean("chatterTriggerTests"),
