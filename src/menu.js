@@ -287,6 +287,12 @@ module.exports = function initMenu(ctx) {
           if (typeof ctx.openMood === "function") ctx.openMood();
         },
       },
+      {
+        label: t("chatterBubbles"),
+        type: "checkbox",
+        checked: ctx.chatterEnabled === true,
+        click: (menuItem) => { ctx.chatterEnabled = menuItem.checked; },
+      },
       buildPermissionAutomationMenuItem(),
     ];
 
@@ -521,6 +527,12 @@ module.exports = function initMenu(ctx) {
         click: () => {
           if (typeof ctx.openMood === "function") ctx.openMood();
         },
+      },
+      {
+        label: t("chatterBubbles"),
+        type: "checkbox",
+        checked: ctx.chatterEnabled === true,
+        click: (menuItem) => { ctx.chatterEnabled = menuItem.checked; },
       },
       {
         label: t("newSession"),

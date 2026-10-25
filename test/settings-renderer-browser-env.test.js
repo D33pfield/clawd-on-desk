@@ -22073,7 +22073,7 @@ describe("Settings tabs and segmented choice contracts", () => {
     document.body.append(sidebar, content);
     const core = loadSettingsCoreForTest({}, { document });
     let exits = 0;
-    for (const id of ["general", "pet", "notifications", "sessions", "permissions", "agents", "remote-ssh", "discord-presence", "theme", "animOverrides", "shortcuts", "recap", "about"]) {
+    for (const id of ["general", "pet", "chatter", "notifications", "sessions", "permissions", "agents", "remote-ssh", "discord-presence", "theme", "animOverrides", "shortcuts", "recap", "about"]) {
       core.tabs[id] = { render(panel) { const heading = document.createElement("h1"); heading.textContent = id; panel.appendChild(heading); },
         onExit() { exits++; } };
     }
@@ -22085,11 +22085,11 @@ describe("Settings tabs and segmented choice contracts", () => {
     core.ops.requestRender({ sidebar: true, content: true });
     const group = sidebar.children[1];
     assert.equal(group.getAttribute("role"), "tablist");
-    const [general, pet, notifications, sessions, permissions, agents, remoteSsh, discordPresence, theme, animOverrides, shortcuts, recap, about] = group.querySelectorAll("button");
+    const [general, pet, chatter, notifications, sessions, permissions, agents, remoteSsh, discordPresence, theme, animOverrides, shortcuts, recap, about] = group.querySelectorAll("button");
     for (const button of [agents, theme, recap]) {
       assert.ok(button.classList.contains("sidebar-item-group-start"), `${button.dataset.value} starts a group`);
     }
-    for (const button of [general, pet, notifications, sessions, permissions, remoteSsh, discordPresence, animOverrides, shortcuts, about]) {
+    for (const button of [general, pet, chatter, notifications, sessions, permissions, remoteSsh, discordPresence, animOverrides, shortcuts, about]) {
       assert.ok(!button.classList.contains("sidebar-item-group-start"), `${button.dataset.value} does not start a group`);
     }
     general.focus();
@@ -22128,5 +22128,44 @@ describe("Settings tabs and segmented choice contracts", () => {
     await settleChoice();
     assert.equal(group.getAttribute("aria-busy"), "false");
     assert.equal(group.querySelectorAll("button")[0].getAttribute("aria-checked"), "true");
+  });
+});
+
+describe("shortcut recording repaints every tab that shows shortcut rows", () => {
+  async function recordingRepaints(activeTab) {
+    const api = {
+      enterShortcutRecording: async () => ({ status: "ok" }),
+      exitShortcutRecording: async () => ({ status: "ok" }),
+      command: async () => ({ status: "ok" }),
+    };
+    const core = loadSettingsCoreForTest(api);
+    let contentRenders = 0;
+    core.ops.installRenderHooks({ sidebar() {}, content() { contentRenders += 1; } });
+    core.state.activeTab = activeTab;
+    core.state.snapshot = { shortcuts: { chatterNow: null } };
+    core.ops.enterShortcutRecording("chatterNow");
+    await Promise.resolve();
+    await Promise.resolve();
+    const afterEnter = contentRenders;
+    assert.equal(core.state.shortcutRecordingActionId, "chatterNow");
+    await core.ops.finishShortcutRecording();
+    return { afterEnter, afterFinish: contentRenders };
+  }
+
+  it("repaints on the Shortcuts tab (unchanged)", async () => {
+    const { afterEnter, afterFinish } = await recordingRepaints("shortcuts");
+    assert.ok(afterEnter >= 1 && afterFinish > afterEnter);
+  });
+
+  it("repaints on the Chatter tab, which embeds the say-something shortcut row", async () => {
+    const { afterEnter, afterFinish } = await recordingRepaints("chatter");
+    assert.ok(afterEnter >= 1, "entering recording shows the 'press a key' hint");
+    assert.ok(afterFinish > afterEnter, "finishing shows the saved key");
+  });
+
+  it("does not repaint unrelated tabs", async () => {
+    const { afterEnter, afterFinish } = await recordingRepaints("pet");
+    assert.equal(afterEnter, 0);
+    assert.equal(afterFinish, 0);
   });
 });

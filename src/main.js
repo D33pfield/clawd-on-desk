@@ -204,6 +204,8 @@ const { createMoodTracker, createMoodEventHandler } = require("./mood");
 const { createMoodStore, loadMoodState } = require("./mood-store");
 const { createMoodWindow } = require("./mood-window");
 const { createMusicDetector } = require("./music");
+const { createChatter } = require("./chatter");
+const { createChatterBubble, resolveChatterAnchor } = require("./chatter-bubble");
 const createMacHideController = require("./mac-hide");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
@@ -523,6 +525,10 @@ let slackNotifyClient = null;
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
   quickSelectSession: () => showQuickSelect(),
+  // A line on demand; a no-op while chatter is switched off.
+  chatterNow: () => {
+    if (_settingsController.get("chatterEnabled") === true) void chatter.sayNow();
+  },
 };
 const _settingsController = createSettingsController({
   prefsPath: PREFS_PATH,
@@ -2263,6 +2269,8 @@ floatingWindowRuntime = createFloatingWindowRuntime({
   getPendingPermissions: () => pendingPermissions,
   repositionPermissionBubbles: () => repositionBubbles(),
   repositionUpdateBubble: () => repositionUpdateBubble(),
+  repositionChatterBubble: () => repositionChatterBubble(),
+  hideChatterBubble: () => _chatterBubble.hide(),
   repositionSessionHud: () => repositionSessionHud(),
   repositionQuotaRing: () => repositionQuotaRing(),
   syncSessionHudVisibility: () => syncSessionHudVisibility(),
@@ -3018,6 +3026,7 @@ agentRuntime = createAgentRuntimeMain({
 
 // ── HTTP server — delegated to src/server.js ──
 const _serverCtx = {
+  handleChatterEvent: (input) => handleChatterEvent(input),
   handleMoodEvent: (input, context) => handleMoodEvent(input, context),
   get manageClaudeHooksAutomatically() { return manageClaudeHooksAutomatically; },
   get autoStartWithClaude() { return autoStartWithClaude; },
@@ -4594,6 +4603,8 @@ const _menuCtx = {
   set autoStartWithClaude(v) { _settingsController.applyUpdate("autoStartWithClaude", v); },
   get openAtLogin() { return openAtLogin; },
   set openAtLogin(v) { _settingsController.applyUpdate("openAtLogin", v); },
+  get chatterEnabled() { return _settingsController.get("chatterEnabled") === true; },
+  set chatterEnabled(v) { _settingsController.applyUpdate("chatterEnabled", !!v); },
   get bubbleFollowPet() { return bubbleFollowPet; },
   set bubbleFollowPet(v) { _settingsController.applyUpdate("bubbleFollowPet", v); },
   get hideBubbles() { return getAllBubblesHidden(); },
@@ -5155,6 +5166,7 @@ const settingsIpcRuntime = registerSettingsIpc({
   path,
   settingsController: _settingsController,
   recapRuntime,
+  listChatterModels: () => chatter.listModels(),
   getQuotaSourceCount: () => _state.getQuotaSourceCount(),
   getQuotaRingProviders: () => _ringGeom.listQuotaRingProviders(
     _state.buildSessionSnapshot(),
@@ -5740,11 +5752,139 @@ const _moodWindow = createMoodWindow({
 // Music: the pet wears headphones while Spotify plays (Windows only; see
 // src/music.js). The renderer remembers the state across theme reloads; a full
 // renderer reload gets it resent from did-finish-load.
+const appStartedAt = Date.now();
 const musicDetector = createMusicDetector({
   log: (msg) => sessionLog(msg),
-  onChange: (playing) => sendToRenderer("music-state", playing),
+  onChange: (playing) => {
+    sendToRenderer("music-state", playing);
+    // Music already playing when the app starts is not "just started".
+    if (playing && Date.now() - appStartedAt > 60 * 1000) chatter.notify("music-started");
+  },
 });
 
+// Chatter: a local Ollama model writes an occasional speech-bubble line (see
+// src/chatter.js). The code picks the moment and the facts; the bubble is a
+// small click-through window above the pet. Its own pref gates it, and the
+// model only ever sees a coarse activity category, never hook payloads.
+function canChatterSpeak() {
+  if (petWindowRuntime.isPetEffectivelyHidden() || _mini.getMiniMode()) return false;
+  if (["dozing", "collapsing", "sleeping"].includes(_state.getCurrentState())) return false;
+  if (pendingPermissions.length > 0) return false;
+  const updateWin = _updateBubble.getBubbleWindow();
+  return !(updateWin && !updateWin.isDestroyed() && updateWin.isVisible());
+}
+const _chatterBubble = createChatterBubble({
+  ipcMain,
+  getPetBounds: () => getPetWindowBounds(),
+  // The tight hit box (accessory-aware) or the top of the artwork actually drawn,
+  // whichever is higher; the update bubble's "stable" anchor leaves headroom for
+  // tall poses and put the bubble far above the pet.
+  getAnchorRect: (bounds) => getChatterAnchorRect(bounds),
+  getClearance: () => (musicDetector.isPlaying() ? 24 : 6),
+  getWorkArea: (bounds) => getNearestWorkArea(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2),
+  guardAlwaysOnTop,
+  keepOutOfTaskbar,
+  log: (msg) => sessionLog(msg),
+});
+// Where the top of the pet's current artwork is, as pixels below the pet window's
+// top edge (null when unknown). The renderer measures it, so the bubble clears
+// whatever the current animation draws above the head (thought bubbles, a laptop
+// screen) without a per-animation table.
+let chatterContentTopOffset = null;
+async function refreshChatterContentTop() {
+  try {
+    if (!win || win.isDestroyed()) return;
+    const top = await win.webContents.executeJavaScript(
+      'typeof getDisplayedContentTop === "function" ? getDisplayedContentTop() : null'
+    );
+    chatterContentTopOffset = Number.isFinite(top) ? top : null;
+  } catch {
+    chatterContentTopOffset = null;
+  }
+}
+// The animation can change while a line is up (thinking starts), so look again
+// now and then and move the bubble.
+let chatterWatchTimer = null;
+function watchChatterAnchor() {
+  if (chatterWatchTimer) return;
+  chatterWatchTimer = setInterval(() => {
+    if (!_chatterBubble.isVisible()) {
+      clearInterval(chatterWatchTimer);
+      chatterWatchTimer = null;
+      return;
+    }
+    void refreshChatterContentTop().then(() => repositionChatterBubble());
+  }, 1500);
+  if (typeof chatterWatchTimer.unref === "function") chatterWatchTimer.unref();
+}
+function getChatterAnchorRect(bounds) {
+  return resolveChatterAnchor({
+    hit: getHitRectScreen(bounds),
+    stable: getUpdateBubbleAnchorRect(bounds),
+    contentTopY: chatterContentTopOffset == null ? null : bounds.y + chatterContentTopOffset,
+  });
+}
+function repositionChatterBubble() {
+  if (!_chatterBubble.isVisible()) return;
+  // A permission or update bubble appearing while a line is up would overlap it.
+  if (!canChatterSpeak()) _chatterBubble.hide();
+  else _chatterBubble.reposition();
+}
+// Read on every use, so a change in Settings or the menu applies to the next line.
+function getChatterSettings() {
+  const get = (key) => _settingsController.get(key);
+  return {
+    enabled: get("chatterEnabled") === true,
+    model: get("chatterModel") || "",
+    personality: get("chatterPersonality"),
+    customPersonality: get("chatterCustomPersonality"),
+    checkinMinutes: get("chatterCheckinMinutes"),
+    triggers: {
+      checkin: get("chatterTriggerCheckin") !== false,
+      tests: get("chatterTriggerTests") !== false,
+      error: get("chatterTriggerError") !== false,
+      return: get("chatterTriggerReturn") !== false,
+      music: get("chatterTriggerMusic") !== false,
+    },
+  };
+}
+const chatter = createChatter({
+  log: (msg) => sessionLog(msg),
+  getSettings: getChatterSettings,
+  getSnapshot: () => ({ mood: moodTracker.read(), musicPlaying: musicDetector.isPlaying() }),
+  canSpeak: canChatterSpeak,
+  onLine: async ({ text }) => {
+    // With bubbles off the line was still written and logged, just not shown.
+    if (_settingsController.get("chatterShowBubbles") === false) return;
+    try {
+      await refreshChatterContentTop();
+      sessionLog(`chatter anchor content-top=${chatterContentTopOffset == null ? "unmeasured" : Math.round(chatterContentTopOffset)}px state=${_state.getCurrentState()}`);
+      _chatterBubble.show(text, {
+        durationMs: (_settingsController.get("chatterBubbleSeconds") || 12) * 1000,
+      });
+      watchChatterAnchor();
+    } catch (err) {
+      sessionLog(`chatter bubble failed error=${err && err.message}`);
+    }
+  },
+});
+// Pref changes take effect at once: turning chatter on loads the model, turning
+// it off hides the bubble, a new model is loaded ahead of its first line, and a
+// new interval replaces the pending timer.
+_settingsController.subscribeKey("chatterEnabled", (enabled) => {
+  if (enabled === true) {
+    void chatter.warm();
+  } else {
+    // Off means off: hide the bubble and free the model's memory.
+    _chatterBubble.hide();
+    void chatter.unload();
+  }
+});
+_settingsController.subscribeKey("chatterModel", () => { void chatter.warm(); });
+_settingsController.subscribeKey("chatterCheckinMinutes", () => chatter.reschedule());
+function handleChatterEvent(input) {
+  chatter.observe(input);
+}
 const { enterMiniMode, exitMiniMode, enterMiniViaMenu, miniPeekIn, miniPeekOut,
         checkMiniModeSnap, cancelMiniTransition, animateWindowX, animateWindowParabola } = _mini;
 
@@ -6104,6 +6244,9 @@ if (!gotTheLock) {
     });
     holidayAccessoryRuntime.start();
     musicDetector.start();
+    chatter.start();
+    // Preloading pins the model in VRAM, so only do it when chatter is on.
+    if (_settingsController.get("chatterEnabled") === true) void chatter.warm();
     // WSL agent detection is NOT started here: scanning runs a command inside
     // every installed distro, which boots each stopped VM — too aggressive for
     // app launch. The first Settings→Agents visit triggers the scan instead
@@ -6223,6 +6366,9 @@ if (!gotTheLock) {
     trayBalloonOwner.dispose();
     holidayAccessoryRuntime.dispose();
     musicDetector.stop();
+    chatter.stop();
+    if (chatterWatchTimer) clearInterval(chatterWatchTimer);
+    _chatterBubble.dispose();
     if (systemWakeRecovery) systemWakeRecovery.dispose();
     // #525: release the IVirtualDesktopManager COM ref and pay back our own
     // CoInitializeEx count (see win-cloak-recovery.js dispose()).

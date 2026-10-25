@@ -338,6 +338,27 @@ const updateRegistry = {
   flashDurationMs: requireNumberInRange("flashDurationMs", 0, 60000),
   testReactionsEnabled: requireBoolean("testReactionsEnabled"),
   moodEnabled: requireBoolean("moodEnabled"),
+  chatterEnabled: requireBoolean("chatterEnabled"),
+  chatterShowBubbles: requireBoolean("chatterShowBubbles"),
+  chatterModel: (value) => (
+    typeof value === "string" && value.length <= 120 && /^[A-Za-z0-9._:/-]*$/.test(value)
+      && !value.includes("..") && !value.startsWith("/")
+      ? { status: "ok" }
+      : { status: "error", message: "chatterModel must be a model name of at most 120 characters" }
+  ),
+  chatterPersonality: requireEnum("chatterPersonality", ["deadpan", "wholesome", "anxious", "custom"]),
+  chatterCustomPersonality: (value) => (
+    typeof value === "string" && value.length <= 300
+      ? { status: "ok" }
+      : { status: "error", message: "chatterCustomPersonality must be a string of at most 300 characters" }
+  ),
+  chatterCheckinMinutes: requireIntegerInRange("chatterCheckinMinutes", 2, 180),
+  chatterBubbleSeconds: requireIntegerInRange("chatterBubbleSeconds", 3, 60),
+  chatterTriggerCheckin: requireBoolean("chatterTriggerCheckin"),
+  chatterTriggerTests: requireBoolean("chatterTriggerTests"),
+  chatterTriggerError: requireBoolean("chatterTriggerError"),
+  chatterTriggerReturn: requireBoolean("chatterTriggerReturn"),
+  chatterTriggerMusic: requireBoolean("chatterTriggerMusic"),
   codexHookHealthNotifyEnabled: requireBoolean("codexHookHealthNotifyEnabled"),
   codexHookHealthLastNotified: requireString("codexHookHealthLastNotified", { allowEmpty: true }),
   telegramMigrationLastNotified: requireString("telegramMigrationLastNotified", { allowEmpty: true }),

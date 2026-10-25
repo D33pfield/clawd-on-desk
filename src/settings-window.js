@@ -105,6 +105,7 @@ function createSettingsWindowRuntime(options = {}) {
   const ALLOWED_TABS = new Set([
     "general",
     "pet",
+    "chatter",
     "notifications",
     "sessions",
     "permissions",

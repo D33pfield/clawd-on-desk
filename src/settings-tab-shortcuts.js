@@ -216,6 +216,8 @@
     attachGlobalListeners();
     core.tabs.shortcuts = {
       render,
+      // Lets other tabs show one customizable shortcut row (the Chatter tab does).
+      buildRow: buildShortcutRow,
     };
   }
 

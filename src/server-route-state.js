@@ -1209,6 +1209,18 @@ function handleStatePost(req, res, options) {
             }, { headless: effHeadless });
           } catch {}
         }
+        // Chatter has its own gate and flag; it only ever keeps a coarse
+        // activity category from the tool name.
+        if (sessionUpdateApplied && !effHeadless && typeof ctx.handleChatterEvent === "function") {
+          try {
+            ctx.handleChatterEvent({
+              event,
+              testResult,
+              failureKind: data.failure_kind,
+              toolName,
+            });
+          } catch {}
+        }
         res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
         res.end("ok");
       } else {

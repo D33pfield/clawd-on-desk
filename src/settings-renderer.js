@@ -8,6 +8,7 @@ const core = globalThis.ClawdSettingsCore;
 const SIDEBAR_TABS = [
   { id: "general", labelKey: "sidebarGeneral", available: true },
   { id: "pet", labelKey: "sidebarPet", available: true },
+  { id: "chatter", labelKey: "sidebarChatter", available: true },
   { id: "notifications", labelKey: "sidebarNotifications", available: true },
   { id: "sessions", labelKey: "sidebarSessions", available: true },
   { id: "permissions", labelKey: "sidebarPermissions", available: true },
@@ -101,6 +102,7 @@ core.ops.installRenderHooks({
 
 globalThis.ClawdSettingsTabGeneral.init(core);
 globalThis.ClawdSettingsTabPet.init(core);
+if (globalThis.ClawdSettingsTabChatter) globalThis.ClawdSettingsTabChatter.init(core);
 globalThis.ClawdSettingsTabNotifications.init(core);
 globalThis.ClawdSettingsTabSessions.init(core);
 globalThis.ClawdSettingsTabPermissions.init(core);

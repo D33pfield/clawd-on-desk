@@ -339,6 +339,44 @@ const SCHEMA = {
   testReactionsEnabled: { type: "boolean", default: false },
   // Fork: occasional idle "mood moments" driven by hook events (src/mood.js).
   moodEnabled: { type: "boolean", default: true },
+  // Fork: a local LLM writes occasional speech-bubble lines (src/chatter.js).
+  // Off by default: turning it on makes the app talk to a local Ollama server.
+  chatterEnabled: { type: "boolean", default: false },
+  // Show lines in the bubble. Off: lines are still written and logged, just not shown.
+  chatterShowBubbles: { type: "boolean", default: true },
+  // Ollama model name; empty means the built-in default (src/chatter.js).
+  chatterModel: {
+    type: "string",
+    default: "",
+    validate: (v) => typeof v === "string" && v.length <= 120 && /^[A-Za-z0-9._:\/-]*$/.test(v) && !v.includes("..") && !v.startsWith("/"),
+  },
+  chatterPersonality: {
+    type: "string",
+    default: "deadpan",
+    validate: (v) => ["deadpan", "wholesome", "anxious", "custom"].includes(v),
+  },
+  chatterCustomPersonality: {
+    type: "string",
+    default: "",
+    validate: (v) => typeof v === "string" && v.length <= 300,
+  },
+  // Average minutes between random check-in lines (the timer spreads +-30%).
+  chatterCheckinMinutes: {
+    type: "number",
+    default: 12,
+    validate: (v) => Number.isInteger(v) && v >= 2 && v <= 180,
+  },
+  chatterBubbleSeconds: {
+    type: "number",
+    default: 12,
+    validate: (v) => Number.isInteger(v) && v >= 3 && v <= 60,
+  },
+  // One switch per kind of line.
+  chatterTriggerCheckin: { type: "boolean", default: true },
+  chatterTriggerTests: { type: "boolean", default: true },
+  chatterTriggerError: { type: "boolean", default: true },
+  chatterTriggerReturn: { type: "boolean", default: true },
+  chatterTriggerMusic: { type: "boolean", default: true },
   lowPowerIdleMode: { type: "boolean", default: false },
   mobilePreviewEnabled: { type: "boolean", default: false },
   // Separate, explicit consent for the broader permission-summary disclosure.

@@ -1318,6 +1318,7 @@ describe("settings tab split", () => {
     assert.deepStrictEqual(sidebarEntries.map((entry) => entry.id), [
       "general",
       "pet",
+      "chatter",
       "notifications",
       "sessions",
       "permissions",

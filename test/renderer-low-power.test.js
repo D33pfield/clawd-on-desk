@@ -2649,6 +2649,49 @@ describe("renderer pet tint", () => {
   });
 });
 
+describe("renderer displayed content top", () => {
+  // Harness media box: x -99, y -55, 418 x 286; default viewBox -15 -25 45 45.
+  const scale = Math.min(418 / 45, 286 / 45);
+  const expectedTop = (bboxY) => -55 + (286 - 45 * scale) / 2 + (bboxY + 25) * scale;
+  function primed(bbox) {
+    const harness = createRendererHarness();
+    harness.clawd.contentDocument = { documentElement: { getBBox: () => bbox } };
+    vm.runInContext('currentDisplayedSvg = "thinking.svg"; currentDisplayedState = "thinking";', harness.context);
+    return harness;
+  }
+
+  it("maps the top of the drawn artwork into window pixels, with the SVG fitted into its element", () => {
+    const harness = primed({ x: 0, y: -7, width: 20, height: 25 });
+    assert.ok(Math.abs(harness.context.getDisplayedContentTop() - expectedTop(-7)) < 1e-9);
+    const lower = primed({ x: 0, y: 6, width: 15, height: 9 });
+    assert.ok(Math.abs(lower.context.getDisplayedContentTop() - expectedTop(6)) < 1e-9);
+    assert.ok(harness.context.getDisplayedContentTop() < lower.context.getDisplayedContentTop(), "taller art measures higher");
+  });
+
+  it("is null whenever it cannot be measured, and never throws", () => {
+    const empty = primed({ x: 0, y: -7, width: 20, height: 0 });
+    assert.strictEqual(empty.context.getDisplayedContentTop(), null);
+    const noBox = primed(null);
+    assert.strictEqual(noBox.context.getDisplayedContentTop(), null);
+    const nan = primed({ x: 0, y: NaN, width: 5, height: 5 });
+    assert.strictEqual(nan.context.getDisplayedContentTop(), null);
+
+    const throwing = createRendererHarness();
+    throwing.clawd.contentDocument = { documentElement: { getBBox() { throw new Error("detached"); } } };
+    vm.runInContext('currentDisplayedSvg = "x.svg";', throwing.context);
+    assert.strictEqual(throwing.context.getDisplayedContentTop(), null);
+
+    const noDoc = createRendererHarness();
+    vm.runInContext('currentDisplayedSvg = "x.svg";', noDoc.context);
+    assert.strictEqual(noDoc.context.getDisplayedContentTop(), null);
+
+    const img = createRendererHarness();
+    img.clawd.tagName = "IMG";
+    vm.runInContext('currentDisplayedSvg = "x.svg";', img.context);
+    assert.strictEqual(img.context.getDisplayedContentTop(), null, "an <img> has no document to measure");
+  });
+});
+
 describe("renderer pet accessory wardrobe", () => {
   function accessoryConfig(overrides = {}) {
     const config = {

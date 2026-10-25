@@ -149,4 +149,19 @@ describe("floating-window-runtime", () => {
       ["update", "resume"],
     ]);
   });
+
+  it("moves the chatter bubble with the pet and hides it when the pet hides or goes fullscreen", () => {
+    const calls = [];
+    const runtime = createFloatingWindowRuntime({
+      repositionChatterBubble: () => calls.push("reposition"),
+      hideChatterBubble: () => calls.push("hide"),
+    });
+
+    runtime.repositionFloatingBubbles();
+    runtime.hideFloatingSurfacesForPet();
+    runtime.setFullscreenSuppressedForPet(true);
+    runtime.setFullscreenSuppressedForPet(false);
+
+    assert.deepStrictEqual(calls, ["reposition", "hide", "hide"]);
+  });
 });

@@ -2606,12 +2606,18 @@
     return message;
   }
 
+  // Tabs that show shortcut rows: recording progress and results must repaint
+  // them. The Chatter tab embeds the "say something" row from the Shortcuts tab.
+  function showsShortcutRows() {
+    return state.activeTab === "shortcuts" || state.activeTab === "chatter";
+  }
+
   function finishShortcutRecording() {
     if (!state.shortcutRecordingActionId) return Promise.resolve();
     state.shortcutRecordingActionId = null;
     state.shortcutRecordingError = "";
     state.shortcutRecordingPartial = [];
-    if (state.activeTab === "shortcuts") requestRender({ content: true });
+    if (showsShortcutRows()) requestRender({ content: true });
     if (!window.settingsAPI || typeof window.settingsAPI.exitShortcutRecording !== "function") {
       return Promise.resolve();
     }
@@ -2633,7 +2639,7 @@
       state.shortcutRecordingActionId = actionId;
       state.shortcutRecordingError = "";
       state.shortcutRecordingPartial = [];
-      if (state.activeTab === "shortcuts") requestRender({ content: true });
+      if (showsShortcutRows()) requestRender({ content: true });
     }).catch((err) => {
       showToast(t("toastSaveFailed") + (err && err.message), { error: true });
     });
@@ -2649,7 +2655,7 @@
         || nextPartial.some((m, i) => m !== state.shortcutRecordingPartial[i]);
       if (changed) {
         state.shortcutRecordingPartial = nextPartial;
-        if (state.activeTab === "shortcuts") requestRender({ content: true });
+        if (showsShortcutRows()) requestRender({ content: true });
       }
       return;
     }
@@ -2660,7 +2666,7 @@
     if (built.action === "reject") {
       state.shortcutRecordingError = translateShortcutError(built.reason);
       state.shortcutRecordingPartial = [];
-      if (state.activeTab === "shortcuts") requestRender({ content: true });
+      if (showsShortcutRows()) requestRender({ content: true });
       return;
     }
     const targetActionId = state.shortcutRecordingActionId;
@@ -2677,10 +2683,10 @@
         return;
       }
       state.shortcutRecordingError = translateShortcutError(result && result.message);
-      if (state.activeTab === "shortcuts") requestRender({ content: true });
+      if (showsShortcutRows()) requestRender({ content: true });
     }).catch((err) => {
       state.shortcutRecordingError = (err && err.message) || "";
-      if (state.activeTab === "shortcuts") requestRender({ content: true });
+      if (showsShortcutRows()) requestRender({ content: true });
     });
   }
 
@@ -2690,7 +2696,7 @@
       runtime.shortcutFailureToastShown = true;
       showToast(t("shortcutErrorRegistrationFailed"), { error: true });
     }
-    if (state.activeTab === "shortcuts") requestRender({ content: true });
+    if (showsShortcutRows()) requestRender({ content: true });
   }
 
   // A cached per-card progress snapshot can only be read as "still installing"

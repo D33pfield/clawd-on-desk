@@ -35,6 +35,7 @@ const MENU_AFFECTING_KEYS = new Set([
   "size",
   "sessionAliases",
   "disableMiniMode",
+  "chatterEnabled",
 ]);
 
 const BUBBLE_PLACEMENT_KEYS = new Set([
