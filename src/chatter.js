@@ -26,8 +26,8 @@ const DEFAULT_CONFIG = Object.freeze({
   keepAlive: "30m",
   temperature: 0.8,
   numCtx: 2048,
-  // Room for up to three short lines.
-  numPredict: 160,
+  // Room for two short lines.
+  numPredict: 120,
   requestTimeoutMs: 30 * 1000,
   listTimeoutMs: 3 * 1000,
   // The first load from disk can take over a minute.
@@ -35,9 +35,9 @@ const DEFAULT_CONFIG = Object.freeze({
   maxTries: 3,
   maxWords: 12,
   // A reply is split into bubbles: at most this many, each this long, and this long in all.
-  maxParts: 3,
+  maxParts: 2,
   maxWordsPerPart: 16,
-  maxTotalWords: 45,
+  maxTotalWords: 32,
   // Custom personalities get a pool of example lines the model writes once.
   seedExamples: 8,
   // Words shared with a recent line or an example above this share are a repeat.
@@ -71,7 +71,7 @@ const CAST = (
 );
 
 const RULES = (
-  "You write what the pet says out loud: two or three short lines, each on its own line. Each line becomes its own speech bubble.\n"
+  "You write what the pet says out loud: two short lines, each on its own line. Each line becomes its own speech bubble.\n"
   + "Rules: each line at most 14 words. No emoji. No hashtags. No quotation marks. No bullets or numbering. "
   + "Never say you are an AI or a language model. Never explain. "
   + "Your reply must be about the FOCUS fact: use its specifics (what, how much, how long) and react to them in character. "
@@ -106,7 +106,6 @@ function triggerEnabled(settings, name) {
   return !(settings && settings.triggers && key && settings.triggers[key] === false);
 }
 const MAX_CUSTOM_PERSONALITY_CHARS = 300;
-const DAY_NAMES = Object.freeze(["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]);
 
 // ── Pure helpers ──
 
@@ -211,7 +210,7 @@ function factList(fields = {}) {
   const add = (key, text) => { if (text) out.push({ key, text }); };
   add("mood", fields.mood && `The pet itself feels: ${fields.mood}`);
   add("claude", fields.claude && `Claude is ${fields.claude}${fields.activity ? `, currently ${fields.activity}` : ""}`);
-  add("time", fields.time && `It is ${fields.day ? `${fields.day} ` : ""}${fields.time}`);
+  add("time", fields.time && `It is ${fields.time}`);
   if (fields.music) {
     const song = cleanSong(fields.song);
     add("music", song ? `Music is playing right now: ${song}` : "Music is playing right now");
@@ -548,7 +547,6 @@ function createChatter(options = {}) {
       claude,
       activity: activity && activity.category,
       time: timeBucket(date),
-      day: DAY_NAMES[date.getDay()],
       music: snapshot.musicPlaying === true,
       song: settings.shareSong === false ? "" : snapshot.song,
       streak: testFails >= config.testStreak
@@ -638,7 +636,7 @@ function createChatter(options = {}) {
         options: { temperature: config.temperature, num_predict: config.numPredict, num_ctx: config.numCtx },
         messages: [
           { role: "system", content: system },
-          { role: "user", content: `${factSheet}\n\nWrite your reply: two or three short lines, one per line.` },
+          { role: "user", content: `${factSheet}\n\nWrite your reply: two short lines, one per line.` },
         ],
       }, warmedModels.has(model) ? config.requestTimeoutMs : config.warmTimeoutMs);
       warmedModels.add(model);

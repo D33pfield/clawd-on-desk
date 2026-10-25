@@ -97,8 +97,8 @@ describe("fact sheet", () => {
     assert.ok(factList({ music: true, song: "x".repeat(500) }).find((f) => f.key === "music").text.length < 130);
   });
 
-  it("names the day with the time of day", () => {
-    assert.strictEqual(factList({ time: "late evening", day: "Saturday" }).find((f) => f.key === "time").text, "It is Saturday late evening");
+  it("gives the time of day without the weekday, which the model latched onto", () => {
+    assert.strictEqual(factList({ time: "late evening", day: "Saturday" }).find((f) => f.key === "time").text, "It is late evening");
   });
 
   it("renders the trigger first, then the focus, then the other facts", () => {
@@ -149,14 +149,14 @@ describe("cleanReply", () => {
 
   it("splits a multi-line reply into bubbles and strips bullets and numbering", () => {
     const r = cleanReply("- First thing here.\n2. Second thing here.\n* Third thing here.", { factSheet: sheet });
-    assert.deepStrictEqual(r.parts, ["First thing here.", "Second thing here.", "Third thing here."]);
-    assert.strictEqual(r.text, "First thing here. Second thing here. Third thing here.");
+    assert.deepStrictEqual(r.parts, ["First thing here.", "Second thing here."]);
+    assert.strictEqual(r.text, "First thing here. Second thing here.");
     assert.strictEqual(r.reason, null);
   });
 
-  it("splits a run-on paragraph into sentences, and keeps at most three bubbles", () => {
+  it("splits a run-on paragraph into sentences, and keeps at most two bubbles", () => {
     const r = cleanReply("One is here. Two is here! Three is here? Four is here. Five is here.", { factSheet: sheet });
-    assert.deepStrictEqual(r.parts, ["One is here.", "Two is here!", "Three is here?"]);
+    assert.deepStrictEqual(r.parts, ["One is here.", "Two is here!"]);
   });
 
   it("drops a bad later line but rejects the reply when the first line is bad", () => {
@@ -764,23 +764,23 @@ describe("createChatter", () => {
       assert.match(sheetOf(requests), /FOCUS/);
     });
 
-    it("asks for two or three short lines and leaves room to write them", async () => {
+    it("asks for two short lines and leaves room to write them", async () => {
       const { chatter, requests } = setup(["Fine, I suppose."]);
       await chatter.generate("idle-check");
       assert.strictEqual(requests[0].body.options.num_predict, DEFAULT_CONFIG.numPredict);
       assert.ok(DEFAULT_CONFIG.numPredict >= 120);
-      assert.match(sheetOf(requests), /Write your reply: two or three short lines, one per line\./);
-      assert.match(systemOf(requests), /two or three short lines/);
+      assert.match(sheetOf(requests), /Write your reply: two short lines, one per line\./);
+      assert.match(systemOf(requests), /two short lines/);
       assert.match(systemOf(requests), /Use a number only if it appears in the facts/);
     });
 
     it("hands the bubbles to onLine and logs the reply with its focus and facts", async () => {
-      const { chatter, lines, logs } = setup(["First line here.\nSecond line follows.\nThird one ends."]);
+      const { chatter, lines, logs } = setup(["First line here.\nSecond line follows.\nThird one is dropped."]);
       await chatter.sayNow();
-      assert.deepStrictEqual(lines[0].parts, ["First line here.", "Second line follows.", "Third one ends."]);
-      assert.strictEqual(lines[0].text, "First line here. Second line follows. Third one ends.");
+      assert.deepStrictEqual(lines[0].parts, ["First line here.", "Second line follows."]);
+      assert.strictEqual(lines[0].text, "First line here. Second line follows.");
       const logged = logs.find((m) => m.startsWith("chatter trigger=hotkey"));
-      assert.match(logged, / focus=\w+ line=First line here\. \/ Second line follows\. \/ Third one ends\. facts=TRIGGER:/);
+      assert.match(logged, / focus=\w+ line=First line here\. \/ Second line follows\. facts=TRIGGER:/);
     });
 
     it("tells the model which words it has been overusing", async () => {
