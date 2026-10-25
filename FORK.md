@@ -35,13 +35,13 @@ A local [Ollama](https://ollama.com) model writes one short line for the pet to 
 
 - Turn it on from the tray or right-click menu (*Chatter*) or **Settings → Chatter**. It needs Ollama running on `127.0.0.1:11434` with at least one model installed. Nothing is sent anywhere else.
 - Triggers: a random check-in timer (only while you are active), tests passing after failures, Claude hitting an error, you coming back after a long gap, and music starting. A hotkey (unassigned by default, set it under **Settings → Chatter** or **Shortcuts**) asks for a reply immediately.
-- A reply is two or three short lines shown as back-to-back speech bubbles. The text types out one character at a time in a terminal font (Cascadia Mono, then Consolas). Click a bubble to skip to the next one, or to dismiss the last.
-- Settings: personality (deadpan, wholesome, anxious, or your own text), model picker, check-in interval, how long a whole reply stays up, a switch per situation, whether the model may see the song title, and whether to show the bubble at all (replies are still logged when it is off). Turning chatter off unloads the model from memory.
-- The model sees a fact sheet built from whitelisted fields only: a trigger sentence, one required **focus** fact that rotates from reply to reply so consecutive replies are about different things, and a few other facts. The facts are counts and categories from this session: tool calls (edits, commands, reads, helper agents, web lookups), test runs passed and failed, tool failures, finished tasks, how long the session has run, how full Claude's context window is, how long Claude has been idle or the user was away, the pet's mood in words, the day and time of day, and, if you allow it, the title of the song playing. Prompts, command text, file names and paths are never passed to it.
+- A reply is two short lines shown as back-to-back speech bubbles. The text types out one character at a time in a console font you pick in Settings (Cascadia Mono by default; Consolas, Lucida Console and Courier New are the other choices, all of which ship with Windows). Click a bubble to skip to the next one, or to dismiss the last.
+- Settings: personality (deadpan, wholesome, anxious, noir detective, sportscaster, grumpy wizard, ship's engineer, or your own text; each built-in voice has its own rules and example lines in `src/chatter-personalities.js`), bubble font, model picker, check-in interval, how long a whole reply stays up, a switch per situation, whether the model may see the song title, and whether to show the bubble at all (replies are still logged when it is off). Turning chatter off unloads the model from memory.
+- The model sees a fact sheet built from whitelisted fields only: a trigger sentence, one required **focus** fact that rotates from reply to reply so consecutive replies are about different things, and a few other facts. The facts are counts and categories from this session: tool calls (edits, commands, reads, helper agents, web lookups), test runs passed and failed, tool failures, finished tasks, how long the session has run, how full Claude's context window is, how long Claude has been idle or the user was away, the pet's mood in words, the time of day, and, if you allow it, the title of the song playing. Prompts, command text, file names and paths are never passed to it.
 - Output is checked before it is shown: length per bubble and in total, no invented numbers (a number must appear in the facts), no repeats or copied examples, and no words it has been overusing lately.
 - A custom personality gets a small pool of example lines the model writes once in that voice, so the custom text actually shapes the tone.
 - Replies, and the fact sheet behind each, are written to `session-debug.log` as `chatter trigger=... focus=... line=... facts=...`.
-- Code: `src/chatter.js` (triggers, prompt, filters, Ollama calls), `src/chatter-bubble.js` and `chatter-bubble.html` (the bubble window), `src/settings-tab-chatter.js` (the Settings tab).
+- Code: `src/chatter.js` (triggers, prompt, filters, Ollama calls), `src/chatter-personalities.js` (the built-in voices) and `src/chatter-fonts.js` (the bubble font list), `src/chatter-bubble.js` and `chatter-bubble.html` (the bubble window), `src/settings-tab-chatter.js` (the Settings tab).
 
 ### Defaults and housekeeping
 
@@ -121,13 +121,13 @@ New: `src/music.js`, `test/music.test.js`.
 
 ### Chatter (`feat(chatter)`)
 
-New: `src/chatter.js`, `src/chatter-bubble.js`, `src/chatter-bubble.html`, `src/preload-chatter-bubble.js`, `src/settings-tab-chatter.js`, and tests `test/chatter*.test.js`, `test/settings-tab-chatter.test.js`.
+New: `src/chatter.js`, `src/chatter-personalities.js`, `src/chatter-fonts.js`, `src/chatter-bubble.js`, `src/chatter-bubble.html`, `src/preload-chatter-bubble.js`, `src/settings-tab-chatter.js`, and tests `test/chatter*.test.js`, `test/settings-tab-chatter.test.js`.
 
 | Upstream file | Why it is touched |
 |---|---|
 | `src/main.js` | create the chatter and its bubble; read prefs; the hotkey handler; pref-change reactions; the music hook |
 | `src/server-route-state.js` | a separate tap for chatter (its own flag; skips headless sessions; passes the context percentage) |
-| `src/prefs.js`, `src/settings-actions.js` | the thirteen `chatter*` prefs and validators |
+| `src/prefs.js`, `src/settings-actions.js` | the fourteen `chatter*` prefs and validators |
 | `src/settings-ui-core.js` | repaint shortcut recording on the Chatter tab as well as the Shortcuts tab |
 | `src/settings-renderer.js`, `src/settings.html`, `src/settings-window.js`, `src/settings-icons.js`, `src/settings-i18n.js` | register the Chatter tab, its icon and strings |
 | `src/settings-tab-shortcuts.js`, `src/shortcut-actions.js` | the `chatterNow` hotkey and a reusable shortcut row |
