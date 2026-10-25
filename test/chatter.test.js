@@ -308,6 +308,9 @@ describe("personality", () => {
   });
 });
 
+// The helper pins this model; the "first installed" default has its own tests below.
+const TEST_MODEL = "test-model:1b";
+
 describe("createChatter", () => {
   function fakeTimers() {
     const pending = [];
@@ -347,6 +350,7 @@ describe("createChatter", () => {
         return { ok: true, status: 200, json: async () => ({ message: { content: next === undefined ? "Fine." : next } }) };
       },
       ...extra,
+      config: { model: TEST_MODEL, ...(extra.config || {}) },
     });
     return { chatter, timers, lines, requests, logs, clock };
   }
@@ -403,7 +407,7 @@ describe("createChatter", () => {
     assert.strictEqual(result.text, "Hello there, friend.");
     const { url, body } = requests[0];
     assert.strictEqual(url, `${DEFAULT_CONFIG.baseUrl}/api/chat`);
-    assert.strictEqual(body.model, DEFAULT_CONFIG.model);
+    assert.strictEqual(body.model, TEST_MODEL);
     assert.strictEqual(body.think, false);
     assert.strictEqual(body.stream, false);
     assert.strictEqual(body.options.num_ctx, 2048);
@@ -507,6 +511,7 @@ describe("createChatter", () => {
         timers,
         now: () => t,
         random: () => 0,
+        config: { model: TEST_MODEL },
         onLine: (line) => lines.push(line),
         fetch: async () => {
           t += 60 * 1000; // the reply takes longer than staleMs
@@ -647,7 +652,7 @@ describe("createChatter", () => {
       return { ok: true, json: async () => ({ models: [{ name: "zeta:1b" }, { name: "alpha:7b" }, { nope: 1 }, null] }) };
     });
     const result = await listed.listModels();
-    assert.deepStrictEqual(result, { ok: true, models: ["alpha:7b", "zeta:1b"], defaultModel: DEFAULT_CONFIG.model });
+    assert.deepStrictEqual(result, { ok: true, models: ["alpha:7b", "zeta:1b"], defaultModel: "alpha:7b" });
     assert.strictEqual(calls[0].url, `${DEFAULT_CONFIG.baseUrl}/api/tags`);
     assert.ok(!calls[0].method, "a plain GET");
 
@@ -655,11 +660,68 @@ describe("createChatter", () => {
     assert.strictEqual(down.ok, false);
     assert.deepStrictEqual(down.models, []);
     assert.match(down.error, /ECONNREFUSED/);
-    assert.strictEqual(down.defaultModel, DEFAULT_CONFIG.model);
+    assert.strictEqual(down.defaultModel, "");
 
     const bad = await make(async () => ({ ok: false, status: 500, json: async () => ({}) })).listModels();
     assert.strictEqual(bad.ok, false);
     assert.match(bad.error, /500/);
+  });
+
+  describe("default model", () => {
+    function ollama(models, extra = {}) {
+      const chats = [];
+      let tagCalls = 0;
+      let t = 1_000_000;
+      const chatter = createChatter({
+        timers: fakeTimers(),
+        now: () => t,
+        random: () => 0,
+        log: () => {},
+        fetch: async (url, init) => {
+          if (url.endsWith("/api/tags")) {
+            tagCalls++;
+            return { ok: true, json: async () => ({ models: models.map((name) => ({ name })) }) };
+          }
+          chats.push(JSON.parse(init.body));
+          return { ok: true, json: async () => ({ message: { content: "Hello there, friend." } }) };
+        },
+        ...extra,
+      });
+      return { chatter, chats, tagCalls: () => tagCalls, advance: (ms) => { t += ms; } };
+    }
+
+    it("uses the first installed model that can chat when none is chosen", async () => {
+      const { chatter, chats } = ollama(["nomic-embed-text:latest", "zeta:1b", "alpha:7b"]);
+      await chatter.generate("idle-check");
+      assert.strictEqual(chats[0].model, "alpha:7b");
+    });
+
+    it("a chosen model wins and Ollama is not asked for the list", async () => {
+      const { chatter, chats, tagCalls } = ollama(["alpha:7b"]);
+      await chatter.generate("idle-check", {}, { model: "mine:9b" });
+      assert.strictEqual(chats[0].model, "mine:9b");
+      assert.strictEqual(tagCalls(), 0);
+    });
+
+    it("remembers the lookup for a minute, then looks again", async () => {
+      const { chatter, tagCalls, advance } = ollama(["alpha:7b"]);
+      await chatter.generate("idle-check", {}, { enabled: true });
+      await chatter.generate("idle-check", {}, { enabled: true });
+      assert.strictEqual(tagCalls(), 1);
+      advance(61 * 1000);
+      await chatter.generate("idle-check", {}, { enabled: true });
+      assert.strictEqual(tagCalls(), 2);
+    });
+
+    it("says nothing and sends no chat when no model is installed or Ollama is down", async () => {
+      const none = ollama([]);
+      assert.strictEqual(await none.chatter.generate("idle-check"), null);
+      assert.strictEqual(none.chats.length, 0);
+      const down = ollama([], { fetch: async () => { throw new Error("ECONNREFUSED"); } });
+      assert.strictEqual(await down.chatter.generate("idle-check"), null);
+      assert.strictEqual(await down.chatter.warm(), false);
+      assert.strictEqual(await down.chatter.unload(), false);
+    });
   });
 
   it("sayNow() answers a hotkey at once: no minimum gap, no trigger switch, no staleness drop", async () => {
@@ -700,6 +762,7 @@ describe("createChatter", () => {
     const chatter = createChatter({
       timers,
       random: () => 0,
+      config: { model: TEST_MODEL },
       fetch: async (url, init) => {
         bodies.push(JSON.parse(init.body));
         return { ok: true, json: async () => ({ message: { content: "Fine, I suppose." } }) };
@@ -707,7 +770,7 @@ describe("createChatter", () => {
     });
     await chatter.generate("idle-check");
     assert.strictEqual(await chatter.unload(), true);
-    assert.deepStrictEqual(bodies.at(-1), { model: DEFAULT_CONFIG.model, keep_alive: 0 });
+    assert.deepStrictEqual(bodies.at(-1), { model: TEST_MODEL, keep_alive: 0 });
     await chatter.generate("idle-check");
     assert.strictEqual(delays.at(-1), DEFAULT_CONFIG.warmTimeoutMs, "the model must be loaded again");
     const failing = createChatter({ fetch: async () => { throw new Error("down"); }, timers });
@@ -863,7 +926,7 @@ describe("createChatter", () => {
         assert.match(sheetOf(requests, 0), /^Write 8 different things this character would say/);
         assert.match(systemOf(requests, 1), /Examples of your voice/);
         assert.match(systemOf(requests, 1), /Arr, another red test\.|Ye call that a commit\?|Shiver me timbers|Not a single edit/);
-        assert.ok(logs.includes("chatter seeded examples=4 model=" + DEFAULT_CONFIG.model));
+        assert.ok(logs.includes("chatter seeded examples=4 model=" + TEST_MODEL));
         await chatter.generate("idle-check");
         assert.strictEqual(requests.length, 3, "the seeds are cached: no second seeding request");
       });
@@ -908,7 +971,7 @@ describe("createChatter", () => {
   it("warm() loads the model with a long timeout and swallows errors", async () => {
     const ok = setup([""]);
     assert.strictEqual(await ok.chatter.warm(), true);
-    assert.strictEqual(ok.requests[0].body.model, DEFAULT_CONFIG.model);
+    assert.strictEqual(ok.requests[0].body.model, TEST_MODEL);
     assert.ok(!("messages" in ok.requests[0].body));
     assert.strictEqual(ok.requests[0].body.options.num_ctx, DEFAULT_CONFIG.numCtx, "must match real requests or Ollama reloads");
     const bad = setup([new Error("down")]);

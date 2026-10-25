@@ -48,7 +48,7 @@ describe("chatter prefs", () => {
   });
 
   it("only take plain model names, since the name goes to Ollama", () => {
-    for (const name of ["", "qwen3.5:4b", "hf.co/User/Model-8B:Q4_K_M", "baytout3/qwen3.5-uncensored:9b"]) {
+    for (const name of ["", "qwen3.5:4b", "hf.co/User/Model-8B:Q4_K_M", "someone/example-model:9b"]) {
       assert.ok(ok("chatterModel", name), name);
     }
     for (const name of ["a b", "model\n", "../../etc", "x;y", "a".repeat(121), 7, null]) {
