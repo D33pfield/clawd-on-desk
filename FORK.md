@@ -24,7 +24,7 @@ Four independent, leaky mood channels (stress, satisfaction, fatigue, boredom) a
 
 While Spotify is playing on Windows the pet wears headphones, with two music notes floating up and a gentle nod at 60 bpm, on top of whatever animation is playing.
 
-- `src/music.js` polls the Windows media session (a short hidden PowerShell call every 4 seconds, no helper program) and debounces the result. It does nothing on other platforms.
+- `src/music.js` reads the titles of Spotify's own windows in-process, through `koffi` (the FFI the app already ships for Windows calls): `Artist - Song` while a track plays, `Spotify Premium` or `Spotify Free` when idle, and the title keeps updating while the window is minimized. It checks every 1.5 seconds with no helper program and no process launch (one pass over the windows takes milliseconds), and debounces so a skipped track does not flicker. It does nothing on other platforms, needs Spotify's window to exist, and the song title it finds is also what chatter can mention.
 - The renderer has a renderer-only accessory slot called `music` that borrows the head slot's placement, so it follows the body and hides wherever hats hide. It is not part of the accessory catalog, settings or hit geometry.
 - The headphones artwork is loaded by name (`music-headphones.svg`) from the active theme's assets. Themes without that file simply show nothing. The artwork is not in this repository (see below).
 - There is currently no switch to turn the polling off.
@@ -34,10 +34,13 @@ While Spotify is playing on Windows the pet wears headphones, with two music not
 A local [Ollama](https://ollama.com) model writes one short line for the pet to say in a speech bubble. The code decides when to speak and what the model may know; the model only writes the words. **Off by default.**
 
 - Turn it on from the tray or right-click menu (*Chatter*) or **Settings → Chatter**. It needs Ollama running on `127.0.0.1:11434` with at least one model installed. Nothing is sent anywhere else.
-- Triggers: a random check-in timer (only while you are active), tests passing after failures, Claude hitting an error, you coming back after a long gap, and music starting. A hotkey (unassigned by default, set it under **Settings → Chatter** or **Shortcuts**) asks for a line immediately.
-- Settings: personality (deadpan, wholesome, anxious, or your own text), model picker, check-in interval, how long a bubble stays up, a switch per situation, and a switch for showing the bubble at all (lines are still logged when it is off). Click a bubble to dismiss it. Turning chatter off unloads the model from memory.
-- The model sees a short fact sheet built from whitelisted fields only (a trigger sentence, mood words, Claude's status and a coarse activity such as "editing files", a time-of-day bucket, whether music is playing, a streak). Prompts, command text, file names and paths are never passed to it.
-- Lines, and the fact sheet behind each, are written to `session-debug.log` as `chatter trigger=... line=... facts=...`.
+- Triggers: a random check-in timer (only while you are active), tests passing after failures, Claude hitting an error, you coming back after a long gap, and music starting. A hotkey (unassigned by default, set it under **Settings → Chatter** or **Shortcuts**) asks for a reply immediately.
+- A reply is two or three short lines shown as back-to-back speech bubbles. The text types out one character at a time in a terminal font (Cascadia Mono, then Consolas). Click a bubble to skip to the next one, or to dismiss the last.
+- Settings: personality (deadpan, wholesome, anxious, or your own text), model picker, check-in interval, how long a whole reply stays up, a switch per situation, whether the model may see the song title, and whether to show the bubble at all (replies are still logged when it is off). Turning chatter off unloads the model from memory.
+- The model sees a fact sheet built from whitelisted fields only: a trigger sentence, one required **focus** fact that rotates from reply to reply so consecutive replies are about different things, and a few other facts. The facts are counts and categories from this session: tool calls (edits, commands, reads, helper agents, web lookups), test runs passed and failed, tool failures, finished tasks, how long the session has run, how full Claude's context window is, how long Claude has been idle or the user was away, the pet's mood in words, the day and time of day, and, if you allow it, the title of the song playing. Prompts, command text, file names and paths are never passed to it.
+- Output is checked before it is shown: length per bubble and in total, no invented numbers (a number must appear in the facts), no repeats or copied examples, and no words it has been overusing lately.
+- A custom personality gets a small pool of example lines the model writes once in that voice, so the custom text actually shapes the tone.
+- Replies, and the fact sheet behind each, are written to `session-debug.log` as `chatter trigger=... focus=... line=... facts=...`.
 - Code: `src/chatter.js` (triggers, prompt, filters, Ollama calls), `src/chatter-bubble.js` and `chatter-bubble.html` (the bubble window), `src/settings-tab-chatter.js` (the Settings tab).
 
 ### Defaults and housekeeping
@@ -123,8 +126,8 @@ New: `src/chatter.js`, `src/chatter-bubble.js`, `src/chatter-bubble.html`, `src/
 | Upstream file | Why it is touched |
 |---|---|
 | `src/main.js` | create the chatter and its bubble; read prefs; the hotkey handler; pref-change reactions; the music hook |
-| `src/server-route-state.js` | a separate tap for chatter (its own flag; skips headless sessions) |
-| `src/prefs.js`, `src/settings-actions.js` | the twelve `chatter*` prefs and validators |
+| `src/server-route-state.js` | a separate tap for chatter (its own flag; skips headless sessions; passes the context percentage) |
+| `src/prefs.js`, `src/settings-actions.js` | the thirteen `chatter*` prefs and validators |
 | `src/settings-ui-core.js` | repaint shortcut recording on the Chatter tab as well as the Shortcuts tab |
 | `src/settings-renderer.js`, `src/settings.html`, `src/settings-window.js`, `src/settings-icons.js`, `src/settings-i18n.js` | register the Chatter tab, its icon and strings |
 | `src/settings-tab-shortcuts.js`, `src/shortcut-actions.js` | the `chatterNow` hotkey and a reusable shortcut row |
@@ -157,6 +160,6 @@ If upstream ever changes a convention the fork relies on (the pref schema, the i
 
 ## Privacy and security
 
-- The fork makes no network requests of its own except to a local Ollama server (`127.0.0.1:11434`) when chatter is turned on, and a local PowerShell call for the music detector on Windows.
+- The fork makes no network requests of its own except to a local Ollama server (`127.0.0.1:11434`) when chatter is turned on. The music detector launches no processes: it reads Spotify's window title through the FFI the app already bundles.
 - Chatter's prompt is built only from whitelisted fields (see above). Its output is shown with `textContent`, never as markup, and its bubble window ignores the mouse except while the pointer is over the bubble.
 - Do not open public issues for security problems. Use upstream's private vulnerability reporting for anything that concerns upstream code, or contact the fork's maintainer through GitHub for fork-only code.
