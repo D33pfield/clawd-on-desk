@@ -24,6 +24,7 @@ describe("shortcut-actions metadata", () => {
       "togglePet",
       "quickSelectSession",
       "chatterNow",
+      "shareScreen",
       "permissionAllow",
       "permissionDeny",
     ]);
@@ -45,6 +46,7 @@ describe("shortcut-actions metadata", () => {
       togglePet: "CommandOrControl+Shift+Alt+C",
       quickSelectSession: null,
       chatterNow: null,
+      shareScreen: null,
       permissionAllow: "CommandOrControl+Shift+Y",
       permissionDeny: "CommandOrControl+Shift+N",
     });
@@ -332,6 +334,7 @@ describe("normalizeShortcuts", () => {
         togglePet: "CommandOrControl+K",
         quickSelectSession: null,
         chatterNow: null,
+        shareScreen: null,
         permissionAllow: "CommandOrControl+Shift+Y",
         permissionDeny: "CommandOrControl+Shift+N",
       }
@@ -349,6 +352,7 @@ describe("normalizeShortcuts", () => {
         togglePet: null,
         quickSelectSession: null,
         chatterNow: null,
+        shareScreen: null,
         permissionAllow: null,
         permissionDeny: null,
       }
@@ -386,6 +390,7 @@ describe("normalizeShortcuts", () => {
         togglePet: "CommandOrControl+K",
         quickSelectSession: null,
         chatterNow: null,
+        shareScreen: null,
         permissionAllow: "CommandOrControl+Shift+Y",
         permissionDeny: "CommandOrControl+Shift+N",
       }
@@ -402,6 +407,7 @@ describe("normalizeShortcuts", () => {
         togglePet: "Control+Shift+K",
         quickSelectSession: null,
         chatterNow: null,
+        shareScreen: null,
         permissionAllow: "CommandOrControl+Shift+Y",
         permissionDeny: "CommandOrControl+Shift+N",
       }
@@ -414,12 +420,14 @@ describe("normalizeShortcuts", () => {
         togglePet: "Control+Shift+K",
         quickSelectSession: null,
         chatterNow: null,
+        shareScreen: null,
         permissionAllow: "CommandOrControl+Shift+K",
       }, getDefaultShortcuts(), { isMac: true }),
       {
         togglePet: "Control+Shift+K",
         quickSelectSession: null,
         chatterNow: null,
+        shareScreen: null,
         permissionAllow: "CommandOrControl+Shift+K",
         permissionDeny: "CommandOrControl+Shift+N",
       }

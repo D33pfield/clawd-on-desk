@@ -31,6 +31,13 @@
       defaultAccelerator: null,
       labelKey: "shortcutLabelChatterNow",
     }),
+    // One capture of the screen (or window), described and commented on. Needs
+    // Settings > Chatter > Desktop awareness to be on.
+    shareScreen: Object.freeze({
+      persistent: true,
+      defaultAccelerator: null,
+      labelKey: "shortcutLabelShareScreen",
+    }),
     permissionAllow: Object.freeze({
       persistent: false,
       defaultAccelerator: "CommandOrControl+Shift+Y",

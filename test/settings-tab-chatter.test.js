@@ -18,11 +18,12 @@ class FakeNode {
     this.value = "";
   }
   appendChild(child) { this.children.push(child); return child; }
+  setAttribute(name, value) { this.attrs = { ...(this.attrs || {}), [name]: value }; }
   addEventListener(type, fn) { this.listeners.set(type, fn); }
   fire(type) { const fn = this.listeners.get(type); if (fn) fn({ type }); }
 }
 
-function load({ snapshot = {}, models = { ok: true, models: ["alpha:1b", "beta:7b"], defaultModel: "alpha:1b" }, update } = {}) {
+function load({ snapshot = {}, models = { ok: true, models: ["alpha:1b", "beta:7b"], defaultModel: "alpha:1b" }, update, awarenessStatus } = {}) {
   const built = { switches: [], numbers: [], selects: [], inputs: [], buttons: [] };
   const updates = [];
   const renders = [];
@@ -31,6 +32,7 @@ function load({ snapshot = {}, models = { ok: true, models: ["alpha:1b", "beta:7
   const api = {
     update: (key, value) => { updates.push({ key, value }); return update ? update(key, value) : Promise.resolve({ status: "ok" }); },
     getChatterModels: () => { modelCalls += 1; return Promise.resolve(models); },
+    getAwarenessStatus: () => Promise.resolve(awarenessStatus || { ok: true, model: "m:1b", vision: true, lastSeen: "" }),
   };
   const context = { globalThis: null, window: { settingsAPI: api }, document: { createElement: (tag) => new FakeNode(tag) } };
   context.globalThis = context;
@@ -88,6 +90,7 @@ describe("chatter settings tab", () => {
     assert.deepEqual(harness.built.switches.map((s) => s.key), [
       "chatterEnabled", "chatterShowBubbles", "chatterTriggerCheckin", "chatterTriggerTests",
       "chatterTriggerError", "chatterTriggerReturn", "chatterTriggerMusic", "chatterShareSong",
+      "desktopAwareness", "desktopAwarenessArmed", "desktopAwarenessLogLines",
     ]);
     for (const config of harness.built.switches) {
       assert.ok(config.labelKey && config.descKey, `${config.key} has a label and description`);
@@ -99,7 +102,7 @@ describe("chatter settings tab", () => {
     const parent = harness.render();
     const sections = sectionKeys(parent);
     assert.deepEqual(plain(sections.map((s) => s.title)), [
-      "sectionChatterGeneral", "sectionChatterVoice", "sectionChatterTiming", "sectionChatterTriggers", "sectionChatterContext", "sectionChatterHotkey",
+      "sectionChatterGeneral", "sectionChatterVoice", "sectionChatterTiming", "sectionChatterTriggers", "sectionChatterContext", "sectionChatterAwareness", "sectionChatterHotkey",
     ]);
     const first = sections[0].children;
     assert.equal(first.length, 1);
@@ -120,7 +123,10 @@ describe("chatter settings tab", () => {
     assert.equal(off.built.selects[0].disabled, true, "personality");
     const on = load({ snapshot: { chatterEnabled: true } });
     on.render();
-    for (const config of on.built.switches) assert.equal(config.disabled, false, config.key);
+    const awarenessKeys = ["desktopAwarenessArmed", "desktopAwarenessLogLines"];
+    for (const config of on.built.switches) {
+      assert.equal(config.disabled, awarenessKeys.includes(config.key), `${config.key}: only the awareness options wait for the first awareness switch`);
+    }
     assert.equal(on.built.selects[0].disabled, false);
   });
 
@@ -203,7 +209,7 @@ describe("chatter settings tab", () => {
     await harness.flush();
     assert.deepEqual(plain(harness.renders.at(-1)), { content: true });
     harness.render();
-    const model = harness.built.selects.at(-2);
+    const model = harness.built.selects[6];
     assert.deepEqual(plain(model.options.map((o) => o.value)), ["", "beta:7b", "gone:3b"]);
     assert.equal(model.options[0].label, "chatterModelDefault (alpha:1b)");
     assert.equal(model.value, "gone:3b");
@@ -285,5 +291,74 @@ describe("chatter settings tab: bubble font", () => {
     off.render();
     assert.equal(off.built.selects[2].disabled, true);
     assert.equal(off.built.selects[2].value, "cascadia", "an unset font shows the default");
+  });
+});
+
+describe("chatter settings tab: desktop awareness", () => {
+  const switchOf = (harness, key) => harness.built.switches.find((c) => c.key === key);
+  const warningOf = (parent) => {
+    const section = parent.children.find((c) => c.title === "sectionChatterAwareness");
+    return section.children.find((c) => /awareness-warning/.test(c.className || ""));
+  };
+
+  it("keeps automatic captures locked, and the warning dim, until the first switch is on", () => {
+    const harness = load({ snapshot: { chatterEnabled: true, desktopAwareness: false } });
+    const parent = harness.render();
+    assert.equal(switchOf(harness, "desktopAwareness").disabled, false);
+    assert.equal(switchOf(harness, "desktopAwarenessArmed").disabled, true);
+    const warning = warningOf(parent);
+    assert.equal(warning.className, "awareness-warning");
+    assert.equal(warning.textContent, "awarenessWarningOff");
+  });
+
+  it("lights up the warning, right between the two switches, when the first one is on", () => {
+    const harness = load({ snapshot: { chatterEnabled: true, desktopAwareness: true } });
+    const parent = harness.render();
+    assert.equal(switchOf(harness, "desktopAwarenessArmed").disabled, false);
+    const warning = warningOf(parent);
+    assert.match(warning.className, /awareness-warning-hot/);
+    assert.equal(warning.textContent, "awarenessWarningOn");
+    const section = parent.children.find((c) => c.title === "sectionChatterAwareness");
+    const order = section.children.map((c) => (c.config && c.config.key) || c.className);
+    assert.deepEqual(plain(order.slice(0, 3)), ["desktopAwareness", "awareness-warning awareness-warning-hot", "desktopAwarenessArmed"]);
+  });
+
+  it("everything about awareness waits for the chatter master switch", () => {
+    const harness = load({ snapshot: { chatterEnabled: false, desktopAwareness: true } });
+    harness.render();
+    assert.equal(switchOf(harness, "desktopAwareness").disabled, true);
+    assert.equal(switchOf(harness, "desktopAwarenessArmed").disabled, true);
+  });
+
+  it("offers the scope and monitor choices; the monitor choice waits for whole-monitor capture", async () => {
+    const harness = load({ snapshot: { chatterEnabled: true, desktopAwareness: true, desktopAwarenessScope: "window" } });
+    harness.render();
+    const [, , , scope, monitor] = harness.built.selects;
+    assert.deepEqual(plain(scope.options.map((o) => o.value)), ["window", "screen"]);
+    assert.deepEqual(plain(monitor.options.map((o) => o.value)), ["pet", "primary", "all"]);
+    assert.equal(monitor.disabled, true, "a window capture always uses the window's own monitor");
+    await scope.onChange("screen");
+    assert.deepEqual(plain(harness.updates.at(-1)), { key: "desktopAwarenessScope", value: "screen" });
+    const screen = load({ snapshot: { chatterEnabled: true, desktopAwareness: true, desktopAwarenessScope: "screen" } });
+    screen.render();
+    assert.equal(screen.built.selects[4].disabled, false);
+  });
+
+  it("shows whether the model can see images and what it last saw, and offers the hotkey", async () => {
+    const harness = load({
+      snapshot: { chatterEnabled: true, desktopAwareness: true },
+      awarenessStatus: { ok: true, model: "m:9b", vision: false, lastSeen: "A spreadsheet." },
+    });
+    harness.render();
+    await harness.flush();
+    const parent = harness.render();
+    const section = parent.children.find((c) => c.title === "sectionChatterAwareness");
+    const statusRow = section.children.find((c) => c.config && c.config.labelKey === "rowAwarenessStatus");
+    const texts = [];
+    const collect = (node) => { if (node.textContent) texts.push(node.textContent); (node.children || []).forEach(collect); };
+    collect(statusRow);
+    assert.ok(texts.some((t) => t === "m:9b: awarenessCannotSee"), texts.join(" | "));
+    assert.ok(texts.some((t) => t === "awarenessLastSeen A spreadsheet."), texts.join(" | "));
+    assert.equal(section.children.at(-1).actionId, "shareScreen");
   });
 });

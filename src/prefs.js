@@ -387,6 +387,23 @@ const SCHEMA = {
   chatterTriggerError: { type: "boolean", default: true },
   chatterTriggerReturn: { type: "boolean", default: true },
   chatterTriggerMusic: { type: "boolean", default: true },
+  // Desktop awareness (src/desktop-awareness.js). Off by default. "Armed" is runtime
+  // state in practice: main forces it off at every launch and whenever awareness is
+  // switched off; it is a pref only so the Settings page can bind to it.
+  desktopAwareness: { type: "boolean", default: false },
+  desktopAwarenessArmed: { type: "boolean", default: false },
+  desktopAwarenessScope: {
+    type: "string",
+    default: "window",
+    validate: (v) => v === "window" || v === "screen",
+  },
+  desktopAwarenessMonitor: {
+    type: "string",
+    default: "pet",
+    validate: (v) => v === "pet" || v === "primary" || v === "all",
+  },
+  // Whether a spoken line made from a capture may be written to the debug log.
+  desktopAwarenessLogLines: { type: "boolean", default: false },
   lowPowerIdleMode: { type: "boolean", default: false },
   mobilePreviewEnabled: { type: "boolean", default: false },
   // Separate, explicit consent for the broader permission-summary disclosure.

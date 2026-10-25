@@ -153,6 +153,7 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   forgetKimiQuotaCredential: () => ipcRenderer.invoke("settings:kimi-quota-forget"),
   getPetTintOptions: () => ipcRenderer.invoke("settings:get-pet-tint-options"),
   getChatterModels: () => ipcRenderer.invoke("settings:chatter-models"),
+  getAwarenessStatus: () => ipcRenderer.invoke("settings:awareness-status"),
   getPetAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-accessory-options"),
   getPetMouthAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-mouth-accessory-options"),
   getRoamFence: () => ipcRenderer.invoke("settings:get-roam-fence"),

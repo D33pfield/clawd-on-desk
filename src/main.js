@@ -204,6 +204,7 @@ const { createMoodTracker, createMoodEventHandler } = require("./mood");
 const { createMoodStore, loadMoodState } = require("./mood-store");
 const { createMoodWindow } = require("./mood-window");
 const { createMusicDetector } = require("./music");
+const { createAwarenessRuntime } = require("./desktop-awareness-runtime");
 const { createChatter } = require("./chatter");
 const { createChatterBubble, resolveChatterAnchor } = require("./chatter-bubble");
 const createMacHideController = require("./mac-hide");
@@ -528,6 +529,10 @@ const shortcutHandlers = {
   // A line on demand; a no-op while chatter is switched off.
   chatterNow: () => {
     if (_settingsController.get("chatterEnabled") === true) void chatter.sayNow();
+  },
+  // One capture on request; ignored unless Desktop awareness is switched on.
+  shareScreen: () => {
+    if (_settingsController.get("chatterEnabled") === true && _settingsController.get("desktopAwareness") === true) void chatter.shareScreen();
   },
 };
 const _settingsController = createSettingsController({
@@ -5167,6 +5172,7 @@ const settingsIpcRuntime = registerSettingsIpc({
   settingsController: _settingsController,
   recapRuntime,
   listChatterModels: () => chatter.listModels(),
+  getAwarenessStatus: () => awarenessRuntime.status(),
   getQuotaSourceCount: () => _state.getQuotaSourceCount(),
   getQuotaRingProviders: () => _ringGeom.listQuotaRingProviders(
     _state.buildSessionSnapshot(),
@@ -5839,6 +5845,9 @@ function getChatterSettings() {
     customPersonality: get("chatterCustomPersonality"),
     checkinMinutes: get("chatterCheckinMinutes"),
     shareSong: get("chatterShareSong") !== false,
+    // Desktop awareness widens the context for every request (see chatter.js numCtxAwareness).
+    awareness: get("desktopAwareness") === true,
+    logScreenLines: get("desktopAwarenessLogLines") === true,
     triggers: {
       checkin: get("chatterTriggerCheckin") !== false,
       tests: get("chatterTriggerTests") !== false,
@@ -5848,9 +5857,23 @@ function getChatterSettings() {
     },
   };
 }
+// Desktop awareness: opt-in screen captures described to chatter (src/desktop-awareness.js).
+const awarenessRuntime = createAwarenessRuntime({
+  settings: _settingsController,
+  electron: require("electron"),
+  getChatter: () => chatter,
+  getChatterSettings,
+  canSpeak: canChatterSpeak,
+  getPetCenter: () => {
+    const b = getPetWindowBounds();
+    return b ? { x: b.x + b.width / 2, y: b.y + b.height / 2 } : null;
+  },
+  log: (msg) => sessionLog(msg),
+});
 const chatter = createChatter({
   log: (msg) => sessionLog(msg),
   getSettings: getChatterSettings,
+  getScreen: awarenessRuntime.getScreen,
   getSnapshot: () => ({
     mood: _settingsController.get("moodEnabled") === true ? moodTracker.read() : null,
     musicPlaying: musicDetector.isPlaying(),

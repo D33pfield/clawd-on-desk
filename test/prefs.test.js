@@ -1006,6 +1006,7 @@ describe("prefs.validate", () => {
       togglePet: "CommandOrControl+Shift+Alt+C",
       quickSelectSession: null,
       chatterNow: null,
+      shareScreen: null,
       permissionAllow: "CommandOrControl+Shift+Y",
       permissionDeny: "CommandOrControl+Shift+N",
     });
@@ -1021,6 +1022,7 @@ describe("prefs.validate", () => {
       togglePet: "CommandOrControl+K",
       quickSelectSession: null,
       chatterNow: null,
+      shareScreen: null,
       permissionAllow: "CommandOrControl+Shift+Y",
       permissionDeny: "CommandOrControl+Shift+N",
     });
@@ -1038,6 +1040,7 @@ describe("prefs.validate", () => {
       togglePet: "CommandOrControl+Shift+Alt+C",
       quickSelectSession: null,
       chatterNow: null,
+      shareScreen: null,
       permissionAllow: "CommandOrControl+Shift+Y",
       permissionDeny: "CommandOrControl+Shift+N",
     });
@@ -1055,6 +1058,7 @@ describe("prefs.validate", () => {
       togglePet: "CommandOrControl+K",
       quickSelectSession: null,
       chatterNow: null,
+      shareScreen: null,
       permissionAllow: "CommandOrControl+Shift+Y",
       permissionDeny: "CommandOrControl+Shift+N",
     });
@@ -1528,6 +1532,7 @@ describe("prefs.migrate v15 → v16 (native macOS Control shortcuts)", () => {
       togglePet: "CommandOrControl+Shift+K",
       quickSelectSession: null,
       chatterNow: null,
+      shareScreen: null,
       permissionAllow: "CommandOrControl+Shift+Y",
       permissionDeny: "CommandOrControl+Shift+N",
     });

@@ -11,12 +11,16 @@
   let tabs = null;
 
   const PERSONALITIES = ["deadpan", "wholesome", "anxious", "noir", "sportscaster", "wizard", "engineer", "custom"];
+  const AWARENESS_SCOPES = ["window", "screen"];
+  const AWARENESS_MONITORS = ["pet", "primary", "all"];
   const BUBBLE_FONTS = ["cascadia", "consolas", "lucida", "courier"];
   const CUSTOM_MAX = 300;
 
   const view = {
     models: null, // { ok, models, defaultModel, error } once loaded
     loading: false,
+    awareness: null, // { ok, model, vision, lastSeen } once loaded
+    awarenessLoading: false,
     customDraft: null,
     customDirty: false,
   };
@@ -65,6 +69,25 @@
       view.models = { ok: false, models: [], error: (err && err.message) || "unavailable" };
     }).then(() => {
       view.loading = false;
+      ops.requestRender({ content: true });
+    });
+  }
+
+  function loadAwarenessStatus() {
+    if (view.awarenessLoading) return;
+    view.awarenessLoading = true;
+    let request;
+    try {
+      request = window.settingsAPI.getAwarenessStatus();
+    } catch (err) {
+      request = Promise.reject(err);
+    }
+    Promise.resolve(request).then((result) => {
+      view.awareness = result && typeof result === "object" ? result : { ok: false };
+    }).catch(() => {
+      view.awareness = { ok: false };
+    }).then(() => {
+      view.awarenessLoading = false;
       ops.requestRender({ content: true });
     });
   }
@@ -186,6 +209,53 @@
     return parts.element;
   }
 
+  // The warning between the two toggles. It is dim until the first toggle is on, then
+  // it lights up (and pulses once) so the person reads it before arming.
+  function buildAwarenessWarning(unlocked) {
+    const box = document.createElement("div");
+    box.className = unlocked ? "awareness-warning awareness-warning-hot" : "awareness-warning";
+    box.setAttribute("role", "note");
+    box.textContent = t(unlocked ? "awarenessWarningOn" : "awarenessWarningOff");
+    return box;
+  }
+
+  function buildAwarenessSelect(key, labelKey, descKey, ids, optionPrefix, disabled) {
+    const parts = helpers.buildSettingRow({ labelKey, descriptionKey: descKey });
+    const saved = pref(key);
+    const control = helpers.buildSettingsSelect({
+      value: ids.includes(saved) ? saved : ids[0],
+      options: ids.map((id) => ({ value: id, label: t(`${optionPrefix}_${id}`) })),
+      ariaLabel: t(labelKey),
+      onChange: (next) => (next === pref(key) ? true : save(key, next)),
+    });
+    control.setDisabled(disabled);
+    parts.controlElement.appendChild(control.element);
+    return parts.element;
+  }
+
+  // Can the chatter model read images, and what did it last see? (Only in memory.)
+  function buildAwarenessStatusRow() {
+    const parts = helpers.buildSettingRow({ labelKey: "rowAwarenessStatus", descriptionKey: "rowAwarenessStatusDesc" });
+    const status = document.createElement("span");
+    status.className = "row-desc";
+    const info = view.awareness;
+    if (!info) status.textContent = t("awarenessStatusLoading");
+    else if (!info.ok || !info.model) status.textContent = t("awarenessNoModel");
+    else status.textContent = `${info.model}: ${t(info.vision ? "awarenessCanSee" : "awarenessCannotSee")}`;
+    parts.controlElement.appendChild(status);
+    const refresh = helpers.buildButton({ labelKey: "chatterModelRefresh", tone: "quiet", size: "compact" });
+    refresh.addEventListener("click", () => {
+      view.awareness = null;
+      ops.requestRender({ content: true });
+    });
+    parts.controlElement.appendChild(refresh);
+    const seen = document.createElement("span");
+    seen.className = "row-desc";
+    seen.textContent = `${t("awarenessLastSeen")} ${info && info.lastSeen ? info.lastSeen : t("awarenessNothingYet")}`;
+    parts.textElement.appendChild(seen);
+    return parts.element;
+  }
+
   function numberRow(key, labelKey, descKey, unitKey, min, max) {
     return helpers.buildNumberInputRow({
       key,
@@ -244,6 +314,22 @@
     parent.appendChild(helpers.buildSection(t("sectionChatterContext"), [
       switchRow("chatterShareSong", "rowChatterShareSong", "rowChatterShareSongDesc", off),
     ]));
+
+    // Desktop awareness: two switches side by side. The first unlocks the second and
+    // lights up the warning that sits between them.
+    const awarenessOn = pref("desktopAwareness") === true;
+    if (awarenessOn && view.awareness === null) loadAwarenessStatus();
+    const awarenessRows = [
+      switchRow("desktopAwareness", "rowAwarenessEnabled", "rowAwarenessEnabledDesc", off),
+      buildAwarenessWarning(awarenessOn),
+      switchRow("desktopAwarenessArmed", "rowAwarenessArmed", "rowAwarenessArmedDesc", off || !awarenessOn),
+      buildAwarenessSelect("desktopAwarenessScope", "rowAwarenessScope", "rowAwarenessScopeDesc", AWARENESS_SCOPES, "awarenessScope", off || !awarenessOn),
+      buildAwarenessSelect("desktopAwarenessMonitor", "rowAwarenessMonitor", "rowAwarenessMonitorDesc", AWARENESS_MONITORS, "awarenessMonitor", off || !awarenessOn || pref("desktopAwarenessScope") === "window"),
+      switchRow("desktopAwarenessLogLines", "rowAwarenessLogLines", "rowAwarenessLogLinesDesc", off || !awarenessOn),
+    ];
+    if (awarenessOn) awarenessRows.push(buildAwarenessStatusRow());
+    if (tabs && tabs.shortcuts && typeof tabs.shortcuts.buildRow === "function") awarenessRows.push(tabs.shortcuts.buildRow("shareScreen"));
+    parent.appendChild(helpers.buildSection(t("sectionChatterAwareness"), awarenessRows));
 
     // One key to ask for a line right now. The row and its key recording are the
     // Shortcuts tab's own, so the two tabs always agree.

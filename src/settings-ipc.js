@@ -343,6 +343,7 @@ function registerSettingsIpc(options = {}) {
     ? options.refreshWslDetection
     : require("./agent-installation-detector").refreshWslDetection;
   const listChatterModels = options.listChatterModels || (async () => ({ ok: false, models: [], error: "unavailable" }));
+  const getAwarenessStatus = options.getAwarenessStatus || (async () => ({ ok: false, error: "unavailable" }));
   const getHookServerPort = options.getHookServerPort || (() => null);
   const getRecentHookEvents = options.getRecentHookEvents || (() => []);
   const checkForUpdates = options.checkForUpdates || (() => {});
@@ -568,6 +569,10 @@ function registerSettingsIpc(options = {}) {
   handle("settings:chatter-models", async (event) => {
     if (!isTrustedSettingsEvent(event)) return { ok: false, models: [], error: "untrusted" };
     return listChatterModels();
+  });
+  handle("settings:awareness-status", async (event) => {
+    if (!isTrustedSettingsEvent(event)) return { ok: false, error: "untrusted" };
+    return getAwarenessStatus();
   });
   handle("settings:get-pet-accessory-options", () => listPetAccessoryOptions());
   handle("settings:get-pet-mouth-accessory-options", () => listPetMouthAccessoryOptions());

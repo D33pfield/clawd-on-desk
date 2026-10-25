@@ -115,6 +115,7 @@ function createRuntime(options = {}) {
       togglePet: () => togglePetCalls.push("togglePet"),
       quickSelectSession: () => {},
       chatterNow: () => {},
+      shareScreen: () => {},
     },
     platform: options.platform,
   });

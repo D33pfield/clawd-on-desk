@@ -2316,6 +2316,7 @@ describe("shortcut commands", () => {
           togglePet: () => {},
           quickSelectSession: () => {},
           chatterNow: () => {},
+          shareScreen: () => {},
           permissionAllow: () => {},
           permissionDeny: () => {},
         },
