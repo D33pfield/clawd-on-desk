@@ -1218,6 +1218,8 @@ function handleStatePost(req, res, options) {
               testResult,
               failureKind: data.failure_kind,
               toolName,
+              // A percentage only; chatter keeps counts, never content.
+              contextPercent: contextUsage ? contextUsage.percent : undefined,
             });
           } catch {}
         }

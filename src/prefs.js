@@ -344,6 +344,9 @@ const SCHEMA = {
   chatterEnabled: { type: "boolean", default: false },
   // Show lines in the bubble. Off: lines are still written and logged, just not shown.
   chatterShowBubbles: { type: "boolean", default: true },
+  // Let the model see the title of the song that is playing (it only ever reaches
+  // the local Ollama server and the debug log).
+  chatterShareSong: { type: "boolean", default: true },
   // Ollama model name; empty means the built-in default (src/chatter.js).
   chatterModel: {
     type: "string",

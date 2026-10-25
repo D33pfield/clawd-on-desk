@@ -9,6 +9,9 @@ const {
   WIDTH,
   HEIGHT,
   DEFAULT_SHOW_MS,
+  TYPE_CHAR_MS,
+  MIN_HOLD_MS,
+  holdTimes,
   computeChatterBubbleBounds,
   resolveChatterAnchor,
   createChatterBubble,
@@ -152,7 +155,7 @@ describe("createChatterBubble", () => {
     bubble.show("Hello there, friend.");
     const win = windows[0];
     win.finishLoad();
-    assert.strictEqual(handles[0].ms, DEFAULT_SHOW_MS);
+    assert.strictEqual(handles[0].ms, "Hello there, friend.".length * TYPE_CHAR_MS + DEFAULT_SHOW_MS, "typing first, then the hold");
     timers.fire();
     assert.strictEqual(win.sent.at(-1).channel, "chatter-bubble-hide");
     assert.strictEqual(win.destroyed, false);
@@ -161,14 +164,103 @@ describe("createChatterBubble", () => {
     assert.strictEqual(bubble.isVisible(), false);
   });
 
-  it("shows a line for the requested time, and ignores nonsense durations", () => {
+  it("shows a reply for the requested total time, and ignores nonsense durations", () => {
+    const text = "Hello there, friend.";
     const custom = setup();
-    custom.bubble.show("Hello there, friend.", { durationMs: 20000 });
-    assert.strictEqual(custom.handles[0].ms, 20000);
+    custom.bubble.show(text, { durationMs: 20000 });
+    assert.strictEqual(custom.handles[0].ms, text.length * TYPE_CHAR_MS + 20000);
     const bad = setup();
-    bad.bubble.show("Hello there, friend.", { durationMs: -5 });
-    assert.strictEqual(bad.handles[0].ms, DEFAULT_SHOW_MS);
+    bad.bubble.show(text, { durationMs: -5 });
+    assert.strictEqual(bad.handles[0].ms, text.length * TYPE_CHAR_MS + DEFAULT_SHOW_MS);
     assert.ok(DEFAULT_SHOW_MS >= 10000, "long enough to actually read");
+  });
+
+  it("shares the total hold time across bubbles by length, with a floor", () => {
+    assert.deepStrictEqual(holdTimes(["aaa bbb"], 12000), [12000]);
+    const [long, short] = holdTimes(["one two three four five six", "ok"], 12000);
+    assert.ok(long > short);
+    assert.strictEqual(holdTimes(["one two", "one two"], 12000)[0], 6000);
+    assert.ok(holdTimes(["a", "b", "c"], 3000).every((ms) => ms >= MIN_HOLD_MS), "every bubble is readable");
+  });
+
+  it("plays a reply's bubbles back to back, each held after its typing, then fades out", () => {
+    const parts = ["First line here.", "Second line follows now.", "Third and last."];
+    const { bubble, windows, timers, handles } = setup();
+    assert.strictEqual(bubble.show(parts, { durationMs: 12000 }), true);
+    const win = windows[0];
+    win.finishLoad();
+    const shown = () => win.sent.filter((m) => m.channel === "chatter-bubble-show" && !m.payload.quiet).map((m) => m.payload.text);
+    assert.deepStrictEqual(shown(), [parts[0]]);
+    assert.strictEqual(win.sent[0].payload.charMs, TYPE_CHAR_MS, "the page is told how fast to type");
+
+    const holds = holdTimes(parts, 12000);
+    assert.strictEqual(handles.at(-1).ms, parts[0].length * TYPE_CHAR_MS + holds[0]);
+    timers.fire();
+    assert.deepStrictEqual(shown(), [parts[0], parts[1]]);
+    assert.strictEqual(handles.at(-1).ms, parts[1].length * TYPE_CHAR_MS + holds[1], "the second hold starts after the second typing");
+    timers.fire();
+    assert.deepStrictEqual(shown(), parts);
+    assert.strictEqual(win.destroyed, false);
+    timers.fire(); // the last bubble's time is up: fade out
+    assert.strictEqual(win.sent.at(-1).channel, "chatter-bubble-hide");
+    timers.fire();
+    assert.strictEqual(win.destroyed, true);
+    assert.strictEqual(bubble.isVisible(), false);
+  });
+
+  it("a click skips to the next bubble, and dismisses the reply on the last one", () => {
+    const { bubble, windows, ipcHandlers, timers } = setup();
+    bubble.show(["One here.", "Two here.", "Three here."]);
+    const win = windows[0];
+    win.finishLoad();
+    const own = { sender: win.webContents };
+    const texts = () => win.sent.filter((m) => m.channel === "chatter-bubble-show" && !m.payload.quiet).map((m) => m.payload.text);
+    ipcHandlers.get("chatter-bubble-dismiss")(own);
+    assert.deepStrictEqual(texts(), ["One here.", "Two here."]);
+    assert.strictEqual(win.destroyed, false);
+    ipcHandlers.get("chatter-bubble-dismiss")(own);
+    assert.deepStrictEqual(texts(), ["One here.", "Two here.", "Three here."]);
+    ipcHandlers.get("chatter-bubble-dismiss")(own);
+    assert.strictEqual(win.destroyed, true);
+    assert.strictEqual(bubble.isVisible(), false);
+    timers.fire(); // a stale part timer must not resurrect or crash anything
+  });
+
+  it("a skip cancels the old bubble's timer, so bubbles never advance twice", () => {
+    const { bubble, windows, ipcHandlers, handles } = setup();
+    bubble.show(["One here.", "Two here.", "Three here."]);
+    windows[0].finishLoad();
+    const first = handles.at(-1);
+    ipcHandlers.get("chatter-bubble-dismiss")({ sender: windows[0].webContents });
+    assert.ok(first.cleared);
+  });
+
+  it("hide() and dispose() cancel the remaining bubbles", () => {
+    const hidden = setup();
+    hidden.bubble.show(["One here.", "Two here."]);
+    hidden.windows[0].finishLoad();
+    hidden.bubble.hide();
+    assert.ok(hidden.handles.every((h) => h.cleared || h.fired));
+    assert.strictEqual(hidden.windows[0].destroyed, true);
+    const disposed = setup();
+    disposed.bubble.show(["One here.", "Two here."]);
+    disposed.bubble.dispose();
+    assert.ok(disposed.handles.every((h) => h.cleared || h.fired));
+  });
+
+  it("repositioning while a bubble is typing only moves it: a quiet update, never new text", () => {
+    let petX = 900;
+    const { bubble, windows } = setup({
+      getPetBounds: () => ({ x: petX, y: 700, width: 200, height: 200 }),
+      getAnchorRect: (b) => ({ left: b.x + 30, top: 720, right: b.x + 170, bottom: 890 }),
+    });
+    bubble.show(["First line here.", "Second line here."]);
+    windows[0].finishLoad();
+    petX = 1100;
+    bubble.reposition();
+    const last = windows[0].sent.at(-1).payload;
+    assert.strictEqual(last.quiet, true);
+    assert.strictEqual(last.text, "First line here.", "the current bubble's text, for the page to ignore");
   });
 
   it("takes clicks only while the pointer is over the bubble, and a click dismisses it", () => {
@@ -250,9 +342,22 @@ describe("createChatterBubble", () => {
 describe("chatter bubble page and wiring", () => {
   it("renders model text with textContent only, under a strict CSP", () => {
     const html = read("chatter-bubble.html");
-    assert.ok(html.includes("textEl.textContent = data.text"));
+    assert.ok(html.includes("typed.textContent = text.slice(0, shown)"));
+    assert.ok(html.includes("ghost.textContent = data.text"));
     assert.doesNotMatch(html, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
     assert.match(html, /Content-Security-Policy" content="default-src 'none'/);
+  });
+
+  it("types the text one character at a time in a terminal font, sized up front, without restarting on a quiet move", () => {
+    const html = read("chatter-bubble.html");
+    assert.match(html, /font-family: "Cascadia Mono", "Cascadia Code", Consolas/);
+    assert.match(html, /monospace;/);
+    // The full text is laid out invisibly so the bubble never resizes while typing.
+    assert.match(html, /#ghost \{ visibility: hidden; \}/);
+    assert.match(html, /setInterval\(/);
+    assert.match(html, /if \(data\.quiet\) \{[^}]*place\(data\.tailX, data\.below\);\s*return;/);
+    // Reduced motion shows the text at once.
+    assert.match(html, /if \(reduceMotion \|\| !\(charMs > 0\)\) \{\s*typed\.textContent = text;/);
   });
 
   it("preload exposes two listeners and two fixed-channel senders, nothing else", () => {
@@ -280,6 +385,7 @@ describe("chatter bubble page and wiring", () => {
     for (const key of [
       "chatterEnabled", "chatterModel", "chatterPersonality", "chatterCustomPersonality", "chatterCheckinMinutes",
       "chatterTriggerCheckin", "chatterTriggerTests", "chatterTriggerError", "chatterTriggerReturn", "chatterTriggerMusic",
+      "chatterShareSong",
     ]) {
       assert.ok(main.includes(`get("${key}")`), `${key} is read through getChatterSettings`);
     }
@@ -290,6 +396,15 @@ describe("chatter bubble page and wiring", () => {
     assert.match(main, /_chatterBubble\.dispose\(\)/);
     assert.match(main, /repositionChatterBubble: \(\) => repositionChatterBubble\(\)/);
     assert.match(main, /createChatterBubble\(\{\s*ipcMain,/);
+  });
+
+  it("the reply's bubbles, the song and the context percentage reach where they are used", () => {
+    const main = read("main.js");
+    assert.match(main, /onLine: async \(\{ text, parts \}\) => \{/);
+    assert.match(main, /_chatterBubble\.show\(parts && parts\.length > 0 \? parts : text, \{/);
+    assert.match(main, /song: musicDetector\.getSong\(\),/);
+    assert.match(read("server-route-state.js"), /contextPercent: contextUsage \? contextUsage\.percent : undefined,\s*\}\);/);
+    assert.match(read("prefs.js"), /chatterShareSong: \{ type: "boolean", default: true \}/);
   });
 
   it("pref changes take effect at runtime", () => {

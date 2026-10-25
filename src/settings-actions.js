@@ -340,6 +340,7 @@ const updateRegistry = {
   moodEnabled: requireBoolean("moodEnabled"),
   chatterEnabled: requireBoolean("chatterEnabled"),
   chatterShowBubbles: requireBoolean("chatterShowBubbles"),
+  chatterShareSong: requireBoolean("chatterShareSong"),
   chatterModel: (value) => (
     typeof value === "string" && value.length <= 120 && /^[A-Za-z0-9._:/-]*$/.test(value)
       && !value.includes("..") && !value.startsWith("/")

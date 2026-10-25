@@ -87,7 +87,7 @@ describe("chatter settings tab", () => {
     harness.render();
     assert.deepEqual(harness.built.switches.map((s) => s.key), [
       "chatterEnabled", "chatterShowBubbles", "chatterTriggerCheckin", "chatterTriggerTests",
-      "chatterTriggerError", "chatterTriggerReturn", "chatterTriggerMusic",
+      "chatterTriggerError", "chatterTriggerReturn", "chatterTriggerMusic", "chatterShareSong",
     ]);
     for (const config of harness.built.switches) {
       assert.ok(config.labelKey && config.descKey, `${config.key} has a label and description`);
@@ -99,7 +99,7 @@ describe("chatter settings tab", () => {
     const parent = harness.render();
     const sections = sectionKeys(parent);
     assert.deepEqual(plain(sections.map((s) => s.title)), [
-      "sectionChatterGeneral", "sectionChatterVoice", "sectionChatterTiming", "sectionChatterTriggers", "sectionChatterHotkey",
+      "sectionChatterGeneral", "sectionChatterVoice", "sectionChatterTiming", "sectionChatterTriggers", "sectionChatterContext", "sectionChatterHotkey",
     ]);
     const first = sections[0].children;
     assert.equal(first.length, 1);

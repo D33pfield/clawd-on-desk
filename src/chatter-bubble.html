@@ -13,7 +13,8 @@ html, body {
   user-select: none;
   pointer-events: none;
   cursor: default;
-  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
+  /* A terminal face: Cascadia ships with Windows, Consolas is the fallback. */
+  font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, "DejaVu Sans Mono", "Liberation Mono", monospace;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -32,16 +33,15 @@ html, body {
 #wrap.show { opacity: 1; transform: translateY(0); }
 
 #bubble {
-  max-width: 272px;
+  max-width: 316px;
   margin-bottom: 24px;
-  padding: 10px 18px 11px;
+  padding: 10px 16px 11px;
   background: #ffffff;
   color: #14293a;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 500;
   line-height: 1.4;
-  letter-spacing: 0.01em;
-  text-align: center;
+  text-align: left;
   pointer-events: auto;
   cursor: pointer;
   /* One-step pixel notch on each corner, like the SVG bubble path. */
@@ -53,6 +53,16 @@ html, body {
 }
 #wrap.below #bubble { margin-bottom: 0; margin-top: 24px; }
 
+/* The full text sits invisibly in the same grid cell as the typed text, so the
+   bubble has its final size from the first character and nothing jumps. */
+#textbox { display: grid; }
+#ghost, #typed { grid-area: 1 / 1; white-space: pre-wrap; overflow-wrap: anywhere; }
+#ghost { visibility: hidden; }
+
+/* A blinking block cursor while typing, like a terminal. */
+#typed.typing::after { content: "\2588"; margin-left: 1px; animation: blink 0.8s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
 .puff { position: absolute; background: #ffffff; }
 #puff1 { width: 8px; height: 8px; bottom: 11px; }
 #puff2 { width: 5px; height: 5px; bottom: 2px; }
@@ -61,44 +71,84 @@ html, body {
 
 @media (prefers-reduced-motion: reduce) {
   #wrap { transition: none; transform: none; }
+  #typed.typing::after { animation: none; }
 }
 </style>
 </head>
 <body>
 <div id="wrap">
-  <div id="bubble"><span id="text"></span></div>
+  <div id="bubble"><div id="textbox"><span id="ghost"></span><span id="typed"></span></div></div>
   <div class="puff" id="puff1"></div>
   <div class="puff" id="puff2"></div>
 </div>
 <script>
 const wrap = document.getElementById("wrap");
 const bubble = document.getElementById("bubble");
-const textEl = document.getElementById("text");
+const ghost = document.getElementById("ghost");
+const typed = document.getElementById("typed");
 const puff1 = document.getElementById("puff1");
 const puff2 = document.getElementById("puff2");
+const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+let typingTimer = null;
+
+function stopTyping() {
+  if (typingTimer) clearInterval(typingTimer);
+  typingTimer = null;
+  typed.classList.remove("typing");
+}
+
+// Reveal the text one character at a time. textContent only, never markup.
+function typeText(text, charMs) {
+  stopTyping();
+  typed.textContent = "";
+  if (reduceMotion || !(charMs > 0)) {
+    typed.textContent = text;
+    return;
+  }
+  let shown = 0;
+  typed.classList.add("typing");
+  typingTimer = setInterval(() => {
+    shown += 1;
+    typed.textContent = text.slice(0, shown);
+    if (shown >= text.length) stopTyping();
+  }, charMs);
+}
+
+// Keep the puff trail aimed at the pet: slide the bubble so its center is near
+// tailX, within the window, then trail the puffs down from that point.
+function place(tailX, below) {
+  wrap.classList.toggle("below", below === true);
+  const width = wrap.offsetWidth;
+  const x = Number.isFinite(tailX) ? tailX : window.innerWidth / 2;
+  const left = Math.max(4, Math.min(x - width / 2, window.innerWidth - width - 4));
+  wrap.style.left = left + "px";
+  const anchor = Math.max(14, Math.min(x - left, width - 14));
+  puff1.style.left = Math.round(anchor - 4) + "px";
+  puff2.style.left = Math.round(anchor - 2) + "px";
+}
 
 // Model output is untrusted: textContent only, never markup.
 window.chatterBubbleAPI.onShow((data) => {
   if (!data || typeof data.text !== "string") return;
-  textEl.textContent = data.text;
-  wrap.classList.toggle("below", data.below === true);
-  // Keep the puff trail aimed at the pet: slide the bubble so its center is near
-  // tailX, within the window, then trail the puffs down from that point.
-  const width = wrap.offsetWidth;
-  const tailX = Number.isFinite(data.tailX) ? data.tailX : window.innerWidth / 2;
-  const left = Math.max(4, Math.min(tailX - width / 2, window.innerWidth - width - 4));
-  wrap.style.left = left + "px";
-  const anchor = Math.max(14, Math.min(tailX - left, width - 14));
-  puff1.style.left = Math.round(anchor - 4) + "px";
-  puff2.style.left = Math.round(anchor - 2) + "px";
-  if (!data.quiet) {
+  if (data.quiet) {
+    // The pet moved: reposition only. Never touch the text or restart the typing.
+    place(data.tailX, data.below);
+    return;
+  }
+  ghost.textContent = data.text;
+  place(data.tailX, data.below);
+  typeText(data.text, data.charMs);
+  if (!wrap.classList.contains("show")) {
     // Force a reflow so the transition starts without waiting for a frame
     // (a window that has only just been shown may not be painting yet).
     void wrap.offsetWidth;
     wrap.classList.add("show");
   }
 });
-window.chatterBubbleAPI.onHide(() => wrap.classList.remove("show"));
+window.chatterBubbleAPI.onHide(() => {
+  stopTyping();
+  wrap.classList.remove("show");
+});
 // The window passes clicks through except while the pointer is on the bubble.
 bubble.addEventListener("mouseenter", () => window.chatterBubbleAPI.setInteractive(true));
 bubble.addEventListener("mouseleave", () => window.chatterBubbleAPI.setInteractive(false));
