@@ -1333,7 +1333,7 @@ function initUpdater(ctx, deps = {}) {
       log("scheduler: skip — git checkout detected");
       return;
     }
-    if (readPref("autoUpdateCheck", true) !== true) {
+    if (readPref("autoUpdateCheck", false) !== true) {
       log("scheduler: skip — autoUpdateCheck pref off");
       return;
     }
