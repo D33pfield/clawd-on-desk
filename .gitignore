@@ -207,3 +207,17 @@ Microsoft/
 
 # Emoji export scratch
 clawd-emoji-final/
+
+# Fork: personal files that must never be committed (art, fonts, prefs, logs, snapshots)
+/art/
+/backup/
+themes/clawd-moods/
+*.ttf
+*.otf
+*.woff
+*.woff2
+*.tgz
+mood.json
+clawd-prefs.json
+session-debug.log
+clawd-run*.log
