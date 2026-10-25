@@ -271,7 +271,9 @@ describe("loadXcbPointerBindings()", () => {
     const errors = [];
     const query = createX11PointerQuery({
       bindings: loadXcbPointerBindings(koffi),
-      displayName: ":65535",
+      // A unix: path that does not exist fails at once; :65535 falls back to TCP on 127.0.0.1, which takes
+      // minutes to time out where closed loopback ports drop packets (WSL2 mirrored networking).
+      displayName: "unix:/nonexistent-clawd-test-display",
       onError: (err) => errors.push(err.message),
     });
     assert.equal(query(), null);

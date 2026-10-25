@@ -244,7 +244,9 @@ describe("linux-x11-input-hint", () => {
     assert.deepStrictEqual(prototype(bindings.freeError).args, ["void *"]);
     assert.deepStrictEqual(prototype(bindings.disconnect).args, ["void *"]);
 
-    const connection = bindings.connect(":65535", null);
+    // A unix: path that does not exist fails at once. A display like :65535 makes libxcb fall back to TCP on
+    // 127.0.0.1, which can take minutes to time out where closed loopback ports drop packets (WSL2 mirrored networking).
+    const connection = bindings.connect("unix:/nonexistent-clawd-test-display", null);
     try {
       assert.notEqual(bindings.hasError(connection), 0);
       const cookie = bindings.changePropertyChecked(
@@ -259,7 +261,7 @@ describe("linux-x11-input-hint", () => {
     const errors = [];
     const hint = createLinuxX11InputHint({
       isLinuxX11: true,
-      displayName: ":65535",
+      displayName: "unix:/nonexistent-clawd-test-display",
       koffi,
       onError: (e) => errors.push(e.message),
     });
