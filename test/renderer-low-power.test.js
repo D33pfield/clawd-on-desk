@@ -2822,6 +2822,23 @@ describe("renderer pet accessory wardrobe", () => {
       assert.ok(!harness.container.classList.contains("music-bob"));
     });
 
+    it("stays off after the music stops, through later pose changes", () => {
+      const { harness } = settledHeadOnly();
+      harness.electronHandlers.onMusicState(true);
+      harness.musicAccessory.onload();
+      harness.api.swapToFile("first.svg", "working", false);
+      harness.api.pendingNext.listeners.get("load")();
+      assert.ok(harness.container.classList.contains("music-bob"));
+
+      harness.electronHandlers.onMusicState(false);
+      for (const [file, state] of [["first.svg", "idle"], ["first.svg", "working"], ["first.svg", "idle"]]) {
+        harness.api.swapToFile(file, state, false);
+        if (harness.api.pendingNext) harness.api.pendingNext.listeners.get("load")();
+        assert.ok(!harness.container.classList.contains("music-bob"), `${state}: no bob`);
+        assert.strictEqual(harness.musicAccessory.style.display, "none", `${state}: hidden`);
+      }
+    });
+
     it("survives accessory snapshots and theme reloads while music plays", () => {
       const { harness, config } = settledHeadOnly();
       harness.electronHandlers.onMusicState(true);
